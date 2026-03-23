@@ -1,5 +1,5 @@
 # Binaries
-ramune
+/ramune
 *.exe
 *.exe~
 *.dll
