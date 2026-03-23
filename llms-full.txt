@@ -1,0 +1,227 @@
+# Ramune — Full Documentation
+
+> Ramune is a JavaScript/TypeScript runtime and embeddable JS engine for Go, powered by JavaScriptCore via purego — no Cgo required. It provides multi-core parallel JS execution, Node.js/Bun API compatibility, and can embed Go libraries into JavaScript.
+
+## Install
+
+```
+go install github.com/i2y/ramune/cmd/ramune@latest
+ramune setup-jit   # macOS only: enable JSC JIT for full performance
+```
+
+## CLI Commands
+
+```
+ramune run [file]            Run JS/TS file (or package.json entry point)
+ramune run -w file.ts        Watch mode (auto-restart on changes)
+ramune run --check file.ts   Type-check then run
+ramune run --sandbox file.ts Deny all permissions
+ramune run --workers 4 srv.ts Multi-worker HTTP server
+ramune eval "expr"           Evaluate expression (JS/TS)
+ramune test [dir]            Run test files (*.test.ts, *.spec.js)
+ramune check [file|dir]      Type-check with tsgo
+ramune repl                  Interactive REPL (history, completion, TS)
+ramune build <file>          Bundle with esbuild
+ramune compile <file>        Compile to standalone binary (go:embed)
+ramune bench [dir]           Run benchmark files
+ramune x <pkg>               npx-like package runner
+ramune init                  Create package.json
+ramune add <pkg>             Add dependency
+ramune remove <pkg>          Remove dependency
+ramune install               Install all dependencies
+ramune setup-jit             Enable JSC JIT on macOS
+ramune version               Show version
+```
+
+Run options: `-p <pkg>` (npm package), `-w`/`--watch`, `--check`, `--sandbox`, `--allow-read[=path]`, `--allow-write[=path]`, `--allow-net[=host]`, `--allow-env[=var]`, `--allow-run[=cmd]`.
+
+Compile options: `-o output`, `--minify`, `--http` (Ramune.serve event loop).
+
+## Go Library API
+
+### Runtime
+
+```go
+rt, err := ramune.New(opts ...Option)
+
+// Options
+ramune.NodeCompat()              // Node.js polyfills
+ramune.WithFetch()               // globalThis.fetch
+ramune.Dependencies("lodash@4")  // npm packages
+ramune.WithGC(ramune.GCConfig{}) // GC tuning
+ramune.WithPermissions(perms)    // sandbox
+ramune.WithModule(module)        // custom require() module
+
+// Evaluate
+val, err := rt.Eval(code)
+err := rt.Exec(code)
+val, err := rt.EvalAsync(code)   // resolve Promises
+
+// Construct values
+obj, _ := rt.NewObject(map[string]any{"key": "value"})
+arr, _ := rt.NewArray(1, "two", true)
+buf, _ := rt.NewUint8Array([]byte{0xFF})
+
+// Go callbacks (GoFunc can safely call Value methods — no deadlock)
+rt.RegisterFunc("name", func(args []any) (any, error) { ... })
+
+// Typed callbacks (generics)
+ramune.Register(rt, "add", func(a, b float64) float64 { return a + b })
+
+// Struct binding
+rt.Bind("user", &User{Name: "Alice", Age: 30})
+
+// Plugin system
+rt.LoadModule(ramune.Module{Name: "mydb", Exports: map[string]ramune.GoFunc{...}})
+
+// Event loop
+rt.Tick()
+rt.RunEventLoop()
+rt.Wake()   // signal event loop from any goroutine
+
+// Multi-core pool
+pool, _ := ramune.NewPool(4, ramune.NodeCompat())
+pool.Eval("...")
+pool.Broadcast("...")
+pool.ListenAndServe(":3000", handlerJS)
+
+rt.Close()
+```
+
+### Value
+
+```go
+val.String()                // JS string representation
+val.Float64()               // as float64
+val.Int64()                 // as int64
+val.Bool()                  // as bool
+val.Bytes()                 // TypedArray/ArrayBuffer → []byte
+val.GoString()              // JS string → Go string
+val.IsNull() / IsUndefined() / IsArray() / IsFunction()
+val.Attr("name")            // get property
+val.SetAttr("name", value)  // set property
+val.Has("name")             // check property
+val.Delete("name")          // delete property
+val.Keys()                  // enumerate property names
+val.Len()                   // length property
+val.Index(i)                // array index
+val.ToMap()                 // → map[string]any (via JSON)
+val.ToSlice()               // → []any (via JSON)
+val.Call(args...)            // call as function
+val.Close()                 // release
+```
+
+### GC Configuration
+
+```go
+ramune.WithGC(ramune.GCConfig{
+    DisableAutoGC: true,   // disable Go auto GC during HTTP serving (default: true)
+    GCInterval:    2000,   // manual GC every N requests (default: 2000)
+    GCPercent:     100,    // Go GOGC value (default: 100)
+})
+```
+
+### Permissions
+
+```go
+ramune.WithPermissions(&ramune.Permissions{
+    Read:      ramune.PermGranted,
+    ReadPaths: []string{"/tmp"},
+    Write:     ramune.PermDenied,
+    Net:       ramune.PermDenied,
+    Env:       ramune.PermGranted,
+    Run:       ramune.PermDenied,
+})
+```
+
+## Ramune APIs & Bun Compatibility
+
+Ramune provides its own API namespace (`Ramune.*`). `Bun.*` is available as an alias for backward compatibility, though compatibility is partial and will be improved over time.
+
+Supported APIs:
+- `Ramune.serve({port, fetch, websocket})` — HTTP/WebSocket server (Go net/http backend, 101K req/s). Async fetch handlers with setTimeout supported.
+- `Ramune.file(path)` — text(), json(), exists(), size, name
+- `Ramune.write(path, data)` — file write
+- `Ramune.password.hash/verify` — bcrypt
+- `Ramune.sleep(ms)` — Promise-based delay
+- `Ramune.hash(data)` — FNV hash
+- `Request` / `Response` — Web API polyfills (enables Hono, etc.)
+- `bun:sqlite` — pure Go SQLite (Database, Statement)
+
+## Node.js Compatibility
+
+Enabled via `ramune.NodeCompat()`:
+
+| Module | Coverage | Key Functions |
+|--------|----------|---------------|
+| path | 100% | join, resolve, relative, normalize, isAbsolute, parse, format |
+| fs | 85% | readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync, readdirSync, statSync, rmSync, copyFileSync, realpathSync, accessSync, chmodSync, symlinkSync, createReadStream, createWriteStream, fs.promises |
+| child_process | 80% | spawnSync, execSync, execFileSync, spawn (async goroutine I/O) |
+| crypto | 80% | randomBytes, randomUUID, createHash, createHmac, scryptSync, pbkdf2Sync, createCipheriv, createDecipheriv, randomInt, timingSafeEqual, createSign/Verify, generateKeyPairSync |
+| stream | 70% | Readable, Writable, Transform, Duplex, PassThrough, pipe |
+| zlib | 70% | gzipSync, gunzipSync, deflateSync, inflateSync |
+| os | 85% | platform, arch, hostname, type, cpus, totalmem, freemem, userInfo |
+| events | 85% | EventEmitter: on, once, emit, removeListener, setMaxListeners |
+| http/https | 70% | http.request, http.get, http.createServer (Go net/http backend) |
+| net/tls | 60% | net.Socket, net.createConnection, tls.connect (async goroutines) |
+| Buffer | 60% | from, alloc, concat, readUInt8/16/32, writeUInt8/16/32, fill, toString(hex/base64) |
+| url | 80% | parse, format, resolve, fileURLToPath |
+| assert | 80% | ok, strictEqual, deepStrictEqual, throws, doesNotThrow |
+| worker_threads | 70% | Worker, parentPort, workerData, postMessage |
+| dns | basic | lookup, resolve |
+| readline | 70% | async iterator support |
+
+Also: TextEncoder/TextDecoder, AbortController/AbortSignal, Symbol.dispose/asyncDispose, process (env, cwd, platform, arch, hrtime, nextTick).
+
+## TypeScript
+
+- `.ts`/`.tsx` files transpiled via esbuild (type annotations stripped)
+- `require('./module.ts')` resolves and transpiles `.ts` files
+- REPL accepts TypeScript syntax
+- `ramune eval` handles TypeScript expressions
+- `ramune check` uses tsgo (TypeScript 7, 10x faster than tsc)
+- ESM files bundled via esbuild Build API with full import resolution
+
+## Test Runner
+
+```js
+describe("math", () => {
+    test("addition", () => {
+        expect(1 + 2).toBe(3);
+    });
+});
+```
+
+Matchers: toBe, toEqual, toBeTruthy, toBeFalsy, toContain, toThrow, toBeGreaterThan, toBeLessThan, toHaveLength, toBeNull, toBeUndefined, toBeDefined, not.*.
+
+
+## Architecture
+
+- Each Runtime has a dedicated goroutine pinned to one OS thread via runtime.LockOSThread()
+- All JSC operations dispatched via channel; dispatch() detects re-entrance via goroutine ID
+- Independent VMs via JSContextGroupCreate + JSGlobalContextCreateInGroup (bypasses macOS shared VM)
+- Channel-driven event loop with Wake() — no 10ms polling
+- Multi-core via RuntimePool (N independent JSC contexts on separate OS threads)
+- HTTP server disables Go auto GC during serving (prevents JSC corruption)
+- Async handlers support setTimeout via real-time tick loop
+
+## Performance (Apple M4 Max, JIT enabled)
+
+| Test | Ramune | Bun | Node.js |
+|------|--------|-----|---------|
+| Hello World | 10.5ms | 6.3ms | 17.4ms |
+| Fibonacci(35) | 42.9ms | 39.3ms | 63.4ms |
+| JSON 10K | 14.2ms | 9.0ms | 22.2ms |
+| Crypto SHA256 | 16.7ms | 10.4ms | 19.8ms |
+| File I/O | 17.2ms | 11.9ms | 23.0ms |
+| HTTP req/s (single) | 101K | 170K | 114K |
+| HTTP req/s (3 workers, fib(35)) | 85 | 32 | 22 |
+
+Run `make bench` to reproduce.
+
+## Requirements
+
+- macOS (JSC built-in) or Linux (libjavascriptcoregtk)
+- Go 1.26+
+- npm packages fetched directly from registry (no npm/bun CLI needed)
+- tsgo (optional, for type checking)

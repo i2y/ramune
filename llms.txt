@@ -1,0 +1,80 @@
+# Ramune
+
+> Ramune is a JavaScript/TypeScript runtime and embeddable JS engine for Go, powered by JavaScriptCore via purego — no Cgo required. It provides multi-core parallel JS execution, Node.js/Bun API compatibility, and can embed Go libraries into JavaScript.
+
+## Getting Started
+
+- [README](https://github.com/i2y/ramune/blob/main/README.md): Install, quick start, all CLI commands, embedding in Go, benchmarks
+- [Go Package Documentation](https://pkg.go.dev/github.com/i2y/ramune): Full API reference
+
+## CLI Runtime
+
+- [CLI (cmd/ramune)](https://github.com/i2y/ramune/blob/main/cmd/ramune/main.go): `ramune run`, `ramune eval`, `ramune repl`, `ramune test`, `ramune check`, `ramune build`, `ramune compile`, `ramune bench`, `ramune x`, `ramune init/add/remove/install`, `ramune setup-jit`
+- TypeScript/TSX support via esbuild transpilation
+- ESM (import/export) and CommonJS support with esbuild Build API bundling
+- `ramune compile` — compile JS/TS to standalone Go binary via go:embed
+- `ramune run --workers N` — multi-worker HTTP serving with parallel JSC VMs
+- package.json entry point and dependency resolution
+- Watch mode (`-w` flag) via fsnotify
+- Test runner with Jest/Bun-compatible API (describe, test, expect)
+- Type checking via tsgo (`ramune check`, `ramune run --check`)
+- Deno-style permissions (`--sandbox`, `--allow-read`, `--allow-write`, `--allow-net`)
+- Rich REPL with history, tab completion, colors (ergochat/readline + charmbracelet/lipgloss)
+
+## Core Library API
+
+- [Runtime (jsc.go)](https://github.com/i2y/ramune/blob/main/jsc.go): New(), Close(), Eval(), Exec(), EvalAsync(), NewObject(), NewArray(), NewUint8Array(), RegisterFunc(), GlobalObject(), dispatch(), Wake()
+- [Value (value.go)](https://github.com/i2y/ramune/blob/main/value.go): String(), Float64(), Bool(), Bytes(), Attr(), SetAttr(), Call(), Keys(), Len(), Index(), Has(), Delete(), ToMap(), ToSlice(), IsArray(), IsFunction(), Close()
+- [Typed Registration (register.go)](https://github.com/i2y/ramune/blob/main/register.go): Register[F]() — generics-based typed Go function registration
+- [Struct Binding (bind.go)](https://github.com/i2y/ramune/blob/main/bind.go): Bind() — expose Go structs as JS objects with getters/setters/methods
+- [Plugin System (module.go)](https://github.com/i2y/ramune/blob/main/module.go): Module, WithModule(), LoadModule() — custom require() modules
+- [Type Conversion (convert.go)](https://github.com/i2y/ramune/blob/main/convert.go): Go↔JS conversion for bool, numbers, strings, nil, map[string]any, []any, []byte (Uint8Array)
+- [Error Handling (errors.go)](https://github.com/i2y/ramune/blob/main/errors.go): JSError with Message and Stack trace, ErrAlreadyClosed, ErrNilValue
+- [GC Config](https://github.com/i2y/ramune/blob/main/jsc.go): WithGC(GCConfig) — DisableAutoGC, GCInterval, GCPercent for JSC/Go GC interop
+- [Permissions (permissions.go)](https://github.com/i2y/ramune/blob/main/permissions.go): WithPermissions() — read/write/net/env/run access control
+- [RuntimePool (pool.go)](https://github.com/i2y/ramune/blob/main/pool.go): NewPool(n) for multi-core parallel JS execution with HTTP dispatch
+
+## Event Loop & Async
+
+- [Event Loop (eventloop.go)](https://github.com/i2y/ramune/blob/main/eventloop.go): Tick(), RunEventLoop(), RunEventLoopFor(), EvalAsync(), Wake() — channel-driven, zero-latency event delivery
+- [Fetch (fetch.go)](https://github.com/i2y/ramune/blob/main/fetch.go): globalThis.fetch backed by Go net/http
+- [Async Spawn (asyncspawn.go)](https://github.com/i2y/ramune/blob/main/asyncspawn.go): child_process.spawn with goroutine-backed I/O, channel-driven event delivery
+- [Async Net (asyncnet.go)](https://github.com/i2y/ramune/blob/main/asyncnet.go): TCP/TLS client sockets via goroutines, channel-driven delivery
+- [Worker Threads (worker.go)](https://github.com/i2y/ramune/blob/main/worker.go): worker_threads with independent JSC contexts
+
+## Ramune APIs & Bun Compatibility
+
+- [Ramune/Bun APIs (buncompat.go)](https://github.com/i2y/ramune/blob/main/buncompat.go): Ramune.serve() (HTTP server, 101K req/s), Ramune.file(), Ramune.write(), Ramune.password, Ramune.sleep(), Request/Response polyfills. Bun.* available as alias. Works with Hono. Async handlers with setTimeout supported.
+- [WebSocket (websocket.go)](https://github.com/i2y/ramune/blob/main/websocket.go): WebSocket server for Ramune.serve()
+- [SQLite (sqlite.go)](https://github.com/i2y/ramune/blob/main/sqlite.go): bun:sqlite — pure Go SQLite via modernc.org/sqlite
+
+## Node.js Compatibility
+
+- [NodeCompat (nodecompat.go)](https://github.com/i2y/ramune/blob/main/nodecompat.go): fs (85%), path (100%), crypto (80%), child_process (80%), stream (70%), zlib (70%), os (85%), events (85%), http/https (70%), net/tls (60%), Buffer (60%), url (80%), assert (80%), util, readline, dns, worker_threads, TextEncoder/TextDecoder, AbortController
+- [npm Bundling (bundle.go)](https://github.com/i2y/ramune/blob/main/bundle.go): Dependencies() fetches from npm registry and bundles via esbuild (no npm/bun CLI required)
+- [Package Registry (internal/registry/)](https://github.com/i2y/ramune/blob/main/internal/registry/): npm registry client, semver resolution, lockfile (ramune.lock)
+
+
+## Benchmarks
+
+| Test | Ramune | Bun | Node.js |
+|------|--------|-----|---------|
+| Hello World | 10.5ms | 6.3ms | 17.4ms |
+| Fibonacci(35) | 42.9ms | 39.3ms | 63.4ms |
+| JSON 10K | 14.2ms | 9.0ms | 22.2ms |
+| HTTP req/s (single) | 101K | 170K | 114K |
+| HTTP req/s (3 workers, fib(35)) | 85 | 32 | 22 |
+
+Run `make bench` to reproduce.
+
+## Agent Skills
+
+- [ramune-test](https://github.com/i2y/ramune/blob/main/skills/ramune-test/SKILL.md): Build, test, and debug the project
+
+- [js-eval](https://github.com/i2y/ramune/blob/main/skills/js-eval/SKILL.md): Evaluate JavaScript code
+
+## Platform Support
+
+- macOS: JavaScriptCore built-in, JIT via `ramune setup-jit`
+- Linux: libjavascriptcoregtk (4.0/4.1/6.0)
+- [CI](https://github.com/i2y/ramune/blob/main/.github/workflows/ci.yml): macOS + Ubuntu 22.04/24.04

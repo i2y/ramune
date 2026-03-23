@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+          - os: ubuntu-24.04
+            jsc-pkg: libjavascriptcoregtk-4.1-dev
+          - os: ubuntu-22.04
+            jsc-pkg: libjavascriptcoregtk-4.0-dev
+
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: 'go.mod'
+
+      - name: Install JavaScriptCore (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ matrix.jsc-pkg }} gcc
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+
+      - name: Check formatting
+        run: make fmt-check
+
+      - name: Build
+        run: make build
+
+      - name: Vet
+        run: make vet
+
+      - name: Test (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          go test -run "^TestWebSocket" -count=1 -timeout 60s .
+          go test -run "^TestHTTPCreateServer" -count=1 -timeout 60s .
+          go test -run "^TestWorker" -count=1 -timeout 60s .
+          go test -run "^Test[^DWHP]|^TestPool|^TestPerm|^TestProcess" -count=1 -timeout 120s .
+        env:
+          CGO_ENABLED: "1"
+
+      - name: Test (macOS)
+        if: runner.os == 'macOS'
+        run: make test
+
+      - name: Build CLI
+        run: make build-cli
+
+      - name: Smoke test CLI
+        run: |
+          echo 'console.log("hello")' | ./ramune eval "1+1"
