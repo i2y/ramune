@@ -44,7 +44,7 @@ sudo apt install libjavascriptcoregtk-4.1-dev   # JSC runtime (required)
 go install github.com/i2y/ramune/cmd/ramune@latest
 ```
 
-Multi-runtime (RuntimePool, worker_threads) is automatically enabled when gcc is installed. Single runtime works without gcc. To force a pure Go build: `CGO_ENABLED=0 go install ...`
+Multi-runtime (RuntimePool, worker_threads) works out of the box on x86_64. On arm64, gcc is required for cgo signal forwarding (`apt install gcc`).
 
 ### Minimal install (12MB)
 
@@ -425,7 +425,7 @@ Linux does not need JIT setup.
 - **N-API / Native addons**: Not supported. Packages that require `.node` native binaries (e.g., `bcrypt`, `sharp`, `better-sqlite3`) will not work. Use pure JS alternatives instead.
 - **HTTP self-fetch**: Ramune.serve() handlers cannot fetch their own server (same JSC context deadlock).
 - **Windows**: No JavaScriptCore available.
-- **Linux multi-runtime**: Requires `CGO_ENABLED=1` and a C compiler. Cgo's signal forwarding is needed for JSC's GC to coexist with Go's runtime. Without cgo, only single-runtime works on Linux.
+- **Linux multi-runtime**: Architecture-dependent signal handling. On arm64, `CGO_ENABLED=1` and gcc are required for multi-runtime (cgo's signal forwarding is needed for JSC's GC). On x86_64, multi-runtime works without cgo (`CGO_ENABLED=0`).
 - **Multi-worker limit**: 2-3 workers recommended for sustained high-throughput; 4+ may trigger JSC JIT contention.
 
 ## Requirements
