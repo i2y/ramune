@@ -109,6 +109,16 @@ describe("math", () => {
 });
 ```
 
+Mocking is supported via `jest.fn()` and `jest.spyOn()`:
+
+```ts
+test("mock", () => {
+  const fn = jest.fn().mockReturnValue(42);
+  expect(fn()).toBe(42);
+  expect(fn).toHaveBeenCalledTimes(1);
+});
+```
+
 ### Compile to Standalone Binary
 
 ```bash
@@ -428,14 +438,16 @@ Linux does not need JIT setup.
 | Module | Coverage | | Module | Coverage |
 |--------|----------|-|--------|----------|
 | path | 100% | | zlib | 75% (gzip, deflate, brotli) |
-| fs | 90% (async + sync) | | os | 85% |
+| fs | 90% (async + sync + watch) | | os | 85% |
 | child_process | 80% | | events | 85% |
-| crypto | 80% | | url | 80% |
+| crypto | 85% (+ crypto.subtle) | | url | 80% |
 | stream | 70% | | Buffer | 60% |
 | http/https | 70% | | assert | 80% |
 | net/tls | 60% | | dns | basic |
 | worker_threads | 70% | | readline | 70% |
 | vm | 70% | | querystring | 80% |
+| timers/promises | 70% | | perf_hooks | basic |
+| util | 80% (types, promisify, format) | | process | 85% (signals, exit, env) |
 
 ## Web Platform APIs
 
@@ -455,6 +467,8 @@ Linux does not need JIT setup.
 | `performance.now` / `mark` / `measure` | Supported |
 | `structuredClone` | Supported (circular refs, Map, Set, Date, RegExp, TypedArray) |
 | `setTimeout` / `setInterval` | Supported |
+| `navigator` | Supported (userAgent, platform, hardwareConcurrency) |
+| `console.time` / `table` / `trace` | Supported |
 
 Ramune also supports `package.json` `"exports"` field resolution (conditional exports with `require`/`import`/`default` and subpath exports).
 
