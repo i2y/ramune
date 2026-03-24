@@ -68,6 +68,8 @@ ramune run -p lodash -p dayjs app.ts   # with npm packages
 ramune run                              # reads package.json
 ramune run -w server.ts                 # watch mode
 ramune run --workers 4 server.ts        # multi-worker HTTP server
+ramune run --env-file .env.prod app.ts  # load env file
+ramune run dev                          # run package.json script
 ```
 
 ### Evaluate Expressions
@@ -173,6 +175,23 @@ ramune run --sandbox --allow-read=/tmp app.ts  # selective access
 ```
 
 Flags: `--allow-read`, `--allow-write`, `--allow-net`, `--allow-env`, `--allow-run`.
+
+### Environment Variables
+
+`.env` and `.env.local` files are automatically loaded (like Bun/Deno). Use `--env-file` to specify a custom file:
+
+```bash
+ramune run --env-file .env.production app.ts
+```
+
+### Package.json Scripts
+
+Run scripts defined in `package.json`:
+
+```bash
+ramune run dev     # runs "scripts.dev" from package.json
+ramune run build   # runs "scripts.build"
+```
 
 ## Embed in Go
 
@@ -333,7 +352,8 @@ Ramune provides its own API namespace. `Bun.*` is available as an alias for back
 | `Ramune.write(path, data)` | Supported |
 | `Ramune.password.hash/verify` | Supported (bcrypt) |
 | `Ramune.sleep(ms)` | Supported |
-| `Request` / `Response` | Polyfilled (enables Hono etc.) |
+| `Ramune.plugin({setup})` | Supported (onLoad filters, virtual modules) |
+| `Request` / `Response` | Polyfilled with ReadableStream body |
 | `bun:sqlite` | Supported (pure Go, modernc.org/sqlite) |
 | `Bun.*` | Alias for `Ramune.*` (partial Bun compatibility) |
 
@@ -411,14 +431,36 @@ Linux does not need JIT setup.
 
 | Module | Coverage | | Module | Coverage |
 |--------|----------|-|--------|----------|
-| path | 100% | | zlib | 70% |
-| fs | 85% | | os | 85% |
+| path | 100% | | zlib | 75% (gzip, deflate, brotli) |
+| fs | 90% (async + sync) | | os | 85% |
 | child_process | 80% | | events | 85% |
 | crypto | 80% | | url | 80% |
 | stream | 70% | | Buffer | 60% |
 | http/https | 70% | | assert | 80% |
 | net/tls | 60% | | dns | basic |
 | worker_threads | 70% | | readline | 70% |
+| vm | 70% | | querystring | 80% |
+
+## Web Platform APIs
+
+| API | Status |
+|-----|--------|
+| `fetch` | Supported (Go net/http backend) |
+| `ReadableStream` / `WritableStream` / `TransformStream` | Supported (pipeTo, pipeThrough, tee, async iterator) |
+| `crypto.subtle` | Supported (digest, sign/verify, encrypt/decrypt, importKey/exportKey, deriveBits/deriveKey) |
+| `crypto.getRandomValues` / `randomUUID` | Supported |
+| `Blob` / `File` | Supported |
+| `FormData` | Supported |
+| `Headers` / `Request` / `Response` | Supported (ReadableStream body) |
+| `TextEncoder` / `TextDecoder` | Supported (UTF-8) |
+| `AbortController` / `AbortSignal` | Supported |
+| `URL` / `URLSearchParams` | Supported |
+| `WebSocket` | Supported (server-side via Ramune.serve) |
+| `performance.now` / `mark` / `measure` | Supported |
+| `structuredClone` | Supported (circular refs, Map, Set, Date, RegExp, TypedArray) |
+| `setTimeout` / `setInterval` | Supported |
+
+Ramune also supports `package.json` `"exports"` field resolution (conditional exports with `require`/`import`/`default` and subpath exports).
 
 ## Known Limitations
 
