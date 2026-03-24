@@ -210,19 +210,18 @@ func TestNodeCompatFsReadWrite(t *testing.T) {
 func TestNodeCompatFsPromises(t *testing.T) {
 	r := sharedNodeCompat(t)
 
-	// Use the 3-phase Promise resolution pattern from CLAUDE.md.
+	// Write a file synchronously, then read it back via fs.promises (async).
 	if err := r.Exec(`
 		var fs = require('fs');
 		var tmpFile = require('os').tmpdir() + '/ramune_test_promises.txt';
 		fs.writeFileSync(tmpFile, 'promise test');
-		globalThis.__p = fs.promises.readFile(tmpFile, 'utf8');
 	`); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.Exec(`globalThis.__p.then(function(v) { globalThis.__r = v; });`); err != nil {
-		t.Fatal(err)
-	}
-	v, err := r.Eval(`globalThis.__r`)
+
+	v, err := r.EvalAsync(`
+		fs.promises.readFile(tmpFile, 'utf8')
+	`)
 	if err != nil {
 		t.Fatal(err)
 	}

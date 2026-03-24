@@ -218,46 +218,13 @@ func createRuntimeFromOpts(opts []ramune.Option) (*ramune.Runtime, error) {
 		mod, _ := args[0].(string)
 		baseDir, _ := args[1].(string)
 
-		// Only handle relative paths
-		if !strings.HasPrefix(mod, "./") && !strings.HasPrefix(mod, "../") {
-			return "", nil // let built-in require handle it
+		// Relative paths: resolve from baseDir.
+		if strings.HasPrefix(mod, "./") || strings.HasPrefix(mod, "../") {
+			return resolveFileModule(filepath.Join(baseDir, mod))
 		}
 
-		resolved := filepath.Join(baseDir, mod)
-
-		// Try exact path, then .js/.ts/.tsx, then .json, then /index.*
-		candidates := []string{
-			resolved,
-			resolved + ".js",
-			resolved + ".ts",
-			resolved + ".tsx",
-			resolved + ".json",
-			filepath.Join(resolved, "index.js"),
-			filepath.Join(resolved, "index.ts"),
-		}
-
-		for _, c := range candidates {
-			if info, err := os.Stat(c); err == nil && !info.IsDir() {
-				abs, _ := filepath.Abs(c)
-				data, err := os.ReadFile(abs)
-				if err != nil {
-					return "", err
-				}
-				// Transpile TypeScript files.
-				src := string(data)
-				if isTypeScript(abs) {
-					transformed, err := transformTypeScript(abs, data)
-					if err != nil {
-						return "", err
-					}
-					src = string(transformed)
-				}
-				result := map[string]string{"path": abs, "source": src}
-				encoded, _ := json.Marshal(result)
-				return string(encoded), nil
-			}
-		}
-		return "", fmt.Errorf("Cannot find module '%s' from '%s'", mod, baseDir)
+		// Non-relative: search node_modules up the directory tree.
+		return resolveNodeModule(mod, baseDir)
 	})
 
 	rt.Exec(`
@@ -822,6 +789,167 @@ func replBasicMode(rt *ramune.Runtime) {
 
 // loadDotEnv loads environment variables from .env files.
 // If envFile is specified, only that file is loaded. Otherwise, .env and .env.local are loaded.
+// resolveFileModule resolves a file path with extension fallback.
+func resolveFileModule(resolved string) (string, error) {
+	candidates := []string{
+		resolved,
+		resolved + ".js",
+		resolved + ".ts",
+		resolved + ".tsx",
+		resolved + ".json",
+		filepath.Join(resolved, "index.js"),
+		filepath.Join(resolved, "index.ts"),
+	}
+	for _, c := range candidates {
+		if info, err := os.Stat(c); err == nil && !info.IsDir() {
+			return readAndTranspile(c)
+		}
+	}
+	return "", fmt.Errorf("Cannot find module '%s'", resolved)
+}
+
+// resolveNodeModule searches node_modules directories for a package,
+// supporting the package.json "exports" field.
+func resolveNodeModule(mod, baseDir string) (string, error) {
+	// Split module into package name and subpath (e.g. "@foo/bar/baz" -> "@foo/bar", "./baz")
+	pkgName, subpath := splitModulePath(mod)
+
+	dir := baseDir
+	for {
+		nmDir := filepath.Join(dir, "node_modules", pkgName)
+		if info, err := os.Stat(nmDir); err == nil && info.IsDir() {
+			entry, err := resolvePackageEntry(nmDir, subpath)
+			if err == nil {
+				return readAndTranspile(entry)
+			}
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return "", nil // let built-in require handle it
+}
+
+func splitModulePath(mod string) (string, string) {
+	parts := strings.SplitN(mod, "/", 3)
+	if strings.HasPrefix(mod, "@") && len(parts) >= 2 {
+		// Scoped package: @scope/name[/subpath]
+		pkgName := parts[0] + "/" + parts[1]
+		subpath := "."
+		if len(parts) > 2 {
+			subpath = "./" + parts[2]
+		}
+		return pkgName, subpath
+	}
+	// Regular package: name[/subpath]
+	pkgName := parts[0]
+	subpath := "."
+	if len(parts) > 1 {
+		subpath = "./" + strings.Join(parts[1:], "/")
+	}
+	return pkgName, subpath
+}
+
+// resolvePackageEntry resolves the entry file for a package, checking
+// the "exports" field first, then falling back to "main" and index.js.
+func resolvePackageEntry(pkgDir, subpath string) (string, error) {
+	pkgJSON := filepath.Join(pkgDir, "package.json")
+	data, err := os.ReadFile(pkgJSON)
+	if err != nil {
+		// No package.json — try index.js
+		return resolveFileModule(filepath.Join(pkgDir, subpath))
+	}
+
+	var pkg struct {
+		Main    string `json:"main"`
+		Exports any    `json:"exports"`
+	}
+	json.Unmarshal(data, &pkg)
+
+	// Try "exports" field first.
+	if pkg.Exports != nil {
+		if resolved := resolveExports(pkg.Exports, subpath); resolved != "" {
+			full := filepath.Join(pkgDir, resolved)
+			if _, err := os.Stat(full); err == nil {
+				return full, nil
+			}
+		}
+	}
+
+	// Fallback: "main" field (only for root subpath ".").
+	if subpath == "." && pkg.Main != "" {
+		full := filepath.Join(pkgDir, pkg.Main)
+		if _, err := os.Stat(full); err == nil {
+			return full, nil
+		}
+	}
+
+	// Fallback: direct file resolution.
+	return resolveFileModule(filepath.Join(pkgDir, subpath))
+}
+
+// resolveExports resolves a subpath against a package.json "exports" field.
+// Supports: string, {".": ...}, {"./sub": ...}, {"require": ..., "import": ..., "default": ...}
+func resolveExports(exports any, subpath string) string {
+	switch v := exports.(type) {
+	case string:
+		if subpath == "." {
+			return v
+		}
+	case map[string]any:
+		// Check for direct subpath match: {"./foo": "..."}
+		if val, ok := v[subpath]; ok {
+			return resolveExportCondition(val)
+		}
+		// Check for "." entry when subpath is "."
+		if subpath == "." {
+			if val, ok := v["."]; ok {
+				return resolveExportCondition(val)
+			}
+			// Condition names at top level: {"require": ..., "import": ..., "default": ...}
+			return resolveExportCondition(exports)
+		}
+	}
+	return ""
+}
+
+// resolveExportCondition resolves conditional exports (require/import/default).
+func resolveExportCondition(val any) string {
+	switch v := val.(type) {
+	case string:
+		return v
+	case map[string]any:
+		// Prefer "require" > "default" > "import" for CJS require()
+		for _, key := range []string{"require", "default", "import"} {
+			if sub, ok := v[key]; ok {
+				return resolveExportCondition(sub)
+			}
+		}
+	}
+	return ""
+}
+
+func readAndTranspile(absPath string) (string, error) {
+	abs, _ := filepath.Abs(absPath)
+	data, err := os.ReadFile(abs)
+	if err != nil {
+		return "", err
+	}
+	src := string(data)
+	if isTypeScript(abs) {
+		transformed, err := transformTypeScript(abs, data)
+		if err != nil {
+			return "", err
+		}
+		src = string(transformed)
+	}
+	result := map[string]string{"path": abs, "source": src}
+	encoded, _ := json.Marshal(result)
+	return string(encoded), nil
+}
+
 func loadDotEnv(envFile string) {
 	files := []string{".env", ".env.local"}
 	if envFile != "" {

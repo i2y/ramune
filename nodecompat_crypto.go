@@ -25,6 +25,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/andybalholm/brotli"
 	"golang.org/x/crypto/scrypt"
 )
 
@@ -184,6 +185,35 @@ func goZlibInflate(args []any) (any, error) {
 	}
 	r := flate.NewReader(bytes.NewReader(compressed))
 	defer r.Close()
+	out, err := io.ReadAll(r)
+	if err != nil {
+		return nil, err
+	}
+	return string(out), nil
+}
+
+func goZlibBrotliCompress(args []any) (any, error) {
+	if len(args) < 1 {
+		return nil, fmt.Errorf("brotliCompressSync: data required")
+	}
+	data, _ := args[0].(string)
+	var buf bytes.Buffer
+	w := brotli.NewWriter(&buf)
+	w.Write([]byte(data))
+	w.Close()
+	return hex.EncodeToString(buf.Bytes()), nil
+}
+
+func goZlibBrotliDecompress(args []any) (any, error) {
+	if len(args) < 1 {
+		return nil, fmt.Errorf("brotliDecompressSync: data required")
+	}
+	data, _ := args[0].(string)
+	compressed, err := hex.DecodeString(data)
+	if err != nil {
+		return nil, err
+	}
+	r := brotli.NewReader(bytes.NewReader(compressed))
 	out, err := io.ReadAll(r)
 	if err != nil {
 		return nil, err

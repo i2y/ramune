@@ -50,6 +50,12 @@ func (r *Runtime) tickManagers() {
 			r.bunSrv.processWSEvents(r)
 		}
 	}
+	if r.fsMgr != nil {
+		r.fsMgr.processEvents(r)
+	}
+	if r.fswatchMgr != nil {
+		r.fswatchMgr.processEvents(r)
+	}
 	if r.procMgr != nil {
 		r.procMgr.processEvents(r)
 	}
@@ -434,6 +440,10 @@ func (r *Runtime) hasPendingLocked() bool {
 	}
 	// Check for active workers.
 	if r.workerMgr != nil && r.workerMgr.hasActive() {
+		return true
+	}
+	// Check for pending async fs operations.
+	if r.fsMgr != nil && r.evalBoolLocked("typeof __fsPendingCount === 'function' && __fsPendingCount() > 0") {
 		return true
 	}
 	return false

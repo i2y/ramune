@@ -241,6 +241,12 @@ func (r *Runtime) installNodeCompat() error {
 	if err := r.registerFuncLocked("__go_zlib_inflate", goZlibInflate); err != nil {
 		return err
 	}
+	if err := r.registerFuncLocked("__go_zlib_brotli_compress", goZlibBrotliCompress); err != nil {
+		return err
+	}
+	if err := r.registerFuncLocked("__go_zlib_brotli_decompress", goZlibBrotliDecompress); err != nil {
+		return err
+	}
 	if err := r.registerFuncLocked("__go_os_hostname", goOsHostname); err != nil {
 		return err
 	}
@@ -1830,6 +1836,14 @@ func nodeCompatJSSource() string {
 			inflateSync: function(data) {
 				var hexStr = (data && data._isBuffer) ? data.toString('hex') : String(data);
 				return globalThis.Buffer.from(__go_zlib_inflate(hexStr));
+			},
+			brotliCompressSync: function(data) {
+				var s = typeof data === 'string' ? data : data.toString();
+				return globalThis.Buffer.from(__go_zlib_brotli_compress(s), 'hex');
+			},
+			brotliDecompressSync: function(data) {
+				var hexStr = (data && data._isBuffer) ? data.toString('hex') : String(data);
+				return globalThis.Buffer.from(__go_zlib_brotli_decompress(hexStr));
 			}
 		},
 		'string_decoder': { StringDecoder: function() { this.write = function(b) { return b.toString(); }; this.end = function() { return ''; }; } },

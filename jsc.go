@@ -223,6 +223,8 @@ type Runtime struct {
 	jsonStringifyFn uintptr         // cached JSON.stringify JSObjectRef
 	goFuncs         []GoFunc        // registered Go functions (ID dispatch)
 	dispatcherReady bool            // single dispatcher callback created
+	fsMgr           *fsManager      // async filesystem manager
+	fswatchMgr      *fsWatchManager // fs.watch() manager
 	procMgr         *processManager // async subprocess manager
 	sockMgr         *socketManager  // async socket manager
 	workerMgr       *workerManager  // worker threads manager
@@ -402,6 +404,16 @@ func (r *Runtime) jscLoop(cfg config, initErr chan<- error) {
 		if err := r.installAsyncSpawn(); err != nil {
 			releaseCtx()
 			initErr <- fmt.Errorf("ramune: failed to install async spawn: %w", err)
+			return
+		}
+		if err := r.installAsyncFS(); err != nil {
+			releaseCtx()
+			initErr <- fmt.Errorf("ramune: failed to install async fs: %w", err)
+			return
+		}
+		if err := r.installFSWatch(); err != nil {
+			releaseCtx()
+			initErr <- fmt.Errorf("ramune: failed to install fs.watch: %w", err)
 			return
 		}
 		if err := r.installAsyncNet(); err != nil {
