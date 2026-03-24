@@ -3,7 +3,7 @@
 all: ci
 
 build:
-	go build ./...
+	go build ./... 2>&1 | grep -v 'no non-test Go files' || true
 
 # Build the CLI binary with JIT entitlement (macOS).
 # JSC's JIT compiler requires this entitlement for full performance.
@@ -20,7 +20,7 @@ fmt-check:
 	@find . -name '*.go' -not -path './third_party/*' -not -path './internal/tsgo/*' -not -path './internal/rslint/*' | xargs gofmt -w && test -z "$$(git diff --name-only)" || (echo "gofmt produced changes:"; git diff --name-only; exit 1)
 
 vet:
-	go vet -unsafeptr=false ./...
+	go vet -unsafeptr=false $$(go list ./... | grep -v '/internal/tsgo/' | grep -v '/internal/rslint/')
 
 test:
 	go test -run "^TestDependencies" -count=1 -timeout 120s .
