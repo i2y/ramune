@@ -55,7 +55,7 @@ jobs:
           go test -run "^TestWorker" -count=1 -timeout 60s .
           go test -run "^Test[^DWHP]|^TestPool|^TestPerm|^TestProcess" -count=1 -timeout 120s .
         env:
-          CGO_ENABLED: "1"
+          CGO_ENABLED: "0"
 
       - name: Test (macOS)
         if: runner.os == 'macOS'
