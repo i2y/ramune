@@ -9,15 +9,19 @@
 
 ## CLI Runtime
 
-- [CLI (cmd/ramune)](https://github.com/i2y/ramune/blob/main/cmd/ramune/main.go): `ramune run`, `ramune eval`, `ramune repl`, `ramune test`, `ramune check`, `ramune build`, `ramune compile`, `ramune bench`, `ramune x`, `ramune init/add/remove/install`, `ramune setup-jit`
+- [CLI (cmd/ramune)](https://github.com/i2y/ramune/blob/main/cmd/ramune/main.go): `ramune run`, `ramune eval`, `ramune repl`, `ramune test`, `ramune check`, `ramune fmt`, `ramune lint`, `ramune build`, `ramune compile`, `ramune bench`, `ramune x`, `ramune init/add/remove/install`, `ramune setup-jit`
 - TypeScript/TSX support via esbuild transpilation
 - ESM (import/export) and CommonJS support with esbuild Build API bundling
 - `ramune compile` — compile JS/TS to standalone Go binary via go:embed
 - `ramune run --workers N` — multi-worker HTTP serving with parallel JSC VMs
-- package.json entry point and dependency resolution
+- `ramune run --env-file` — .env file auto-loading (like Bun/Deno)
+- `ramune run <script>` — package.json scripts runner
+- package.json entry point, dependency resolution, and `exports` field support
 - Watch mode (`-w` flag) via fsnotify
-- Test runner with Jest/Bun-compatible API (describe, test, expect)
+- Test runner with Jest/Bun-compatible API (describe, test, expect, jest.fn, jest.spyOn)
 - Type checking via tsgo (`ramune check`, `ramune run --check`)
+- Formatting via tsgo (`ramune fmt`)
+- Linting via rslint (`ramune lint`)
 - Deno-style permissions (`--sandbox`, `--allow-read`, `--allow-write`, `--allow-net`)
 - Rich REPL with history, tab completion, colors (ergochat/readline + charmbracelet/lipgloss)
 
@@ -39,31 +43,43 @@
 - [Event Loop (eventloop.go)](https://github.com/i2y/ramune/blob/main/eventloop.go): Tick(), RunEventLoop(), RunEventLoopFor(), EvalAsync(), Wake() — channel-driven, zero-latency event delivery
 - [Fetch (fetch.go)](https://github.com/i2y/ramune/blob/main/fetch.go): globalThis.fetch backed by Go net/http
 - [Async Spawn (asyncspawn.go)](https://github.com/i2y/ramune/blob/main/asyncspawn.go): child_process.spawn with goroutine-backed I/O, channel-driven event delivery
+- [Async FS (asyncfs.go)](https://github.com/i2y/ramune/blob/main/asyncfs.go): Real async fs.readFile/writeFile/stat/readdir via goroutines
 - [Async Net (asyncnet.go)](https://github.com/i2y/ramune/blob/main/asyncnet.go): TCP/TLS client sockets via goroutines, channel-driven delivery
+- [FS Watch (fswatch.go)](https://github.com/i2y/ramune/blob/main/fswatch.go): fs.watch() via fsnotify, integrated with event loop
 - [Worker Threads (worker.go)](https://github.com/i2y/ramune/blob/main/worker.go): worker_threads with independent JSC contexts
+
+## Web Platform APIs
+
+- [Web Streams (webstreams.go)](https://github.com/i2y/ramune/blob/main/webstreams.go): ReadableStream, WritableStream, TransformStream with pipeTo/pipeThrough/tee/async iterator
+- [Web Crypto (webcrypto.go)](https://github.com/i2y/ramune/blob/main/webcrypto.go): crypto.subtle — digest, sign/verify, encrypt/decrypt, importKey/exportKey, deriveBits/deriveKey, getRandomValues, randomUUID
+- Blob, File, FormData, Headers, Request, Response (with ReadableStream body)
+- performance.now/mark/measure, structuredClone, AbortController, TextEncoder/TextDecoder, URL/URLSearchParams, navigator
 
 ## Ramune APIs & Bun Compatibility
 
-- [Ramune/Bun APIs (buncompat.go)](https://github.com/i2y/ramune/blob/main/buncompat.go): Ramune.serve() (HTTP server, 101K req/s), Ramune.file(), Ramune.write(), Ramune.password, Ramune.sleep(), Request/Response polyfills. Bun.* available as alias. Works with Hono. Async handlers with setTimeout supported.
+- [Ramune/Bun APIs (buncompat.go)](https://github.com/i2y/ramune/blob/main/buncompat.go): Ramune.serve() (HTTP server, 101K req/s), Ramune.file(), Ramune.write(), Ramune.password, Ramune.sleep(), Ramune.plugin() (onLoad filters, virtual modules), Request/Response with ReadableStream body. Bun.* available as alias. Works with Hono.
 - [WebSocket (websocket.go)](https://github.com/i2y/ramune/blob/main/websocket.go): WebSocket server for Ramune.serve()
 - [SQLite (sqlite.go)](https://github.com/i2y/ramune/blob/main/sqlite.go): bun:sqlite — pure Go SQLite via modernc.org/sqlite
 
 ## Node.js Compatibility
 
-- [NodeCompat (nodecompat.go)](https://github.com/i2y/ramune/blob/main/nodecompat.go): fs (85%), path (100%), crypto (80%), child_process (80%), stream (70%), zlib (70%), os (85%), events (85%), http/https (70%), net/tls (60%), Buffer (60%), url (80%), assert (80%), util, readline, dns, worker_threads, TextEncoder/TextDecoder, AbortController
+- [NodeCompat (nodecompat.go)](https://github.com/i2y/ramune/blob/main/nodecompat.go): fs (90%, async + sync + watch), path (100%), crypto (85% + crypto.subtle), child_process (80%), stream (70%), zlib (75%, gzip/deflate/brotli), os (85%), events (85%), http/https (70%), net/tls (60%), Buffer (60%), url (80%), assert (80%), util (80%, types/promisify/format), readline (70%), dns (basic), worker_threads (70%), vm (70%), querystring (80%), timers/promises (70%), perf_hooks, process (85%, signals/exit/env via EventEmitter)
 - [npm Bundling (bundle.go)](https://github.com/i2y/ramune/blob/main/bundle.go): Dependencies() fetches from npm registry and bundles via esbuild (no npm/bun CLI required)
 - [Package Registry (internal/registry/)](https://github.com/i2y/ramune/blob/main/internal/registry/): npm registry client, semver resolution, lockfile (ramune.lock)
-
+- [VM Module (vm.go)](https://github.com/i2y/ramune/blob/main/vm.go): vm.createContext, runInContext, runInNewContext, Script — isolated JSC contexts
 
 ## Benchmarks
 
 | Test | Ramune | Bun | Node.js |
 |------|--------|-----|---------|
-| Hello World | 10.5ms | 6.3ms | 17.4ms |
-| Fibonacci(35) | 42.9ms | 39.3ms | 63.4ms |
-| JSON 10K | 14.2ms | 9.0ms | 22.2ms |
-| HTTP req/s (single) | 101K | 170K | 114K |
-| HTTP req/s (3 workers, fib(35)) | 85 | 32 | 22 |
+| Hello World | 14.2ms | 7.1ms | 18.0ms |
+| Fibonacci(35) | 46.2ms | 40.0ms | 64.7ms |
+| JSON 10K | 17.6ms | 9.7ms | 22.9ms |
+| HTTP req/s (single) | 101K | 156K | 112K |
+
+Multi-runtime pool: 1 worker 44K → 3 workers 68K req/s (JSON handler).
+
+vs Go runtimes: Ramune 31ms vs goja 1,964ms (64x) vs otto 26,203ms (852x) on fib(35).
 
 Run `make bench` to reproduce.
 
