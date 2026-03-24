@@ -1,4 +1,4 @@
-.PHONY: all build build-cli fmt fmt-check vet test ci bench bench-go clean sync-tsgo sync-rslint sync
+.PHONY: all build build-cli build-quickjs fmt fmt-check vet test test-quickjs ci bench bench-go clean sync-tsgo sync-rslint sync
 
 all: ci
 
@@ -12,6 +12,9 @@ VERSION ?= 0.1.0
 build-cli:
 	go build -ldflags "-X main.version=$(VERSION)" -o ramune ./cmd/ramune
 	codesign --force --sign - --entitlements entitlements.plist ramune 2>/dev/null || true
+
+build-quickjs:
+	go build -tags quickjs -ldflags "-X main.version=$(VERSION)" -o ramune-qjs ./cmd/ramune
 
 fmt:
 	find . -name '*.go' -not -path './third_party/*' -not -path './internal/tsgo/*' -not -path './internal/rslint/*' | xargs gofmt -w
@@ -28,6 +31,12 @@ test:
 	go test -run "^TestHTTPCreateServer" -count=1 -timeout 60s .
 	go test -run "^TestWorker" -count=1 -timeout 60s .
 	go test -run "^Test[^DWHP]|^TestPool|^TestPerm|^TestProcess" -count=1 -timeout 120s .
+
+test-quickjs:
+	go test -tags quickjs -run "^TestDependencies" -count=1 -timeout 120s .
+	go test -tags quickjs -run "^TestHTTPCreateServer" -count=1 -timeout 60s .
+	go test -tags quickjs -run "^TestWorker" -count=1 -timeout 60s .
+	go test -tags quickjs -run "^Test[^DWHP]|^TestPool|^TestPerm|^TestProcess" -count=1 -timeout 120s .
 
 test-verbose:
 	go test -v -count=1 -timeout 120s ./...
