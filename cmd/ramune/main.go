@@ -245,6 +245,16 @@ func createRuntimeFromOpts(opts []ramune.Option) (*ramune.Runtime, error) {
 		var absPath = resolved.path;
 		var source = resolved.source;
 
+		// Check Bun.plugin() loaders.
+		if (typeof globalThis.__bunPluginResolve === 'function') {
+			var plugin = globalThis.__bunPluginResolve(absPath);
+			if (plugin && plugin.callback) {
+				var result = plugin.callback({ path: absPath, loader: plugin.loader || 'js' });
+				if (result && result.exports) return result.exports;
+				if (result && result.contents) source = result.contents;
+			}
+		}
+
 		// JSON files
 		if (absPath.endsWith('.json')) return JSON.parse(source);
 
@@ -257,6 +267,7 @@ func createRuntimeFromOpts(opts []ramune.Option) (*ramune.Runtime, error) {
 		return moduleObj.exports;
 	};
 	globalThis.require.resolve = origRequire.resolve;
+	globalThis.require._modules = origRequire._modules;
 })();
 	`)
 

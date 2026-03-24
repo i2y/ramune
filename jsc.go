@@ -225,6 +225,7 @@ type Runtime struct {
 	dispatcherReady bool            // single dispatcher callback created
 	fsMgr           *fsManager      // async filesystem manager
 	fswatchMgr      *fsWatchManager // fs.watch() manager
+	vmMgr           *vmManager      // vm module context manager
 	procMgr         *processManager // async subprocess manager
 	sockMgr         *socketManager  // async socket manager
 	workerMgr       *workerManager  // worker threads manager
@@ -416,6 +417,11 @@ func (r *Runtime) jscLoop(cfg config, initErr chan<- error) {
 			initErr <- fmt.Errorf("ramune: failed to install fs.watch: %w", err)
 			return
 		}
+		if err := r.installVM(); err != nil {
+			releaseCtx()
+			initErr <- fmt.Errorf("ramune: failed to install vm module: %w", err)
+			return
+		}
 		if err := r.installAsyncNet(); err != nil {
 			releaseCtx()
 			initErr <- fmt.Errorf("ramune: failed to install async net: %w", err)
@@ -504,6 +510,9 @@ func (r *Runtime) Close() error {
 		r.closed.Store(true)
 		if r.fswatchMgr != nil {
 			r.fswatchMgr.closeAll()
+		}
+		if r.vmMgr != nil {
+			r.vmMgr.closeAll(r)
 		}
 		if r.sqliteMgr != nil {
 			r.sqliteMgr.closeAll()

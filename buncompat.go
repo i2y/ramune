@@ -771,6 +771,37 @@ func bunCompatJSSource() string {
 		}
 	};
 
+	// --- Bun.plugin() ---
+	var _plugins = [];
+	globalThis.Ramune.plugin = function(pluginDef) {
+		if (typeof pluginDef === 'function') {
+			pluginDef = { setup: pluginDef };
+		}
+		var loaders = [];
+		var build = {
+			onLoad: function(opts, callback) {
+				loaders.push({ filter: opts.filter, namespace: opts.namespace || 'file', loader: opts.loader, callback: callback });
+			},
+			module: function(name, exports) {
+				if (globalThis.require && globalThis.require._modules) {
+					globalThis.require._modules[name] = exports;
+				}
+			}
+		};
+		if (pluginDef.setup) pluginDef.setup(build);
+		_plugins = _plugins.concat(loaders);
+	};
+	// Hook into require to check plugins.
+	globalThis.__bunPluginResolve = function(path) {
+		for (var i = 0; i < _plugins.length; i++) {
+			var p = _plugins[i];
+			if (p.filter && p.filter.test(path)) {
+				return p;
+			}
+		}
+		return null;
+	};
+
 	// Bun compatibility alias — existing Bun.serve() code works as-is.
 	globalThis.Bun = globalThis.Ramune;
 
