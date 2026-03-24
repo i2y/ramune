@@ -69,8 +69,28 @@ func getVersion() string {
 	return "dev"
 }
 
+func printLogo() {
+	cyan := lipgloss.NewStyle().Foreground(lipgloss.Color("14"))
+	blue := lipgloss.NewStyle().Foreground(lipgloss.Color("12"))
+	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("242"))
+
+	logo := cyan.Render("                                   ") + "\n" +
+		cyan.Render("   ╱▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔╲      ") + "\n" +
+		cyan.Render("  │") + blue.Render("  ┏━┓┏━┓┏┳┓╻ ╻┏┓╻┏━╸ ") + cyan.Render("│      ") + "\n" +
+		cyan.Render("  │") + blue.Render("  ┣┳┛┣━┫┃┃┃┃ ┃┃┗┫┣╸  ") + cyan.Render("│      ") + "\n" +
+		cyan.Render("  │") + blue.Render("  ╹┗╸╹ ╹╹ ╹┗━┛╹ ╹┗━╸ ") + cyan.Render("│  ○   ") + "\n" +
+		cyan.Render("   ╲_____________________╱  │   ") + "\n" +
+		cyan.Render("     │                 │    │   ") + "\n" +
+		cyan.Render("     ╰─────────────────╯────╯   ") + "\n"
+
+	fmt.Fprint(os.Stderr, logo)
+	fmt.Fprintf(os.Stderr, "  %s %s\n", blue.Render("v"+getVersion()), dim.Render("· JS/TS runtime for Go"))
+	fmt.Fprintln(os.Stderr)
+}
+
 func main() {
 	if len(os.Args) < 2 {
+		printLogo()
 		printUsage()
 		os.Exit(1)
 	}
@@ -108,8 +128,8 @@ func main() {
 		compileCmd(os.Args[2:])
 	case "bench":
 		benchCmd(os.Args[2:])
-	case "version":
-		fmt.Printf("ramune %s\n", getVersion())
+	case "version", "--version", "-v":
+		printLogo()
 	case "help", "-h", "--help":
 		printUsage()
 	default:
@@ -631,6 +651,8 @@ func replCmd(args []string) {
 		os.Exit(1)
 	}
 	defer rt.Close()
+
+	printLogo()
 
 	// Styles.
 	promptStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("99")).Bold(true)
