@@ -397,22 +397,31 @@ Benchmarks on Apple M4 Max (macOS, JIT enabled):
 
 | Test | Ramune | Bun | Node.js |
 |------|--------|-----|---------|
-| Hello World startup | **10.5ms** | 6.2ms | 17.4ms |
-| Fibonacci(35) | **42.9ms** | 39.4ms | 63.5ms |
-| JSON 10K objects | **14.2ms** | 8.9ms | 22.2ms |
-| Crypto SHA256 x1000 | **16.6ms** | 10.3ms | 19.6ms |
-| File I/O x100 | **17.2ms** | 11.9ms | 23.0ms |
-| HTTP req/s (single) | **101K** | 170K | 114K |
-| HTTP req/s (3 workers) | **87 req/s** | 31 req/s | 22 req/s |
+| Hello World startup | **14.2ms** | 7.1ms | 18.0ms |
+| Fibonacci(35) | **46.2ms** | 40.0ms | 64.7ms |
+| JSON 10K objects | **17.6ms** | 9.7ms | 22.9ms |
+| Crypto SHA256 x1000 | **19.8ms** | 11.0ms | 20.4ms |
+| File I/O x100 | **20.7ms** | 13.3ms | 24.2ms |
+| HTTP req/s (single) | **101K** | 156K | 112K |
 
-The last row shows CPU-heavy handlers (fib(35) per request) — Ramune's multi-runtime pool scales linearly while Bun/Node are single-threaded.
+### Multi-Runtime Pool
+
+Ramune runs multiple JSC VMs in parallel on separate OS threads (Bun/Node are single-threaded):
+
+| Workers | req/s | Scaling |
+|---------|-------|---------|
+| 1 | 44K | 1.0x |
+| 2 | 65K | 1.48x |
+| 3 | 68K | 1.56x |
+
+Measured with a JSON generate/filter/map handler (200 objects per request).
 
 ### vs Go JS Runtimes
 
 | Test | Ramune (JSC+JIT) | goja | otto |
 |------|-----------------|------|------|
-| Fibonacci(35) | **43ms** | 1,945ms (45x slower) | 23,760ms (559x slower) |
-| JSON 10K objects | **1.5ms** | 12ms (8x slower) | 26ms (17x slower) |
+| Fibonacci(35) | **31ms** | 1,964ms (64x slower) | 26,203ms (852x slower) |
+| JSON 10K objects | **0.9ms** | 11ms (13x slower) | 27ms (31x slower) |
 
 Ramune uses Apple's JavaScriptCore with JIT compilation. goja and otto are pure Go interpreters.
 
