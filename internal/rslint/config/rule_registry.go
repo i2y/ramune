@@ -1,0 +1,79 @@
+package config
+
+import (
+	"github.com/i2y/ramune/internal/rslint/linter"
+	"github.com/i2y/ramune/internal/rslint/rule"
+)
+
+// RuleRegistry manages all available rules
+type RuleRegistry struct {
+	rules map[string]rule.Rule
+}
+
+// NewRuleRegistry creates a new rule registry
+func NewRuleRegistry() *RuleRegistry {
+	return &RuleRegistry{
+		rules: make(map[string]rule.Rule),
+	}
+}
+
+// Register adds a rule to the registry
+func (r *RuleRegistry) Register(ruleName string, ruleImpl rule.Rule) {
+	r.rules[ruleName] = ruleImpl
+}
+
+// GetRule returns a rule by name
+func (r *RuleRegistry) GetRule(name string) (rule.Rule, bool) {
+	rule, exists := r.rules[name]
+	return rule, exists
+}
+
+// GetAllRules returns all registered rules
+func (r *RuleRegistry) GetAllRules() map[string]rule.Rule {
+	return r.rules
+}
+
+// GetEnabledRules returns rules that are enabled in the configuration for a given file.
+// Returns nil if no config entry matches the file (file should not be linted).
+// When enforcePlugins is true (JS/TS config), rules with a plugin prefix (e.g. "@typescript-eslint/")
+// are only included if the corresponding plugin is declared in the merged config's Plugins set.
+// Core rules (no "/" prefix) are always included regardless of enforcePlugins.
+// cwd is the config directory used to resolve files/ignores patterns.
+func (r *RuleRegistry) GetEnabledRules(config RslintConfig, filePath string, cwd string, enforcePlugins bool) ([]linter.ConfiguredRule, *MergedConfig) {
+	mergedConfig := config.GetConfigForFile(filePath, cwd)
+	if mergedConfig == nil {
+		return nil, nil // file is globally ignored
+	}
+
+	var enabledRules []linter.ConfiguredRule
+	for ruleName, ruleConfig := range mergedConfig.Rules {
+		if ruleConfig.IsEnabled() {
+			// Plugin gate: when enforcePlugins is true, skip plugin rules
+			// whose plugin is not declared in the merged plugins set.
+			if enforcePlugins {
+				prefix := RulePluginPrefix(ruleName)
+				if prefix != "" {
+					if _, declared := mergedConfig.Plugins[prefix]; !declared {
+						continue
+					}
+				}
+			}
+
+			if ruleImpl, exists := r.rules[ruleName]; exists {
+				ruleConfigCopy := ruleConfig
+				enabledRules = append(enabledRules, linter.ConfiguredRule{
+					Name:     ruleName,
+					Severity: ruleConfig.GetSeverity(),
+					Run: func(ctx rule.RuleContext) rule.RuleListeners {
+						return ruleImpl.Run(ctx, ruleConfigCopy.Options)
+					},
+				})
+			}
+		}
+	}
+
+	return enabledRules, mergedConfig
+}
+
+// Global rule registry instance
+var GlobalRuleRegistry = NewRuleRegistry()

@@ -4,12 +4,16 @@
 
 # Ramune
 
-A JavaScript/TypeScript runtime for Go — powered by JavaScriptCore, no Cgo required. Named after [Ramune](https://en.wikipedia.org/wiki/Ramune), a Japanese carbonated soft drink served in a Codd-neck bottle.
+A JavaScript/TypeScript runtime for Go — powered by JavaScriptCore, no Cgo required. Pure Go except for JSC: type checker, formatter, linter, bundler, and all Node.js polyfills are implemented in Go with zero external tool dependencies.
+
+Named after [Ramune](https://en.wikipedia.org/wiki/Ramune), a Japanese carbonated soft drink served in a Codd-neck bottle.
 
 ```bash
 ramune run server.ts          # Run TypeScript
 ramune test                   # Run tests
-ramune repl                   # Interactive REPL
+ramune check app.ts           # Type-check
+ramune fmt .                  # Format
+ramune lint .                 # Lint
 ramune compile app.ts -o app  # Compile to standalone binary
 ```
 
@@ -124,16 +128,26 @@ Options: `--http` (Ramune.serve event loop), `--minify` (esbuild minification).
 
 ```bash
 ramune check app.ts              # check files
+ramune check src/                # check directory
 ramune run --check app.ts        # check then run
 ```
 
-Uses [tsgo](https://github.com/microsoft/typescript-go) (TypeScript 7, 10x faster than tsc). Optional — only needed for `check` and `--check`:
+Uses [typescript-go](https://github.com/microsoft/typescript-go) (TypeScript 7.0-dev, backward-compatible with TS 5.x) built into Ramune — no external tools required.
+
+### Format & Lint
 
 ```bash
-go install github.com/microsoft/typescript-go/cmd/tsgo@latest
+ramune fmt .                     # format all JS/TS files
+ramune fmt --check .             # check formatting (CI)
+ramune lint .                    # lint all JS/TS files
+ramune lint --fix .              # lint with auto-fix
 ```
 
-> **Note:** TypeScript transpilation (`ramune run app.ts`) uses [esbuild](https://esbuild.github.io/) which is built into Ramune — no separate install needed. `tsgo` is only required for type checking.
+The formatter uses typescript-go's built-in formatter. The linter uses [rslint](https://github.com/web-infra-dev/rslint) (Go-based, 20-40x faster than ESLint). Both are built into Ramune — no external tools required.
+
+If `rslint.json` or `rslint.jsonc` exists, `ramune lint` uses that configuration. Otherwise, all recommended rules are enabled by default.
+
+> **Note:** TypeScript transpilation (`ramune run app.ts`) uses [esbuild](https://esbuild.github.io/) which is also built into Ramune.
 
 ### Package Manager
 
@@ -408,6 +422,7 @@ Linux does not need JIT setup.
 
 ## Known Limitations
 
+- **N-API / Native addons**: Not supported. Packages that require `.node` native binaries (e.g., `bcrypt`, `sharp`, `better-sqlite3`) will not work. Use pure JS alternatives instead.
 - **HTTP self-fetch**: Ramune.serve() handlers cannot fetch their own server (same JSC context deadlock).
 - **Windows**: No JavaScriptCore available.
 - **Linux multi-runtime**: Requires `CGO_ENABLED=1` and a C compiler. Cgo's signal forwarding is needed for JSC's GC to coexist with Go's runtime. Without cgo, only single-runtime works on Linux.
@@ -419,9 +434,8 @@ Linux does not need JIT setup.
 |---|---|---|
 | **Go 1.26+** | Yes | Build and install |
 | **macOS** or **Linux** | Yes | macOS: JSC built-in. Linux: `apt install libjavascriptcoregtk-4.1-dev` |
-| **tsgo** | For `ramune check` only | Type checking (`go install github.com/microsoft/typescript-go/cmd/tsgo@latest`) |
 
-npm packages are fetched directly from the npm registry — no npm or bun CLI required. esbuild (TypeScript transpilation) and all other dependencies are built into the binary.
+All tools are built in — no external dependencies needed for `check`, `fmt`, `lint`, or TypeScript transpilation. npm packages are fetched directly from the npm registry — no npm or bun CLI required.
 
 ## Development
 
@@ -429,10 +443,23 @@ npm packages are fetched directly from the npm registry — no npm or bun CLI re
 make ci          # fmt + build + vet + test
 make build-cli   # build with JIT entitlement (macOS)
 make bench       # benchmark vs Bun/Node
+make sync        # sync typescript-go & rslint from submodules
 ```
 
 ## License
 
 MIT
+
+### Third-Party Licenses
+
+Ramune embeds code from the following projects:
+
+| Project | License | Usage |
+|---------|---------|-------|
+| [microsoft/typescript-go](https://github.com/microsoft/typescript-go) | Apache-2.0 | Type checker, formatter (TS 7.0-dev) |
+| [web-infra-dev/rslint](https://github.com/web-infra-dev/rslint) | MIT | Linter |
+| [evanw/esbuild](https://github.com/evanw/esbuild) | MIT | TypeScript transpilation, bundling |
+
+Full license texts are included in `internal/tsgo/LICENSE` and `internal/rslint/LICENSE`.
 
 The Ramune logo includes the Go Gopher, originally designed by [Renée French](https://reneefrench.blogspot.com/), licensed under [Creative Commons Attribution 4.0](https://creativecommons.org/licenses/by/4.0/).

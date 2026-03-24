@@ -29,12 +29,28 @@ import (
 	"strings"
 	"time"
 
+	"context"
+
 	"github.com/charmbracelet/lipgloss"
 	"github.com/ergochat/readline"
 	"github.com/evanw/esbuild/pkg/api"
 	"github.com/fsnotify/fsnotify"
 	"github.com/i2y/ramune"
 	"github.com/i2y/ramune/internal/registry"
+	"github.com/i2y/ramune/internal/rslint/config"
+	"github.com/i2y/ramune/internal/rslint/linter"
+	"github.com/i2y/ramune/internal/rslint/rule"
+	rslintutils "github.com/i2y/ramune/internal/rslint/utils"
+	"github.com/i2y/ramune/internal/tsgo/ast"
+	"github.com/i2y/ramune/internal/tsgo/compiler"
+	"github.com/i2y/ramune/internal/tsgo/core"
+	"github.com/i2y/ramune/internal/tsgo/format"
+	"github.com/i2y/ramune/internal/tsgo/ls/lsutil"
+	"github.com/i2y/ramune/internal/tsgo/parser"
+	"github.com/i2y/ramune/internal/tsgo/scanner"
+	"github.com/i2y/ramune/internal/tsgo/tsoptions"
+	"github.com/i2y/ramune/internal/tsgo/tspath"
+	"github.com/i2y/ramune/internal/tsgo/vfs/osvfs"
 )
 
 // Set at build time via -ldflags "-X main.version=..."
@@ -68,6 +84,10 @@ func main() {
 		testCmd(os.Args[2:])
 	case "check":
 		checkCmd(os.Args[2:])
+	case "fmt":
+		fmtCmd(os.Args[2:])
+	case "lint":
+		lintCmd(os.Args[2:])
 	case "init":
 		initCmd()
 	case "add":
@@ -111,6 +131,8 @@ Commands:
   eval "<expr>"     Evaluate an expression (JS/TS)
   test [pattern]    Run test files (*.test.ts, *.spec.js, etc.)
   check [file|dir]  Type-check TypeScript files with tsgo
+  fmt [file|dir]    Format JS/TS files
+  lint [file|dir]   Lint JS/TS files
   repl              Interactive REPL (JS/TS)
   setup-jit         Enable JSC JIT compiler (macOS only)
   compile [file]    Compile JS/TS to standalone binary
@@ -120,7 +142,7 @@ Commands:
 Run options:
   -p <package>      Add npm package (repeatable)
   -w, --watch       Watch for file changes and restart
-  --check           Type-check before running (requires tsgo)
+  --check           Type-check before running
   --workers N       Run N parallel workers for Ramune.serve()
 
 Supported file types: .js, .mjs, .ts, .tsx
@@ -380,9 +402,9 @@ func runCmd(args []string) {
 			filename, filename[:strings.LastIndex(filename, "/")]))
 	}
 
-	// Type-check with tsgo if requested.
+	// Type-check if requested.
 	if typeCheck && isTypeScript(filename) {
-		if err := runTsgoCheck(filename); err != nil {
+		if err := runTypeCheck(filename); err != nil {
 			fmt.Fprintf(os.Stderr, "%v\n", err)
 			os.Exit(1)
 		}
@@ -1312,7 +1334,6 @@ globalThis.expect = function(actual) {
 
 func checkCmd(args []string) {
 	if len(args) < 1 {
-		// Check all .ts files in current directory.
 		args = []string{"."}
 	}
 
@@ -1343,29 +1364,350 @@ func checkCmd(args []string) {
 		os.Exit(1)
 	}
 
+	// Resolve absolute paths
+	absFiles := make([]string, len(files))
+	for i, f := range files {
+		abs, _ := filepath.Abs(f)
+		absFiles[i] = tspath.NormalizePath(abs)
+	}
+
+	cwd, _ := os.Getwd()
+	fs := osvfs.FS()
+	host := compiler.NewCachedFSCompilerHost(cwd, fs, "", nil, nil)
+
+	compilerOpts := &core.CompilerOptions{
+		NoEmit: core.TSTrue,
+		Strict: core.TSTrue,
+	}
+
+	config := tsoptions.NewParsedCommandLine(compilerOpts, absFiles, tspath.ComparePathsOptions{
+		UseCaseSensitiveFileNames: fs.UseCaseSensitiveFileNames(),
+		CurrentDirectory:          cwd,
+	})
+
+	program := compiler.NewProgram(compiler.ProgramOptions{
+		Config:         config,
+		Host:           host,
+		SingleThreaded: core.TSTrue,
+	})
+
+	ctx := context.Background()
 	hasErrors := false
-	for _, f := range files {
-		if err := runTsgoCheck(f); err != nil {
+
+	for _, sourceFile := range program.SourceFiles() {
+		// Skip declaration files and non-target files
+		if sourceFile.IsDeclarationFile {
+			continue
+		}
+
+		diags := program.GetSemanticDiagnostics(ctx, sourceFile)
+		diags = append(diags, program.GetSyntacticDiagnostics(ctx, sourceFile)...)
+		for _, d := range diags {
 			hasErrors = true
+			if d.File() != nil {
+				line, col := scanner.GetECMALineAndUTF16CharacterOfPosition(d.File(), d.Pos())
+				fmt.Fprintf(os.Stderr, "%s(%d,%d): error TS%d: %s\n",
+					d.File().FileName(), line+1, col+1, d.Code(), d.String())
+			} else {
+				fmt.Fprintf(os.Stderr, "error TS%d: %s\n", d.Code(), d.String())
+			}
 		}
 	}
+
 	if hasErrors {
 		os.Exit(1)
 	}
 	fmt.Fprintf(os.Stderr, "✓ %d file(s) checked, no errors\n", len(files))
 }
 
-// runTsgoCheck runs tsgo --noEmit on a file for type checking.
-func runTsgoCheck(filename string) error {
-	tsgoPath, err := exec.LookPath("tsgo")
-	if err != nil {
-		return fmt.Errorf("tsgo not found. Install with: go install github.com/microsoft/typescript-go/cmd/tsgo@latest")
+func lintCmd(args []string) {
+	fset := flag.NewFlagSet("lint", flag.ExitOnError)
+	fix := fset.Bool("fix", false, "automatically fix lint issues")
+	fset.Parse(args)
+
+	targets := fset.Args()
+	if len(targets) == 0 {
+		targets = []string{"."}
 	}
 
-	cmd := exec.Command(tsgoPath, "--noEmit", filename)
-	cmd.Stdout = os.Stderr
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	var files []string
+	for _, arg := range targets {
+		info, err := os.Stat(arg)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		if info.IsDir() {
+			filepath.Walk(arg, func(path string, fi os.FileInfo, err error) error {
+				if fi != nil && fi.IsDir() && fi.Name() == "node_modules" {
+					return filepath.SkipDir
+				}
+				if isJSOrTS(path) {
+					abs, _ := filepath.Abs(path)
+					files = append(files, tspath.NormalizePath(abs))
+				}
+				return nil
+			})
+		} else {
+			abs, _ := filepath.Abs(arg)
+			files = append(files, tspath.NormalizePath(abs))
+		}
+	}
+
+	if len(files) == 0 {
+		fmt.Fprintln(os.Stderr, "No JS/TS files found")
+		os.Exit(1)
+	}
+
+	cwd, _ := os.Getwd()
+	fs := osvfs.FS()
+	host := rslintutils.CreateCompilerHost(cwd, fs)
+
+	compilerOpts := &core.CompilerOptions{
+		NoEmit:       core.TSTrue,
+		AllowJs:      core.TSTrue,
+		CheckJs:      core.TSFalse,
+		Strict:       core.TSTrue,
+		SkipLibCheck: core.TSTrue,
+	}
+
+	program, err := rslintutils.CreateProgramFromOptions(true, compilerOpts, files, host)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+
+	config.RegisterAllRules()
+
+	// Try loading rslint.json/rslint.jsonc, fall back to all registered rules
+	loader := config.NewConfigLoader(fs, cwd)
+	rslintConfig, _, _, configErr := loader.LoadConfiguration("")
+	useAllRules := configErr != nil
+	hasErrors := false
+
+	fileCount, _ := linter.RunLinter(
+		[]*compiler.Program{program},
+		true,
+		files,
+		nil,
+		func(sourceFile *ast.SourceFile) []linter.ConfiguredRule {
+			if useAllRules {
+				// No config file: enable all registered rules with warning severity
+				var rules []linter.ConfiguredRule
+				for name, r := range config.GlobalRuleRegistry.GetAllRules() {
+					ruleCopy := r
+					rules = append(rules, linter.ConfiguredRule{
+						Name:     name,
+						Severity: rule.SeverityWarning,
+						Run: func(ctx rule.RuleContext) rule.RuleListeners {
+							return ruleCopy.Run(ctx, nil)
+						},
+					})
+				}
+				return rules
+			}
+			rules, _ := config.GlobalRuleRegistry.GetEnabledRules(rslintConfig, sourceFile.FileName(), cwd, false)
+			return rules
+		},
+		func(d rule.RuleDiagnostic) {
+			hasErrors = true
+			severity := "warning"
+			if d.Severity == rule.SeverityError {
+				severity = "error"
+			}
+			if d.SourceFile != nil {
+				line, col := scanner.GetECMALineAndUTF16CharacterOfPosition(d.SourceFile, d.Range.Pos())
+				fmt.Fprintf(os.Stderr, "%s(%d,%d): %s [%s] %s\n",
+					d.SourceFile.FileName(), line+1, col+1, d.Message.Description, d.RuleName, severity)
+			} else {
+				fmt.Fprintf(os.Stderr, "%s [%s] %s\n", d.Message.Description, d.RuleName, severity)
+			}
+
+			if *fix && d.SourceFile != nil {
+				fixes := d.Fixes()
+				if len(fixes) > 0 {
+					source := d.SourceFile.Text()
+					changes := make([]core.TextChange, len(fixes))
+					for i, f := range fixes {
+						changes[i] = core.TextChange{TextRange: f.Range, NewText: f.Text}
+					}
+					result := core.ApplyBulkEdits(source, changes)
+					os.WriteFile(d.SourceFile.FileName(), []byte(result), 0644)
+				}
+			}
+		},
+	)
+
+	_ = fileCount
+
+	if hasErrors {
+		os.Exit(1)
+	}
+	fmt.Fprintf(os.Stderr, "✓ %d file(s) linted, no issues\n", len(files))
+}
+
+// runTypeCheck performs in-process type checking on a single file.
+func runTypeCheck(filename string) error {
+	absPath, _ := filepath.Abs(filename)
+	normalized := tspath.NormalizePath(absPath)
+
+	cwd, _ := os.Getwd()
+	fs := osvfs.FS()
+	host := compiler.NewCachedFSCompilerHost(cwd, fs, "", nil, nil)
+
+	compilerOpts := &core.CompilerOptions{
+		NoEmit: core.TSTrue,
+		Strict: core.TSTrue,
+	}
+
+	config := tsoptions.NewParsedCommandLine(compilerOpts, []string{normalized}, tspath.ComparePathsOptions{
+		UseCaseSensitiveFileNames: fs.UseCaseSensitiveFileNames(),
+		CurrentDirectory:          cwd,
+	})
+
+	program := compiler.NewProgram(compiler.ProgramOptions{
+		Config:         config,
+		Host:           host,
+		SingleThreaded: core.TSTrue,
+	})
+
+	ctx := context.Background()
+	var errs []string
+
+	for _, sourceFile := range program.SourceFiles() {
+		if sourceFile.IsDeclarationFile {
+			continue
+		}
+		diags := program.GetSemanticDiagnostics(ctx, sourceFile)
+		diags = append(diags, program.GetSyntacticDiagnostics(ctx, sourceFile)...)
+		for _, d := range diags {
+			if d.File() != nil {
+				line, col := scanner.GetECMALineAndUTF16CharacterOfPosition(d.File(), d.Pos())
+				errs = append(errs, fmt.Sprintf("%s(%d,%d): error TS%d: %s",
+					d.File().FileName(), line+1, col+1, d.Code(), d.String()))
+			} else {
+				errs = append(errs, fmt.Sprintf("error TS%d: %s", d.Code(), d.String()))
+			}
+		}
+	}
+
+	if len(errs) > 0 {
+		return fmt.Errorf("%s", strings.Join(errs, "\n"))
+	}
+	return nil
+}
+
+func isJSOrTS(filename string) bool {
+	ext := filepath.Ext(filename)
+	switch ext {
+	case ".js", ".jsx", ".ts", ".tsx", ".mjs", ".mts", ".cjs", ".cts":
+		return true
+	}
+	return false
+}
+
+func scriptKindForFile(filename string) core.ScriptKind {
+	kind := core.GetScriptKindFromFileName(filename)
+	if kind == core.ScriptKindUnknown {
+		return core.ScriptKindJS
+	}
+	return kind
+}
+
+func fmtCmd(args []string) {
+	fset := flag.NewFlagSet("fmt", flag.ExitOnError)
+	checkOnly := fset.Bool("check", false, "check formatting without writing changes")
+	fset.Parse(args)
+
+	targets := fset.Args()
+	if len(targets) == 0 {
+		targets = []string{"."}
+	}
+
+	var files []string
+	for _, arg := range targets {
+		info, err := os.Stat(arg)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		if info.IsDir() {
+			filepath.Walk(arg, func(path string, fi os.FileInfo, err error) error {
+				if fi != nil && fi.IsDir() && fi.Name() == "node_modules" {
+					return filepath.SkipDir
+				}
+				if isJSOrTS(path) {
+					files = append(files, path)
+				}
+				return nil
+			})
+		} else {
+			files = append(files, arg)
+		}
+	}
+
+	if len(files) == 0 {
+		fmt.Fprintln(os.Stderr, "No JS/TS files found")
+		os.Exit(1)
+	}
+
+	opts := lsutil.GetDefaultFormatCodeSettings()
+	ctx := format.WithFormatCodeSettings(context.Background(), opts, "\n")
+
+	hasErrors := false
+	formatted := 0
+	for _, f := range files {
+		source, err := os.ReadFile(f)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error reading %s: %v\n", f, err)
+			hasErrors = true
+			continue
+		}
+
+		absPath, _ := filepath.Abs(f)
+		normalizedPath := tspath.NormalizePath(absPath)
+		sourceText := string(source)
+		sourceFile := parser.ParseSourceFile(
+			ast.SourceFileParseOptions{
+				FileName: normalizedPath,
+				Path:     tspath.Path(normalizedPath),
+			},
+			sourceText,
+			scriptKindForFile(f),
+		)
+
+		changes := format.FormatDocument(ctx, sourceFile)
+		if len(changes) == 0 {
+			continue
+		}
+
+		if *checkOnly {
+			fmt.Fprintf(os.Stderr, "%s\n", f)
+			hasErrors = true
+			continue
+		}
+
+		result := core.ApplyBulkEdits(sourceText, changes)
+		if err := os.WriteFile(f, []byte(result), 0644); err != nil {
+			fmt.Fprintf(os.Stderr, "error writing %s: %v\n", f, err)
+			hasErrors = true
+			continue
+		}
+		formatted++
+	}
+
+	if *checkOnly {
+		if hasErrors {
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stderr, "✓ %d file(s) already formatted\n", len(files))
+	} else if !hasErrors {
+		fmt.Fprintf(os.Stderr, "✓ %d file(s) formatted\n", formatted)
+	}
+
+	if hasErrors && !*checkOnly {
+		os.Exit(1)
+	}
 }
 
 func setupJITCmd() {

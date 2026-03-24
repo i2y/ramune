@@ -1,0 +1,6 @@
+[submodule "third_party/typescript-go"]
+	path = third_party/typescript-go
+	url = https://github.com/microsoft/typescript-go.git
+[submodule "third_party/rslint"]
+	path = third_party/rslint
+	url = https://github.com/web-infra-dev/rslint.git

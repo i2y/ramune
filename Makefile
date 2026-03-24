@@ -1,4 +1,4 @@
-.PHONY: all build build-cli fmt fmt-check vet test ci bench bench-go clean
+.PHONY: all build build-cli fmt fmt-check vet test ci bench bench-go clean sync-tsgo sync-rslint sync
 
 all: ci
 
@@ -14,10 +14,10 @@ build-cli:
 	codesign --force --sign - --entitlements entitlements.plist ramune 2>/dev/null || true
 
 fmt:
-	gofmt -w .
+	find . -name '*.go' -not -path './third_party/*' -not -path './internal/tsgo/*' -not -path './internal/rslint/*' | xargs gofmt -w
 
 fmt-check:
-	@gofmt -w . && test -z "$$(git diff --name-only)" || (echo "gofmt produced changes:"; git diff --name-only; exit 1)
+	@find . -name '*.go' -not -path './third_party/*' -not -path './internal/tsgo/*' -not -path './internal/rslint/*' | xargs gofmt -w && test -z "$$(git diff --name-only)" || (echo "gofmt produced changes:"; git diff --name-only; exit 1)
 
 vet:
 	go vet -unsafeptr=false ./...
@@ -42,6 +42,17 @@ bench-go:
 	go test -c -o /tmp/ramune_bench_test ./bench/
 	codesign --force --sign - --entitlements entitlements.plist /tmp/ramune_bench_test 2>/dev/null || true
 	/tmp/ramune_bench_test -test.bench=Benchmark -test.benchtime=3s -test.timeout=300s -test.v
+
+sync-tsgo:
+	git submodule update --init --depth 1 third_party/typescript-go
+	./scripts/sync-tsgo.sh
+
+sync-rslint:
+	git submodule update --init --depth 1 third_party/rslint
+	./scripts/sync-rslint.sh
+
+sync: sync-tsgo sync-rslint
+	go mod tidy
 
 clean:
 	go clean -cache -testcache
