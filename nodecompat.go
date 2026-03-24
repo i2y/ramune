@@ -2,6 +2,7 @@ package ramune
 
 import (
 	"fmt"
+	"os"
 	"strings"
 )
 
@@ -245,6 +246,18 @@ func (r *Runtime) installNodeCompat() error {
 		return err
 	}
 	if err := r.registerFuncLocked("__go_zlib_brotli_decompress", goZlibBrotliDecompress); err != nil {
+		return err
+	}
+	if err := r.registerFuncLocked("__go_process_exit", func(args []any) (any, error) {
+		code := 0
+		if len(args) > 0 {
+			if c, ok := args[0].(float64); ok {
+				code = int(c)
+			}
+		}
+		os.Exit(code)
+		return nil, nil
+	}); err != nil {
 		return err
 	}
 	if err := r.registerFuncLocked("__go_os_hostname", goOsHostname); err != nil {
@@ -677,7 +690,11 @@ func nodeCompatJSSource() string {
 	p.version = 'v20.0.0';
 	p.versions = { node: '20.0.0' };
 	p.argv = [];
-	p.exit = function() {};
+	p.exit = function(code) {
+		p._exitCode = code || 0;
+		p.emit('exit', p._exitCode);
+		if (typeof __go_process_exit === 'function') __go_process_exit(p._exitCode);
+	};
 	p.stdout = { write: function(s) { /* discard */ } };
 	p.stderr = { write: function(s) { /* discard */ } };
 	p.nextTick = function(fn) { queueMicrotask(fn); };
@@ -687,7 +704,46 @@ func nodeCompatJSSource() string {
 		return raw;
 	};
 	p.memoryUsage = function() { return { rss: 0, heapTotal: 0, heapUsed: 0, external: 0, arrayBuffers: 0 }; };
-	p.on = function() { return p; };
+	p._events = {};
+	p._exitCode = 0;
+	p.on = function(event, fn) {
+		if (!p._events[event]) p._events[event] = [];
+		p._events[event].push(fn);
+		return p;
+	};
+	p.off = function(event, fn) {
+		if (p._events[event]) p._events[event] = p._events[event].filter(function(f) { return f !== fn; });
+		return p;
+	};
+	p.once = function(event, fn) {
+		function wrapper() { p.off(event, wrapper); fn.apply(null, arguments); }
+		return p.on(event, wrapper);
+	};
+	p.emit = function(event) {
+		var args = Array.prototype.slice.call(arguments, 1);
+		var handlers = p._events[event];
+		if (handlers) for (var i = 0; i < handlers.length; i++) handlers[i].apply(null, args);
+		return !!(handlers && handlers.length);
+	};
+	p.removeAllListeners = function(event) {
+		if (event) delete p._events[event]; else p._events = {};
+		return p;
+	};
+	Object.defineProperty(p, 'exitCode', {
+		get: function() { return p._exitCode; },
+		set: function(v) { p._exitCode = v; }
+	});
+
+	// --- navigator ---
+	if (typeof globalThis.navigator === 'undefined') {
+		globalThis.navigator = {
+			userAgent: 'Ramune/' + (globalThis.Ramune && globalThis.Ramune.version || '0.1.0'),
+			platform: p.platform || 'unknown',
+			hardwareConcurrency: typeof __go_os_cpus === 'function' ? (function() { try { return JSON.parse(__go_os_cpus()).length; } catch(e) { return 1; } })() : 1,
+			language: 'en',
+			languages: ['en']
+		};
+	}
 
 	// --- events ---
 	function EventEmitter() {
@@ -1069,10 +1125,26 @@ func nodeCompatJSSource() string {
 			isRegExp: function(v) { return v instanceof RegExp; },
 			isPromise: function(v) { return v && typeof v.then === 'function'; },
 			isArrayBuffer: function(v) { return v instanceof ArrayBuffer; },
+			isSharedArrayBuffer: function(v) { return typeof SharedArrayBuffer !== 'undefined' && v instanceof SharedArrayBuffer; },
 			isUint8Array: function(v) { return v instanceof Uint8Array; },
+			isTypedArray: function(v) { return ArrayBuffer.isView(v) && !(v instanceof DataView); },
+			isDataView: function(v) { return v instanceof DataView; },
 			isMap: function(v) { return v instanceof Map; },
-			isSet: function(v) { return v instanceof Set; }
-		}
+			isSet: function(v) { return v instanceof Set; },
+			isWeakMap: function(v) { return v instanceof WeakMap; },
+			isWeakSet: function(v) { return v instanceof WeakSet; },
+			isProxy: function() { return false; },
+			isExternal: function() { return false; },
+			isNativeError: function(v) { return v instanceof Error; },
+			isNumberObject: function(v) { return v instanceof Number; },
+			isStringObject: function(v) { return v instanceof String; },
+			isBooleanObject: function(v) { return v instanceof Boolean; },
+			isSymbolObject: function(v) { return typeof v === 'object' && v !== null && v.constructor === Symbol; },
+			isGeneratorFunction: function(v) { return typeof v === 'function' && v.constructor && v.constructor.name === 'GeneratorFunction'; },
+			isAsyncFunction: function(v) { return typeof v === 'function' && v.constructor && v.constructor.name === 'AsyncFunction'; }
+		},
+		TextDecoder: typeof TextDecoder !== 'undefined' ? TextDecoder : function() {},
+		TextEncoder: typeof TextEncoder !== 'undefined' ? TextEncoder : function() {}
 	};
 
 	// --- Buffer ---
@@ -1196,7 +1268,7 @@ func nodeCompatJSSource() string {
 		};
 	}
 
-	// --- console ---
+	// --- console extensions ---
 	if (typeof globalThis.console === 'undefined') {
 		globalThis.console = {
 			log: function() {},
@@ -1205,6 +1277,65 @@ func nodeCompatJSSource() string {
 			info: function() {},
 			debug: function() {}
 		};
+	}
+	var _consoleTimers = {};
+	if (!globalThis.console.time) {
+		globalThis.console.time = function(label) { _consoleTimers[label || 'default'] = Date.now(); };
+	}
+	if (!globalThis.console.timeEnd) {
+		globalThis.console.timeEnd = function(label) {
+			label = label || 'default';
+			var start = _consoleTimers[label];
+			if (start !== undefined) { console.log(label + ': ' + (Date.now() - start) + 'ms'); delete _consoleTimers[label]; }
+		};
+	}
+	if (!globalThis.console.timeLog) {
+		globalThis.console.timeLog = function(label) {
+			label = label || 'default';
+			var start = _consoleTimers[label];
+			if (start !== undefined) console.log(label + ': ' + (Date.now() - start) + 'ms');
+		};
+	}
+	if (!globalThis.console.trace) {
+		globalThis.console.trace = function() {
+			var args = Array.prototype.slice.call(arguments);
+			console.log.apply(console, ['Trace:'].concat(args));
+			try { throw new Error(); } catch(e) { if (e.stack) console.log(e.stack.split('\n').slice(2).join('\n')); }
+		};
+	}
+	if (!globalThis.console.table) {
+		globalThis.console.table = function(data) {
+			if (Array.isArray(data)) {
+				if (data.length === 0) { console.log('[]'); return; }
+				if (typeof data[0] === 'object' && data[0] !== null) {
+					var keys = Object.keys(data[0]);
+					var header = '(index) | ' + keys.join(' | ');
+					console.log(header);
+					console.log(header.replace(/[^|]/g, '-'));
+					for (var i = 0; i < data.length; i++) {
+						var row = i + '       | ' + keys.map(function(k) { return String(data[i][k]); }).join(' | ');
+						console.log(row);
+					}
+				} else {
+					for (var i = 0; i < data.length; i++) console.log(i + ': ' + String(data[i]));
+				}
+			} else if (typeof data === 'object' && data !== null) {
+				var keys = Object.keys(data);
+				for (var i = 0; i < keys.length; i++) console.log(keys[i] + ': ' + String(data[keys[i]]));
+			} else {
+				console.log(data);
+			}
+		};
+	}
+	if (!globalThis.console.assert) {
+		globalThis.console.assert = function(cond) {
+			if (!cond) { var args = Array.prototype.slice.call(arguments, 1); console.error.apply(console, ['Assertion failed:'].concat(args.length ? args : ['console.assert'])); }
+		};
+	}
+	if (!globalThis.console.count) {
+		var _consoleCounts = {};
+		globalThis.console.count = function(label) { label = label || 'default'; _consoleCounts[label] = (_consoleCounts[label] || 0) + 1; console.log(label + ': ' + _consoleCounts[label]); };
+		globalThis.console.countReset = function(label) { delete _consoleCounts[label || 'default']; };
 	}
 
 	// --- setTimeout/setInterval ---
@@ -1958,6 +2089,19 @@ func nodeCompatJSSource() string {
 		})()
 	};
 	_modules['https'] = _modules['http']; // https uses same Go net/http (handles TLS)
+	_modules['timers'] = {
+		setTimeout: globalThis.setTimeout,
+		clearTimeout: globalThis.clearTimeout,
+		setInterval: globalThis.setInterval,
+		clearInterval: globalThis.clearInterval,
+		setImmediate: globalThis.setImmediate
+	};
+	_modules['timers/promises'] = {
+		setTimeout: function(ms, value) { return new Promise(function(resolve) { globalThis.setTimeout(function() { resolve(value); }, ms); }); },
+		setInterval: function() { throw new Error('timers/promises.setInterval is not supported'); },
+		setImmediate: function(value) { return new Promise(function(resolve) { globalThis.setImmediate(function() { resolve(value); }); }); }
+	};
+	_modules['perf_hooks'] = { performance: globalThis.performance };
 
 	// require
 	globalThis.require = function(mod) {

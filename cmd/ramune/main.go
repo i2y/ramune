@@ -22,11 +22,13 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	goruntime "runtime"
 	"runtime/debug"
 	"strings"
+	"syscall"
 	"time"
 
 	"context"
@@ -230,6 +232,7 @@ func createRuntimeFromOpts(opts []ramune.Option) (*ramune.Runtime, error) {
 	rt.Exec(`
 (function() {
 	var origRequire = globalThis.require;
+	var _cache = {};
 	globalThis.require = function(mod) {
 		// Try built-in modules first
 		var builtin = origRequire(mod);
@@ -243,6 +246,10 @@ func createRuntimeFromOpts(opts []ramune.Option) (*ramune.Runtime, error) {
 
 		var resolved = JSON.parse(resolvedJSON);
 		var absPath = resolved.path;
+
+		// Return cached module if available.
+		if (_cache[absPath]) return _cache[absPath].exports;
+
 		var source = resolved.source;
 
 		// Check Bun.plugin() loaders.
@@ -250,16 +257,21 @@ func createRuntimeFromOpts(opts []ramune.Option) (*ramune.Runtime, error) {
 			var plugin = globalThis.__bunPluginResolve(absPath);
 			if (plugin && plugin.callback) {
 				var result = plugin.callback({ path: absPath, loader: plugin.loader || 'js' });
-				if (result && result.exports) return result.exports;
+				if (result && result.exports) { _cache[absPath] = { exports: result.exports }; return result.exports; }
 				if (result && result.contents) source = result.contents;
 			}
 		}
 
 		// JSON files
-		if (absPath.endsWith('.json')) return JSON.parse(source);
+		if (absPath.endsWith('.json')) {
+			var jsonResult = JSON.parse(source);
+			_cache[absPath] = { exports: jsonResult };
+			return jsonResult;
+		}
 
 		// JS files - wrap in module scope
 		var moduleObj = { exports: {} };
+		_cache[absPath] = moduleObj;
 		var fn = new Function('exports', 'require', 'module', '__filename', '__dirname',
 			source + '\n//# sourceURL=' + absPath);
 		var dir = absPath.substring(0, absPath.lastIndexOf('/'));
@@ -268,6 +280,7 @@ func createRuntimeFromOpts(opts []ramune.Option) (*ramune.Runtime, error) {
 	};
 	globalThis.require.resolve = origRequire.resolve;
 	globalThis.require._modules = origRequire._modules;
+	globalThis.require.cache = _cache;
 })();
 	`)
 
@@ -384,6 +397,19 @@ func runCmd(args []string) {
 		os.Exit(1)
 	}
 	defer rt.Close()
+
+	// Forward OS signals to process.emit().
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		for sig := range sigCh {
+			name := "SIGINT"
+			if sig == syscall.SIGTERM {
+				name = "SIGTERM"
+			}
+			rt.Exec(fmt.Sprintf(`if (typeof process !== 'undefined' && process.emit) { if (!process.emit('%s')) process.exit(1); }`, name))
+		}
+	}()
 
 	// Set __filename and __dirname.
 	if filename != "-" {
@@ -1456,8 +1482,72 @@ globalThis.expect = function(actual) {
 			toBeNull: function() { if (actual === null) throw new Error('Expected not null'); },
 			toBeUndefined: function() { if (actual === undefined) throw new Error('Expected not undefined'); },
 			toThrow: function() { try { actual(); } catch(e) { throw new Error('Expected not to throw but threw: ' + e); } },
+		},
+		toHaveBeenCalled: function() {
+			if (!actual || !actual._isMockFn || actual.mock.calls.length === 0) throw new Error('Expected function to have been called');
+		},
+		toHaveBeenCalledTimes: function(n) {
+			if (!actual || !actual._isMockFn) throw new Error('Expected a mock function');
+			if (actual.mock.calls.length !== n) throw new Error('Expected ' + n + ' calls but got ' + actual.mock.calls.length);
+		},
+		toHaveBeenCalledWith: function() {
+			if (!actual || !actual._isMockFn) throw new Error('Expected a mock function');
+			var expected = Array.prototype.slice.call(arguments);
+			var found = actual.mock.calls.some(function(call) { return JSON.stringify(call) === JSON.stringify(expected); });
+			if (!found) throw new Error('Expected to have been called with ' + JSON.stringify(expected));
+		},
+		toHaveReturnedWith: function(value) {
+			if (!actual || !actual._isMockFn) throw new Error('Expected a mock function');
+			var found = actual.mock.results.some(function(r) { return r.type === 'return' && JSON.stringify(r.value) === JSON.stringify(value); });
+			if (!found) throw new Error('Expected to have returned with ' + JSON.stringify(value));
 		}
 	};
+};
+
+// --- jest.fn / jest.mock ---
+globalThis.jest = {
+	fn: function(impl) {
+		function mockFn() {
+			var args = Array.prototype.slice.call(arguments);
+			mockFn.mock.calls.push(args);
+			mockFn.mock.instances.push(this);
+			try {
+				var fn = mockFn._onceQueue.length > 0 ? mockFn._onceQueue.shift() : mockFn._impl;
+				var result = fn ? fn.apply(this, args) : undefined;
+				mockFn.mock.results.push({ type: 'return', value: result });
+				return result;
+			} catch(e) {
+				mockFn.mock.results.push({ type: 'throw', value: e });
+				throw e;
+			}
+		}
+		mockFn._isMockFn = true;
+		mockFn._impl = impl || null;
+		mockFn._onceQueue = [];
+		mockFn.mock = { calls: [], results: [], instances: [] };
+		mockFn.mockClear = function() { mockFn.mock.calls = []; mockFn.mock.results = []; mockFn.mock.instances = []; return mockFn; };
+		mockFn.mockReset = function() { mockFn.mockClear(); mockFn._impl = null; mockFn._onceQueue = []; return mockFn; };
+		mockFn.mockImplementation = function(fn) { mockFn._impl = fn; return mockFn; };
+		mockFn.mockImplementationOnce = function(fn) { mockFn._onceQueue.push(fn); return mockFn; };
+		mockFn.mockReturnValue = function(val) { mockFn._impl = function() { return val; }; return mockFn; };
+		mockFn.mockReturnValueOnce = function(val) { return mockFn.mockImplementationOnce(function() { return val; }); };
+		mockFn.mockResolvedValue = function(val) { mockFn._impl = function() { return Promise.resolve(val); }; return mockFn; };
+		mockFn.mockResolvedValueOnce = function(val) { return mockFn.mockImplementationOnce(function() { return Promise.resolve(val); }); };
+		mockFn.mockRejectedValue = function(val) { mockFn._impl = function() { return Promise.reject(val); }; return mockFn; };
+		mockFn.mockRejectedValueOnce = function(val) { return mockFn.mockImplementationOnce(function() { return Promise.reject(val); }); };
+		return mockFn;
+	},
+	spyOn: function(obj, method) {
+		var original = obj[method];
+		var spy = globalThis.jest.fn(original);
+		spy.mockRestore = function() { obj[method] = original; };
+		obj[method] = spy;
+		return spy;
+	},
+	mock: function() {},
+	unmock: function() {},
+	clearAllMocks: function() {},
+	resetAllMocks: function() {}
 };
 `
 
