@@ -1,3 +1,5 @@
+//go:build !quickjs
+
 // Package ramune provides Go bindings for JavaScriptCore via [purego] — no Cgo required.
 // The JSC runtime is dynamically loaded at startup and works with the system framework
 // on macOS and libjavascriptcoregtk on Linux.
@@ -81,56 +83,8 @@ import (
 // GCConfig controls garbage collection behavior for JSC interoperability.
 // Go's concurrent GC can corrupt JSC's internal structures under high load.
 // These settings allow tuning the tradeoff between performance and stability.
-type GCConfig struct {
-	// DisableAutoGC disables Go's automatic GC while the HTTP server is
-	// running. Manual GC is triggered every GCInterval requests.
-	// Default: true (for HTTP server stability).
-	DisableAutoGC bool
-
-	// GCInterval is the number of HTTP requests between manual GC cycles.
-	// Lower values use more CPU but prevent memory growth.
-	// Default: 5000. Set to 0 to disable manual GC.
-	GCInterval int
-
-	// GCPercent sets the Go GC target percentage (same as GOGC env var).
-	// Only used when DisableAutoGC is false.
-	// Default: 100 (Go's default). Set to -1 to disable GC entirely.
-	GCPercent int
-}
-
-// DefaultGCConfig returns the default GC configuration.
-func DefaultGCConfig() GCConfig {
-	return GCConfig{
-		DisableAutoGC: true,
-		GCInterval:    2000,
-		GCPercent:     100,
-	}
-}
-
-// config holds resolved configuration for a Runtime.
-type config struct {
-	libraryPath  string
-	dependencies []string // npm packages for Dependencies()
-	nodeCompat   bool     // install Node.js compatibility layer
-	withFetch    bool     // install fetch polyfill
-	gc           *GCConfig
-	permissions  *Permissions
-	modules      []Module // user-provided modules for require()
-}
-
-// Option configures a Runtime.
-type Option func(*config)
-
-// WithLibraryPath sets an explicit path to the JavaScriptCore shared library.
-func WithLibraryPath(path string) Option {
-	return func(c *config) { c.libraryPath = path }
-}
-
-// WithGC configures garbage collection behavior.
-// See GCConfig for details on each setting.
-func WithGC(gc GCConfig) Option {
-	return func(c *config) { c.gc = &gc }
-}
+// Engine returns the name of the JS engine backend.
+func (r *Runtime) Engine() string { return "jsc" }
 
 // Runtime holds a loaded JavaScriptCore library and a global JS context.
 // Multiple Runtimes can coexist in the same process — each gets a dedicated
@@ -705,25 +659,6 @@ func (r *Runtime) NewArray(items ...any) (*Value, error) {
 }
 
 // goid returns the current goroutine ID.
-func goid() int64 {
-	var buf [64]byte
-	n := runtime.Stack(buf[:], false)
-	// Format: "goroutine 123 [..."
-	s := buf[:n]
-	s = s[len("goroutine "):]
-	for i, b := range s {
-		if b == ' ' {
-			s = s[:i]
-			break
-		}
-	}
-	id := int64(0)
-	for _, b := range s {
-		id = id*10 + int64(b-'0')
-	}
-	return id
-}
-
 // dispatch sends fn to the dedicated JSC goroutine and blocks until it completes.
 // If called from within the JSC goroutine (e.g., inside a GoFunc callback),
 // the function is executed directly to avoid deadlock.

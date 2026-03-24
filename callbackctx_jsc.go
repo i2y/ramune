@@ -1,14 +1,8 @@
+//go:build !quickjs
+
 package ramune
 
 import "unsafe"
-
-// CallbackContext provides safe access to JSC from within a GoFunc.
-// Value methods like Attr() and Call() dispatch to the JSC goroutine,
-// which deadlocks inside a callback (already on the JSC goroutine).
-// CallbackContext calls JSC functions directly and returns Go values.
-type CallbackContext struct {
-	rt *Runtime
-}
 
 // EvalFloat64 evaluates JS code and returns the result as float64.
 func (cc *CallbackContext) EvalFloat64(code string) (float64, error) {
@@ -77,10 +71,6 @@ func (cc *CallbackContext) SetProperty(name string, value any) error {
 	cc.rt.jsObjectSetProperty(cc.rt.ctx, global, propName, jsVal, 0, 0)
 	return nil
 }
-
-// GoFuncWithContext is a callback that receives a CallbackContext for safe
-// JSC access. Use RegisterFuncWithContext to register these.
-type GoFuncWithContext func(ctx *CallbackContext, args []any) (any, error)
 
 // RegisterFuncWithContext registers a Go function that receives a CallbackContext,
 // allowing safe JSC access from within the callback without deadlocking.

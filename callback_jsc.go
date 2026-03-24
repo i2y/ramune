@@ -1,3 +1,5 @@
+//go:build !quickjs
+
 package ramune
 
 import (
@@ -6,11 +8,6 @@ import (
 
 	"github.com/ebitengine/purego"
 )
-
-// GoFunc is a Go function that can be called from JavaScript.
-// Arguments are converted to Go types: bool, float64, string, nil,
-// map[string]any (for objects), or []any (for arrays).
-type GoFunc func(args []any) (any, error)
 
 // RegisterFunc registers a Go function as a global JavaScript function.
 func (r *Runtime) RegisterFunc(name string, fn GoFunc) error {
@@ -153,26 +150,6 @@ func (r *Runtime) jsArrayToGoSlice(arrPtr uintptr) []any {
 }
 
 // itoa converts int to string without importing strconv.
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	s := ""
-	neg := false
-	if n < 0 {
-		neg = true
-		n = -n
-	}
-	for n > 0 {
-		s = string(rune('0'+n%10)) + s
-		n /= 10
-	}
-	if neg {
-		s = "-" + s
-	}
-	return s
-}
-
 // jsToGoCallback converts a JSValueRef to a Go value without returning *Value.
 // This avoids mutex deadlock since callbacks run with the mutex already held.
 // Object arguments are converted via JSON.stringify to map[string]any or []any.

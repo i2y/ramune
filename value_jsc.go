@@ -1,3 +1,5 @@
+//go:build !quickjs
+
 package ramune
 
 import (
@@ -6,12 +8,6 @@ import (
 	"sync/atomic"
 	"unsafe"
 )
-
-// noCopy may be embedded into structs which must not be copied after first use.
-type noCopy struct{}
-
-func (*noCopy) Lock()   {}
-func (*noCopy) Unlock() {}
 
 // Value wraps a JavaScriptCore JSValueRef with lifecycle management.
 // Call Close() to unprotect the value.

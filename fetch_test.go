@@ -22,16 +22,7 @@ func TestFetchJSON(t *testing.T) {
 	}
 	defer r.Close()
 
-	// Phase 1: start fetch
-	if err := r.Exec(fmt.Sprintf(`globalThis.__p = fetch('%s')`, srv.URL)); err != nil {
-		t.Fatal(err)
-	}
-	// Phase 2: chain .then
-	if err := r.Exec(`globalThis.__p.then(function(r) { return r.json(); }).then(function(d) { globalThis.__r = d.message; })`); err != nil {
-		t.Fatal(err)
-	}
-	// Phase 3: read result
-	v, err := r.Eval(`globalThis.__r`)
+	v, err := r.EvalAsync(fmt.Sprintf(`fetch('%s').then(function(r) { return r.json(); }).then(function(d) { return d.message; })`, srv.URL))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,14 +55,7 @@ func TestFetchPost(t *testing.T) {
 	}
 	defer r.Close()
 
-	code := fmt.Sprintf(`globalThis.__p = fetch('%s', {method: 'POST', body: 'test data'})`, srv.URL)
-	if err := r.Exec(code); err != nil {
-		t.Fatal(err)
-	}
-	if err := r.Exec(`globalThis.__p.then(function(r) { return r.text(); }).then(function(t) { globalThis.__r = t; })`); err != nil {
-		t.Fatal(err)
-	}
-	v, err := r.Eval(`globalThis.__r`)
+	v, err := r.EvalAsync(fmt.Sprintf(`fetch('%s', {method: 'POST', body: 'test data'}).then(function(r) { return r.text(); })`, srv.URL))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +72,6 @@ func TestFetchPost(t *testing.T) {
 
 func TestFetchHeaders(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Echo back the custom header.
 		got := r.Header.Get("X-Custom")
 		fmt.Fprint(w, got)
 	}))
@@ -100,14 +83,7 @@ func TestFetchHeaders(t *testing.T) {
 	}
 	defer r.Close()
 
-	code := fmt.Sprintf(`globalThis.__p = fetch('%s', {headers: {'X-Custom': 'my-value'}})`, srv.URL)
-	if err := r.Exec(code); err != nil {
-		t.Fatal(err)
-	}
-	if err := r.Exec(`globalThis.__p.then(function(r) { return r.text(); }).then(function(t) { globalThis.__r = t; })`); err != nil {
-		t.Fatal(err)
-	}
-	v, err := r.Eval(`globalThis.__r`)
+	v, err := r.EvalAsync(fmt.Sprintf(`fetch('%s', {headers: {'X-Custom': 'my-value'}}).then(function(r) { return r.text(); })`, srv.URL))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,14 +111,7 @@ func TestFetchResponseHeaders(t *testing.T) {
 	}
 	defer r.Close()
 
-	code := fmt.Sprintf(`globalThis.__p = fetch('%s')`, srv.URL)
-	if err := r.Exec(code); err != nil {
-		t.Fatal(err)
-	}
-	if err := r.Exec(`globalThis.__p.then(function(r) { globalThis.__r = r.headers.get('x-server'); })`); err != nil {
-		t.Fatal(err)
-	}
-	v, err := r.Eval(`globalThis.__r`)
+	v, err := r.EvalAsync(fmt.Sprintf(`fetch('%s').then(function(r) { return r.headers.get('x-server'); })`, srv.URL))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +127,6 @@ func TestFetchResponseHeaders(t *testing.T) {
 }
 
 func TestFetchWithNodeCompat(t *testing.T) {
-	// fetch should be auto-installed with NodeCompat.
 	r, err := ramune.New(ramune.NodeCompat())
 	if err != nil {
 		t.Skipf("JSC not available: %v", err)

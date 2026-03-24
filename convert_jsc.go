@@ -1,3 +1,5 @@
+//go:build !quickjs
+
 package ramune
 
 import (
