@@ -846,11 +846,9 @@ func loadDotEnv(envFile string) {
 			}
 			key := strings.TrimSpace(line[:idx])
 			val := strings.TrimSpace(line[idx+1:])
-			// Strip surrounding quotes.
 			if len(val) >= 2 && ((val[0] == '"' && val[len(val)-1] == '"') || (val[0] == '\'' && val[len(val)-1] == '\'')) {
 				val = val[1 : len(val)-1]
 			}
-			// Don't override existing env vars.
 			if _, exists := os.LookupEnv(key); !exists {
 				os.Setenv(key, val)
 			}

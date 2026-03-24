@@ -1518,8 +1518,8 @@ func nodeCompatJSSource() string {
 			function clone(val) {
 				if (val === null || typeof val !== 'object') return val;
 				if (seen.has(val)) return seen.get(val);
-				if (val instanceof Date) return new Date(val.getTime());
-				if (val instanceof RegExp) return new RegExp(val.source, val.flags);
+				if (val instanceof Date) { var d = new Date(val.getTime()); seen.set(val, d); return d; }
+				if (val instanceof RegExp) { var r = new RegExp(val.source, val.flags); seen.set(val, r); return r; }
 				if (val instanceof Map) {
 					var m = new Map();
 					seen.set(val, m);
@@ -1577,9 +1577,13 @@ func nodeCompatJSSource() string {
 				}
 			}
 		}
-		Blob.prototype._text = function() { return this._parts.join(''); };
+		Blob.prototype._text = function() {
+			if (this._joined === undefined) this._joined = this._parts.join('');
+			return this._joined;
+		};
 		Object.defineProperty(Blob.prototype, 'size', { get: function() {
-			return new TextEncoder().encode(this._text()).length;
+			if (this._byteSize === undefined) this._byteSize = new TextEncoder().encode(this._text()).length;
+			return this._byteSize;
 		}});
 		Blob.prototype.text = function() { return Promise.resolve(this._text()); };
 		Blob.prototype.arrayBuffer = function() {
@@ -1594,7 +1598,7 @@ func nodeCompatJSSource() string {
 			if (end < 0) end = Math.max(bytes.length + end, 0);
 			var sliced = bytes.slice(start, end);
 			var str = new TextDecoder().decode(sliced);
-			return new Blob([str], { type: type || this.type });
+			return new Blob([str], { type: type !== undefined ? type : this.type });
 		};
 		Blob.prototype.stream = function() {
 			var text = this._text();
@@ -1651,27 +1655,16 @@ func nodeCompatJSSource() string {
 		FormData.prototype.has = function(name) {
 			return this._entries.some(function(e) { return e[0] === name; });
 		};
-		FormData.prototype.entries = function() {
-			var idx = 0, entries = this._entries;
+		function __makeIter(arr, mapFn) {
+			var idx = 0;
 			return { next: function() {
-				if (idx >= entries.length) return { done: true, value: undefined };
-				return { done: false, value: entries[idx++].slice() };
+				if (idx >= arr.length) return { done: true, value: undefined };
+				return { done: false, value: mapFn(arr[idx++]) };
 			}, [Symbol.iterator]: function() { return this; } };
-		};
-		FormData.prototype.keys = function() {
-			var idx = 0, entries = this._entries;
-			return { next: function() {
-				if (idx >= entries.length) return { done: true, value: undefined };
-				return { done: false, value: entries[idx++][0] };
-			}, [Symbol.iterator]: function() { return this; } };
-		};
-		FormData.prototype.values = function() {
-			var idx = 0, entries = this._entries;
-			return { next: function() {
-				if (idx >= entries.length) return { done: true, value: undefined };
-				return { done: false, value: entries[idx++][1] };
-			}, [Symbol.iterator]: function() { return this; } };
-		};
+		}
+		FormData.prototype.entries = function() { return __makeIter(this._entries, function(e) { return e.slice(); }); };
+		FormData.prototype.keys = function() { return __makeIter(this._entries, function(e) { return e[0]; }); };
+		FormData.prototype.values = function() { return __makeIter(this._entries, function(e) { return e[1]; }); };
 		FormData.prototype.forEach = function(cb, thisArg) {
 			for (var i = 0; i < this._entries.length; i++) {
 				cb.call(thisArg, this._entries[i][1], this._entries[i][0], this);
