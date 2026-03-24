@@ -511,15 +511,16 @@ func (r *Runtime) Close() error {
 		if r.fswatchMgr != nil {
 			r.fswatchMgr.closeAll()
 		}
-		if r.vmMgr != nil {
-			r.vmMgr.closeAll(r)
-		}
 		if r.sqliteMgr != nil {
 			r.sqliteMgr.closeAll()
 		}
 		// Send cleanup work to the dedicated JSC goroutine.
 		done := make(chan struct{})
 		r.callCh <- func() {
+			// Release VM contexts on the JSC thread (JSC API requires same-thread access).
+			if r.vmMgr != nil {
+				r.vmMgr.closeAll(r)
+			}
 			r.drainUnprotectQueue()
 			// Unprotect all tracked values that were not explicitly closed.
 			r.unprotectMu.Lock()

@@ -3,13 +3,12 @@ package ramune
 import (
 	"fmt"
 	"runtime"
-	"sync"
 	"unsafe"
 )
 
 // vmManager manages isolated JS contexts for the vm module.
+// All methods are called on the dedicated JSC goroutine (no mutex needed).
 type vmManager struct {
-	mu       sync.Mutex
 	contexts map[int]uintptr // context ID -> JSGlobalContextRef
 	nextID   int
 }
@@ -21,9 +20,8 @@ func newVMManager() *vmManager {
 	}
 }
 
+// closeAll releases all VM contexts. Must be called on the JSC goroutine.
 func (vm *vmManager) closeAll(r *Runtime) {
-	vm.mu.Lock()
-	defer vm.mu.Unlock()
 	for _, ctx := range vm.contexts {
 		r.jsGlobalContextRelease(ctx)
 	}
@@ -46,11 +44,9 @@ func (r *Runtime) installVM() error {
 			return nil, fmt.Errorf("vm: failed to create context")
 		}
 
-		mgr.mu.Lock()
 		id := mgr.nextID
 		mgr.nextID++
 		mgr.contexts[id] = ctx
-		mgr.mu.Unlock()
 
 		return float64(id), nil
 	}); err != nil {
@@ -64,9 +60,7 @@ func (r *Runtime) installVM() error {
 		code, _ := args[0].(string)
 		ctxID := int(args[1].(float64))
 
-		mgr.mu.Lock()
 		ctx, ok := mgr.contexts[ctxID]
-		mgr.mu.Unlock()
 		if !ok {
 			return nil, fmt.Errorf("vm.runInContext: invalid context %d", ctxID)
 		}
@@ -103,12 +97,10 @@ func (r *Runtime) installVM() error {
 		}
 		ctxID := int(args[0].(float64))
 
-		mgr.mu.Lock()
 		ctx, ok := mgr.contexts[ctxID]
 		if ok {
 			delete(mgr.contexts, ctxID)
 		}
-		mgr.mu.Unlock()
 
 		if ok {
 			r.jsGlobalContextRelease(ctx)
@@ -137,9 +129,43 @@ func (r *Runtime) jsValueToGoFromContext(ctx, val uintptr) any {
 		}
 		defer r.jsStringRelease(jsStr)
 		return r.jsStringToGo(jsStr)
-	default: // 0=undefined, 1=null, 5=object, 6=symbol
+	case 5: // kJSTypeObject — JSON.stringify via toString of JSON.stringify result
+		// Evaluate JSON.stringify(result) in the isolated context to extract objects.
+		return r.jsonStringifyInContext(ctx, val)
+	default: // 0=undefined, 1=null, 6=symbol
 		return nil
 	}
+}
+
+// jsonStringifyInContext evaluates JSON.stringify on a value in an arbitrary context.
+func (r *Runtime) jsonStringifyInContext(ctx, val uintptr) string {
+	// Get JSON.stringify: evaluate "JSON.stringify" to get the function, then call it.
+	// Simpler approach: convert the value to string via JSValueToStringCopy which calls toString().
+	// For objects this gives "[object Object]". Instead, we evaluate a small script.
+	script := r.jsStringCreateWithUTF8CString("JSON")
+	defer r.jsStringRelease(script)
+	var exc uintptr
+	jsonObj := r.jsEvaluateScript(ctx, script, 0, 0, 0, uintptr(unsafe.Pointer(&exc)))
+	if jsonObj == 0 {
+		return ""
+	}
+	strName := r.jsStringCreateWithUTF8CString("stringify")
+	defer r.jsStringRelease(strName)
+	stringifyFn := r.jsObjectGetProperty(ctx, jsonObj, strName, 0)
+	if stringifyFn == 0 {
+		return ""
+	}
+	args := []uintptr{val}
+	result := r.jsObjectCallAsFunction(ctx, stringifyFn, 0, 1, args, 0)
+	if result == 0 {
+		return ""
+	}
+	jsStr := r.jsValueToStringCopy(ctx, result, 0)
+	if jsStr == 0 {
+		return ""
+	}
+	defer r.jsStringRelease(jsStr)
+	return r.jsStringToGo(jsStr)
 }
 
 func vmJSSource() string {
@@ -155,7 +181,11 @@ func vmJSSource() string {
 			if (!context || !context._vmContextId) {
 				throw new TypeError('vm.runInContext: invalid context (use vm.createContext())');
 			}
-			return __go_vm_run_in_context(String(code), context._vmContextId);
+			var result = __go_vm_run_in_context(String(code), context._vmContextId);
+			if (typeof result === 'string') {
+				try { var parsed = JSON.parse(result); if (typeof parsed === 'object' && parsed !== null) return parsed; } catch(e) {}
+			}
+			return result;
 		},
 
 		runInNewContext: function(code, sandbox, opts) {
