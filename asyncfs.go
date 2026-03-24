@@ -2,23 +2,40 @@ package ramune
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
+	"sync/atomic"
 )
 
 // fsManager handles asynchronous filesystem operations.
 type fsManager struct {
-	mu     sync.Mutex
-	events []fsEvent
-	wakeFn func()
+	mu      sync.Mutex
+	events  []fsEvent
+	wakeFn  func()
+	pending atomic.Int32 // number of in-flight async ops
 }
 
 type fsEvent struct {
 	ID   int    `json:"id"`
-	Kind string `json:"kind"` // "readFile", "writeFile", "stat", "readdir"
-	Data string `json:"data"` // result data or error message
-	Err  bool   `json:"err"`  // true if error
+	Kind string `json:"kind"`           // "readFile", "writeFile", "stat", "readdir"
+	Data string `json:"data"`           // result data or error message
+	Err  bool   `json:"err"`            // true if error
+	Code string `json:"code,omitempty"` // error code: "ENOENT", "EACCES", etc.
+}
+
+func fsErrorCode(err error) string {
+	if errors.Is(err, os.ErrNotExist) {
+		return "ENOENT"
+	}
+	if errors.Is(err, os.ErrPermission) {
+		return "EACCES"
+	}
+	if errors.Is(err, os.ErrExist) {
+		return "EEXIST"
+	}
+	return "ERR"
 }
 
 func newFSManager() *fsManager {
@@ -26,11 +43,13 @@ func newFSManager() *fsManager {
 }
 
 func (fm *fsManager) readFile(id int, path string) {
+	fm.pending.Add(1)
 	go func() {
 		data, err := os.ReadFile(path)
+		fm.pending.Add(-1)
 		fm.mu.Lock()
 		if err != nil {
-			fm.events = append(fm.events, fsEvent{ID: id, Kind: "readFile", Err: true, Data: err.Error()})
+			fm.events = append(fm.events, fsEvent{ID: id, Kind: "readFile", Err: true, Data: err.Error(), Code: fsErrorCode(err)})
 		} else {
 			fm.events = append(fm.events, fsEvent{ID: id, Kind: "readFile", Data: string(data)})
 		}
@@ -42,11 +61,13 @@ func (fm *fsManager) readFile(id int, path string) {
 }
 
 func (fm *fsManager) writeFile(id int, path, content string) {
+	fm.pending.Add(1)
 	go func() {
 		err := os.WriteFile(path, []byte(content), 0644)
+		fm.pending.Add(-1)
 		fm.mu.Lock()
 		if err != nil {
-			fm.events = append(fm.events, fsEvent{ID: id, Kind: "writeFile", Err: true, Data: err.Error()})
+			fm.events = append(fm.events, fsEvent{ID: id, Kind: "writeFile", Err: true, Data: err.Error(), Code: fsErrorCode(err)})
 		} else {
 			fm.events = append(fm.events, fsEvent{ID: id, Kind: "writeFile"})
 		}
@@ -58,11 +79,13 @@ func (fm *fsManager) writeFile(id int, path, content string) {
 }
 
 func (fm *fsManager) stat(id int, path string) {
+	fm.pending.Add(1)
 	go func() {
 		info, err := os.Stat(path)
+		fm.pending.Add(-1)
 		fm.mu.Lock()
 		if err != nil {
-			fm.events = append(fm.events, fsEvent{ID: id, Kind: "stat", Err: true, Data: err.Error()})
+			fm.events = append(fm.events, fsEvent{ID: id, Kind: "stat", Err: true, Data: err.Error(), Code: fsErrorCode(err)})
 		} else {
 			s := map[string]any{
 				"isFile":      !info.IsDir(),
@@ -81,11 +104,13 @@ func (fm *fsManager) stat(id int, path string) {
 }
 
 func (fm *fsManager) readdir(id int, path string) {
+	fm.pending.Add(1)
 	go func() {
 		entries, err := os.ReadDir(path)
+		fm.pending.Add(-1)
 		fm.mu.Lock()
 		if err != nil {
-			fm.events = append(fm.events, fsEvent{ID: id, Kind: "readdir", Err: true, Data: err.Error()})
+			fm.events = append(fm.events, fsEvent{ID: id, Kind: "readdir", Err: true, Data: err.Error(), Code: fsErrorCode(err)})
 		} else {
 			names := make([]string, len(entries))
 			for i, e := range entries {
@@ -119,7 +144,10 @@ func (fm *fsManager) processEvents(r *Runtime) {
 	`, string(data)))
 }
 
-func (fm *fsManager) hasPending() bool {
+func (fm *fsManager) hasActive() bool {
+	if fm.pending.Load() > 0 {
+		return true
+	}
 	fm.mu.Lock()
 	defer fm.mu.Unlock()
 	return len(fm.events) > 0
@@ -185,9 +213,6 @@ func asyncFSJSSource() string {
 (function() {
 	var _fsCallbacks = {};
 	var _fsNextID = 1;
-	var _fsPendingCount = 0;
-
-	globalThis.__fsPendingCount = function() { return _fsPendingCount; };
 
 	globalThis.__fsDeliverEvents = function(eventsJSON) {
 		var events = JSON.parse(eventsJSON);
@@ -196,11 +221,9 @@ func asyncFSJSSource() string {
 			var cb = _fsCallbacks[ev.id];
 			if (!cb) continue;
 			delete _fsCallbacks[ev.id];
-			_fsPendingCount--;
 			if (ev.err) {
 				var err = new Error(ev.data);
-				err.code = ev.data.indexOf('no such file') >= 0 ? 'ENOENT' :
-				           ev.data.indexOf('permission denied') >= 0 ? 'EACCES' : 'ERR';
+				err.code = ev.code || 'ERR';
 				cb.reject(err);
 			} else {
 				cb.resolve(ev.data);
@@ -212,9 +235,8 @@ func asyncFSJSSource() string {
 	var fs = globalThis.require._modules && globalThis.require._modules['fs'];
 	if (!fs) return;
 
-	function fsAsync(goFn, id, args, resolveFn, rejectFn, cb) {
-		_fsPendingCount++;
-		_fsCallbacks[id] = { resolve: function(d) { if (cb) resolveFn(d, cb); else resolveFn(d); }, reject: function(e) { if (cb) rejectFn(e, cb); else rejectFn(e); } };
+	function fsAsync(goFn, id, args, resolveFn, rejectFn) {
+		_fsCallbacks[id] = { resolve: resolveFn, reject: rejectFn };
 		goFn.apply(null, [id].concat(args));
 	}
 

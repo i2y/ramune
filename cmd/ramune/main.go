@@ -921,10 +921,15 @@ func resolveExportCondition(val any) string {
 	case string:
 		return v
 	case map[string]any:
-		// Prefer "require" > "default" > "import" for CJS require()
 		for _, key := range []string{"require", "default", "import"} {
 			if sub, ok := v[key]; ok {
 				return resolveExportCondition(sub)
+			}
+		}
+	case []any:
+		for _, item := range v {
+			if r := resolveExportCondition(item); r != "" {
+				return r
 			}
 		}
 	}

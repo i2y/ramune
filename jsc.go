@@ -502,6 +502,9 @@ func (r *Runtime) jscLoop(cfg config, initErr chan<- error) {
 func (r *Runtime) Close() error {
 	r.closeOnce.Do(func() {
 		r.closed.Store(true)
+		if r.fswatchMgr != nil {
+			r.fswatchMgr.closeAll()
+		}
 		if r.sqliteMgr != nil {
 			r.sqliteMgr.closeAll()
 		}

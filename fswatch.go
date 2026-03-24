@@ -100,6 +100,20 @@ func (wm *fsWatchManager) close(id int) {
 	}
 }
 
+func (wm *fsWatchManager) closeAll() {
+	wm.mu.Lock()
+	entries := make([]*fsWatchEntry, 0, len(wm.watchers))
+	for _, e := range wm.watchers {
+		entries = append(entries, e)
+	}
+	wm.watchers = make(map[int]*fsWatchEntry)
+	wm.mu.Unlock()
+	for _, e := range entries {
+		e.closed = true
+		e.watcher.Close()
+	}
+}
+
 func (wm *fsWatchManager) processEvents(r *Runtime) {
 	wm.mu.Lock()
 	events := wm.events

@@ -443,7 +443,7 @@ func (r *Runtime) hasPendingLocked() bool {
 		return true
 	}
 	// Check for pending async fs operations.
-	if r.fsMgr != nil && r.evalBoolLocked("typeof __fsPendingCount === 'function' && __fsPendingCount() > 0") {
+	if r.fsMgr != nil && r.fsMgr.hasActive() {
 		return true
 	}
 	return false
