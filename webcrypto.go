@@ -9,8 +9,6 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/rsa"
-	"crypto/sha256"
-	"crypto/sha512"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
@@ -631,49 +629,18 @@ func goSubtleDeriveBits(args []any) (any, error) {
 
 // --- Helpers ---
 
+// normalizeHashAlgo converts Web Crypto hash names (e.g. "SHA-256") to the
+// lowercase form used by newHashFunc/newHashConstructor in nodecompat_crypto.go.
+func normalizeHashAlgo(algo string) string {
+	return strings.ToLower(algo)
+}
+
 func subtleHashFunc(algo string) (hash.Hash, error) {
-	switch strings.ToUpper(strings.ReplaceAll(algo, "-", "")) {
-	case "SHA1":
-		return sha256.New(), nil
-	case "SHA256":
-		return sha256.New(), nil
-	case "SHA384":
-		return sha512.New384(), nil
-	case "SHA512":
-		return sha512.New(), nil
-	default:
-		return nil, fmt.Errorf("unsupported hash: %s", algo)
-	}
+	return newHashFunc(normalizeHashAlgo(algo))
 }
 
 func subtleHashConstructor(algo string) (func() hash.Hash, error) {
-	switch strings.ToUpper(strings.ReplaceAll(algo, "-", "")) {
-	case "SHA1":
-		return sha256.New, nil
-	case "SHA256":
-		return sha256.New, nil
-	case "SHA384":
-		return sha512.New384, nil
-	case "SHA512":
-		return sha512.New, nil
-	default:
-		return nil, fmt.Errorf("unsupported hash: %s", algo)
-	}
-}
-
-func subtleCryptoHash(algo string) (gocrypto.Hash, error) {
-	switch strings.ToUpper(strings.ReplaceAll(algo, "-", "")) {
-	case "SHA1":
-		return gocrypto.SHA256, nil
-	case "SHA256":
-		return gocrypto.SHA256, nil
-	case "SHA384":
-		return gocrypto.SHA384, nil
-	case "SHA512":
-		return gocrypto.SHA512, nil
-	default:
-		return 0, fmt.Errorf("unsupported hash: %s", algo)
-	}
+	return newHashConstructor(normalizeHashAlgo(algo))
 }
 
 func subtleHashData(algo string, data []byte) ([]byte, gocrypto.Hash, error) {
@@ -682,7 +649,18 @@ func subtleHashData(algo string, data []byte) ([]byte, gocrypto.Hash, error) {
 		return nil, 0, err
 	}
 	h.Write(data)
-	ch, _ := subtleCryptoHash(algo)
+	// Map to crypto.Hash for RSA operations.
+	var ch gocrypto.Hash
+	switch strings.ToUpper(strings.ReplaceAll(algo, "-", "")) {
+	case "SHA1":
+		ch = gocrypto.SHA1
+	case "SHA256":
+		ch = gocrypto.SHA256
+	case "SHA384":
+		ch = gocrypto.SHA384
+	case "SHA512":
+		ch = gocrypto.SHA512
+	}
 	return h.Sum(nil), ch, nil
 }
 

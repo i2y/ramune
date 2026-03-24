@@ -774,6 +774,34 @@ func bunCompatJSSource() string {
 	// Bun compatibility alias — existing Bun.serve() code works as-is.
 	globalThis.Bun = globalThis.Ramune;
 
+	// Shared body-reading helper for Request/Response.
+	function __readStreamAsText(stream) {
+		var reader = stream.getReader();
+		var chunks = [];
+		function pump() {
+			return reader.read().then(function(r) {
+				if (r.done) return chunks.join('');
+				chunks.push(typeof r.value === 'string' ? r.value : new TextDecoder().decode(r.value));
+				return pump();
+			});
+		}
+		return pump();
+	}
+	function __bodyText(obj) {
+		if (obj._body !== null) { obj.bodyUsed = true; return Promise.resolve(obj._body); }
+		if (obj.bodyUsed) return Promise.reject(new TypeError('Body already consumed'));
+		obj.bodyUsed = true;
+		return __readStreamAsText(obj._stream);
+	}
+	function __bodyJSON(obj) {
+		if (obj._body !== null) { obj.bodyUsed = true; try { return Promise.resolve(JSON.parse(obj._body)); } catch(e) { return Promise.reject(e); } }
+		return __bodyText(obj).then(function(t) { return JSON.parse(t); });
+	}
+	function __bodyArrayBuffer(obj) {
+		if (obj._body !== null) { obj.bodyUsed = true; return Promise.resolve(new TextEncoder().encode(obj._body).buffer); }
+		return __bodyText(obj).then(function(t) { return new TextEncoder().encode(t).buffer; });
+	}
+
 	// Request/Response Web API polyfills for frameworks like Hono.
 	if (typeof Request === 'undefined') {
 		globalThis.Request = function(url, opts) {
@@ -794,32 +822,14 @@ func bunCompatJSSource() string {
 			if (this._stream) return this._stream;
 			var text = this._body || '';
 			if (!text) return null;
-			return new ReadableStream({
+			this._stream = new ReadableStream({
 				start: function(c) { c.enqueue(new TextEncoder().encode(text)); c.close(); }
 			});
+			return this._stream;
 		}});
-		Request.prototype.text = function() {
-			if (this._body !== null) { this.bodyUsed = true; return Promise.resolve(this._body); }
-			if (this.bodyUsed) return Promise.reject(new TypeError('Body already consumed'));
-			this.bodyUsed = true;
-			var reader = this._stream.getReader();
-			var chunks = [];
-			function pump() {
-				return reader.read().then(function(r) {
-					if (r.done) return chunks.join('');
-					chunks.push(typeof r.value === 'string' ? r.value : new TextDecoder().decode(r.value));
-					return pump();
-				});
-			}
-			return pump();
-		};
-		Request.prototype.json = function() {
-			if (this._body !== null) { this.bodyUsed = true; try { return Promise.resolve(JSON.parse(this._body)); } catch(e) { return Promise.reject(e); } }
-			return this.text().then(function(t) { return JSON.parse(t); });
-		};
-		Request.prototype.arrayBuffer = function() {
-			return this.text().then(function(t) { return new TextEncoder().encode(t).buffer; });
-		};
+		Request.prototype.text = function() { return __bodyText(this); };
+		Request.prototype.json = function() { return __bodyJSON(this); };
+		Request.prototype.arrayBuffer = function() { return __bodyArrayBuffer(this); };
 		Request.prototype.clone = function() { return new Request(this.url, {method: this.method, body: this._body, headers: this.headers}); };
 	}
 
@@ -842,33 +852,14 @@ func bunCompatJSSource() string {
 		Object.defineProperty(Response.prototype, 'body', { get: function() {
 			if (this._stream) return this._stream;
 			var text = this._body || '';
-			return new ReadableStream({
+			this._stream = new ReadableStream({
 				start: function(c) { if (text) c.enqueue(new TextEncoder().encode(text)); c.close(); }
 			});
+			return this._stream;
 		}});
-		Response.prototype.text = function() {
-			if (this._body !== null) { this.bodyUsed = true; return Promise.resolve(this._body); }
-			if (this.bodyUsed) return Promise.reject(new TypeError('Body already consumed'));
-			this.bodyUsed = true;
-			var reader = this._stream.getReader();
-			var chunks = [];
-			function pump() {
-				return reader.read().then(function(r) {
-					if (r.done) return chunks.join('');
-					chunks.push(typeof r.value === 'string' ? r.value : new TextDecoder().decode(r.value));
-					return pump();
-				});
-			}
-			return pump();
-		};
-		Response.prototype.json = function() {
-			if (this._body !== null) { this.bodyUsed = true; try { return Promise.resolve(JSON.parse(this._body)); } catch(e) { return Promise.reject(e); } }
-			return this.text().then(function(t) { return JSON.parse(t); });
-		};
-		Response.prototype.arrayBuffer = function() {
-			if (this._body !== null) { this.bodyUsed = true; return Promise.resolve(new TextEncoder().encode(this._body).buffer); }
-			return this.text().then(function(t) { return new TextEncoder().encode(t).buffer; });
-		};
+		Response.prototype.text = function() { return __bodyText(this); };
+		Response.prototype.json = function() { return __bodyJSON(this); };
+		Response.prototype.arrayBuffer = function() { return __bodyArrayBuffer(this); };
 		Response.prototype.clone = function() { return new Response(this._body, {status: this.status, headers: this.headers}); };
 		Response.json = function(data, opts) {
 			opts = opts || {};
