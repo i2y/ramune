@@ -70,22 +70,17 @@ func getVersion() string {
 }
 
 func printLogo() {
-	cyan := lipgloss.NewStyle().Foreground(lipgloss.Color("14"))
 	blue := lipgloss.NewStyle().Foreground(lipgloss.Color("12"))
 	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("242"))
+	bubble := lipgloss.NewStyle().Foreground(lipgloss.Color("14"))
 
-	logo := cyan.Render("                                   ") + "\n" +
-		cyan.Render("   ╱▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔╲      ") + "\n" +
-		cyan.Render("  │") + blue.Render("  ┏━┓┏━┓┏┳┓╻ ╻┏┓╻┏━╸ ") + cyan.Render("│      ") + "\n" +
-		cyan.Render("  │") + blue.Render("  ┣┳┛┣━┫┃┃┃┃ ┃┃┗┫┣╸  ") + cyan.Render("│      ") + "\n" +
-		cyan.Render("  │") + blue.Render("  ╹┗╸╹ ╹╹ ╹┗━┛╹ ╹┗━╸ ") + cyan.Render("│  ○   ") + "\n" +
-		cyan.Render("   ╲_____________________╱  │   ") + "\n" +
-		cyan.Render("     │                 │    │   ") + "\n" +
-		cyan.Render("     ╰─────────────────╯────╯   ") + "\n"
+	logo := blue.Render("  ┏━┓┏━┓┏┳┓╻ ╻┏┓╻┏━╸") + "  " + bubble.Render("○") + "\n" +
+		blue.Render("  ┣┳┛┣━┫┃┃┃┃ ┃┃┗┫┣╸ ") + bubble.Render("○") + "\n" +
+		blue.Render("  ╹┗╸╹ ╹╹ ╹┗━┛╹ ╹┗━╸") + " " + bubble.Render("。") + "\n"
 
+	fmt.Fprint(os.Stderr, "\n")
 	fmt.Fprint(os.Stderr, logo)
-	fmt.Fprintf(os.Stderr, "  %s %s\n", blue.Render("v"+getVersion()), dim.Render("· JS/TS runtime for Go"))
-	fmt.Fprintln(os.Stderr)
+	fmt.Fprintf(os.Stderr, "  %s %s\n\n", dim.Render("v"+getVersion()), dim.Render("· JS/TS runtime for Go"))
 }
 
 func main() {
