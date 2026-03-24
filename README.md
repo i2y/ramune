@@ -46,17 +46,13 @@ go install github.com/i2y/ramune/cmd/ramune@latest
 
 Multi-runtime (RuntimePool, worker_threads) works out of the box on x86_64. On arm64, gcc is required for cgo signal forwarding (`apt install gcc`).
 
-### Minimal install (12MB)
+### Smaller binary
 
 ```bash
 go install -tags nosqlite -ldflags="-s -w" github.com/i2y/ramune/cmd/ramune@latest
 ```
 
-| Build | Size | Excludes |
-|-------|------|----------|
-| Default | 44MB | — |
-| `-tags nosqlite` | 39MB | bun:sqlite |
-| `-tags nosqlite -ldflags="-s -w"` | 29MB | bun:sqlite + debug info |
+`-tags nosqlite` excludes bun:sqlite. `-ldflags="-s -w"` strips debug info.
 
 ## Quick Start
 
