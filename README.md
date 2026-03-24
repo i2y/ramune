@@ -4,7 +4,7 @@
 
 # Ramune
 
-A JavaScript/TypeScript runtime for Go — powered by JavaScriptCore, no Cgo required. Pure Go except for JSC: type checker and formatter ([typescript-go](https://github.com/microsoft/typescript-go)), linter ([rslint](https://github.com/web-infra-dev/rslint)), bundler ([esbuild](https://github.com/evanw/esbuild)), and all Node.js polyfills are built in with zero external tool dependencies.
+A JavaScript/TypeScript runtime and embeddable JS engine for Go. Dual backend: **JavaScriptCore** (JIT, macOS/Linux) via [purego](https://github.com/ebitengine/purego) and **QuickJS** (pure Go, cross-platform incl. Windows) via [modernc.org/quickjs](https://pkg.go.dev/modernc.org/quickjs) — no Cgo required for either. Type checker and formatter ([typescript-go](https://github.com/microsoft/typescript-go)), linter ([rslint](https://github.com/web-infra-dev/rslint)), bundler ([esbuild](https://github.com/evanw/esbuild)), and all Node.js polyfills are built in with zero external tool dependencies.
 
 Named after [Ramune](https://en.wikipedia.org/wiki/Ramune), a Japanese carbonated soft drink served in a Codd-neck bottle.
 
@@ -24,7 +24,17 @@ Ramune is two things:
 1. **A JS/TS runtime** like Bun or Deno, but built in Go
 2. **An embeddable JS engine** for Go applications
 
-It loads Apple's JavaScriptCore dynamically via [purego](https://github.com/ebitengine/purego) — no C compiler, no Cgo, just `go build`. A **QuickJS backend** is also available for Windows, smaller binaries, and zero-dependency deployment.
+Two backends, same API:
+
+| | JSC (default) | QuickJS (`-tags quickjs`) |
+|---|---|---|
+| **Engine** | Apple JavaScriptCore via [purego](https://github.com/ebitengine/purego) | [modernc.org/quickjs](https://pkg.go.dev/modernc.org/quickjs) (pure Go) |
+| **JIT** | Yes | No |
+| **Platforms** | macOS, Linux | macOS, Linux, **Windows**, FreeBSD |
+| **System deps** | macOS: none. Linux: libjavascriptcoregtk | None |
+| **Best for** | Performance, HTTP servers | Embedding, scripting, portability |
+
+Both are pure Go builds — no C compiler, no Cgo, just `go build`.
 
 ## Install
 
