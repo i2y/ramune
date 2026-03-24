@@ -4,7 +4,7 @@
 
 # Ramune
 
-A JavaScript/TypeScript runtime for Go — powered by JavaScriptCore, no Cgo required. Pure Go except for JSC: type checker, formatter, linter, bundler, and all Node.js polyfills are implemented in Go with zero external tool dependencies.
+A JavaScript/TypeScript runtime for Go — powered by JavaScriptCore, no Cgo required. Pure Go except for JSC: type checker and formatter ([typescript-go](https://github.com/microsoft/typescript-go)), linter ([rslint](https://github.com/web-infra-dev/rslint)), bundler ([esbuild](https://github.com/evanw/esbuild)), and all Node.js polyfills are built in with zero external tool dependencies.
 
 Named after [Ramune](https://en.wikipedia.org/wiki/Ramune), a Japanese carbonated soft drink served in a Codd-neck bottle.
 
@@ -452,14 +452,14 @@ MIT
 
 ### Third-Party Licenses
 
-Ramune embeds code from the following projects:
+Ramune includes code from the following projects:
 
-| Project | License | Usage |
-|---------|---------|-------|
-| [microsoft/typescript-go](https://github.com/microsoft/typescript-go) | Apache-2.0 | Type checker, formatter (TS 7.0-dev) |
-| [web-infra-dev/rslint](https://github.com/web-infra-dev/rslint) | MIT | Linter |
-| [evanw/esbuild](https://github.com/evanw/esbuild) | MIT | TypeScript transpilation, bundling |
+| Project | License | Usage | Inclusion |
+|---------|---------|-------|-----------|
+| [microsoft/typescript-go](https://github.com/microsoft/typescript-go) | Apache-2.0 | Type checker, formatter (TS 7.0-dev) | Source copy (`internal/tsgo/`) |
+| [web-infra-dev/rslint](https://github.com/web-infra-dev/rslint) | MIT | Linter | Source copy (`internal/rslint/`) |
+| [evanw/esbuild](https://github.com/evanw/esbuild) | MIT | TypeScript transpilation, bundling | Go module dependency |
 
-Full license texts are included in `internal/tsgo/LICENSE` and `internal/rslint/LICENSE`.
+License texts for source-copied projects are in `internal/tsgo/LICENSE` and `internal/rslint/LICENSE`.
 
 The Ramune logo includes the Go Gopher, originally designed by [Renée French](https://reneefrench.blogspot.com/), licensed under [Creative Commons Attribution 4.0](https://creativecommons.org/licenses/by/4.0/).
