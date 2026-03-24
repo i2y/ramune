@@ -54,9 +54,9 @@ go install -tags nosqlite -ldflags="-s -w" github.com/i2y/ramune/cmd/ramune@late
 
 | Build | Size | Excludes |
 |-------|------|----------|
-| Default | 22MB | — |
-| `-tags nosqlite` | 17MB | bun:sqlite |
-| `-tags nosqlite -ldflags="-s -w"` | 12MB | bun:sqlite + debug info |
+| Default | 44MB | — |
+| `-tags nosqlite` | 39MB | bun:sqlite |
+| `-tags nosqlite -ldflags="-s -w"` | 29MB | bun:sqlite + debug info |
 
 ## Quick Start
 
@@ -120,7 +120,7 @@ ramune compile server.ts -o myserver --http --minify
 
 The compiled binary embeds the bundled JS via `go:embed`. On macOS, it is automatically codesigned with the JIT entitlement.
 
-Options: `--http` (Ramune.serve event loop), `--minify` (esbuild minification).
+Options: `--http` (Ramune.serve event loop), `--minify` (esbuild minification). Output binary is ~21MB (linter/formatter/checker are not included — only the runtime).
 
 > **Note:** The compiled binary loads JavaScriptCore dynamically at runtime. The target machine must have JSC available (macOS: built-in, Linux: `libjavascriptcoregtk`).
 
