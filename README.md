@@ -24,7 +24,7 @@ Ramune is two things:
 1. **A JS/TS runtime** like Bun or Deno, but built in Go
 2. **An embeddable JS engine** for Go applications
 
-It loads Apple's JavaScriptCore dynamically via [purego](https://github.com/ebitengine/purego) — no C compiler, no Cgo, just `go build`.
+It loads Apple's JavaScriptCore dynamically via [purego](https://github.com/ebitengine/purego) — no C compiler, no Cgo, just `go build`. A **QuickJS backend** is also available for Windows, smaller binaries, and zero-dependency deployment.
 
 ## Install
 
@@ -46,13 +46,21 @@ go install github.com/i2y/ramune/cmd/ramune@latest
 
 Multi-runtime (RuntimePool, worker_threads) works out of the box on x86_64. On arm64, gcc is required for cgo signal forwarding (`apt install gcc`).
 
+### Windows / Zero-dependency (QuickJS backend)
+
+```bash
+go install -tags quickjs github.com/i2y/ramune/cmd/ramune@latest
+```
+
+The QuickJS backend uses [modernc.org/quickjs](https://pkg.go.dev/modernc.org/quickjs) (pure Go, ES2023). No shared libraries needed — works on **Windows**, macOS, Linux, and FreeBSD. Trade-off: no JIT, so CPU-bound code is slower (see [Performance](#performance)).
+
 ### Smaller binary
 
 ```bash
 go install -tags nosqlite -ldflags="-s -w" github.com/i2y/ramune/cmd/ramune@latest
 ```
 
-`-tags nosqlite` excludes bun:sqlite. `-ldflags="-s -w"` strips debug info.
+`-tags nosqlite` excludes bun:sqlite. `-ldflags="-s -w"` strips debug info. Combine with `-tags quickjs,nosqlite` for the smallest possible binary.
 
 ## Quick Start
 
@@ -393,6 +401,8 @@ rt, _ := ramune.New(
 
 ## Performance
 
+### JSC backend (default)
+
 Benchmarks on Apple M4 Max (macOS, JIT enabled):
 
 | Test | Ramune | Bun | Node.js |
@@ -404,9 +414,24 @@ Benchmarks on Apple M4 Max (macOS, JIT enabled):
 | File I/O x100 | **20.7ms** | 13.3ms | 24.2ms |
 | HTTP req/s (single) | **101K** | 156K | 112K |
 
+### QuickJS backend (`-tags quickjs`)
+
+Same machine, no JIT:
+
+| Test | Ramune (QuickJS) | Ramune (JSC) | Bun | Node.js |
+|------|-----------------|--------------|-----|---------|
+| Hello World startup | 19.0ms | **14.2ms** | 6.4ms | 17.1ms |
+| Fibonacci(35) | 3,089ms | **46.2ms** | 39.3ms | 63.5ms |
+| JSON 10K objects | 65.1ms | **17.6ms** | 9.0ms | 22.0ms |
+| Crypto SHA256 x1000 | 26.8ms | **19.8ms** | 10.3ms | 19.5ms |
+| File I/O x100 | 25.8ms | **20.7ms** | 12.4ms | 22.7ms |
+| HTTP req/s (single) | 66K | **101K** | 165K | 111K |
+
+QuickJS has no JIT compiler, so CPU-bound code (Fibonacci, JSON) is significantly slower. I/O-bound workloads (crypto, file, HTTP) are closer because the heavy lifting happens in Go. The QuickJS backend is best suited for embedding, scripting, Windows support, and environments where zero external dependencies matter more than raw JS execution speed.
+
 ### Multi-Runtime Pool
 
-Ramune runs multiple JSC VMs in parallel on separate OS threads (Bun/Node are single-threaded):
+Ramune runs multiple JS VMs in parallel on separate OS threads (Bun/Node are single-threaded):
 
 | Workers | req/s | Scaling |
 |---------|-------|---------|
@@ -418,12 +443,12 @@ Measured with a JSON generate/filter/map handler (200 objects per request).
 
 ### vs Go JS Runtimes
 
-| Test | Ramune (JSC+JIT) | goja | otto |
-|------|-----------------|------|------|
-| Fibonacci(35) | **31ms** | 1,964ms (64x slower) | 26,203ms (852x slower) |
-| JSON 10K objects | **0.9ms** | 11ms (13x slower) | 27ms (31x slower) |
+| Test | Ramune (JSC+JIT) | Ramune (QuickJS) | goja | otto |
+|------|-----------------|-----------------|------|------|
+| Fibonacci(35) | **31ms** | 3,122ms | 1,989ms | 26,413ms |
+| JSON 10K objects | **0.9ms** | 30ms | 11ms | 27ms |
 
-Ramune uses Apple's JavaScriptCore with JIT compilation. goja and otto are pure Go interpreters.
+JSC with JIT is the fastest by a wide margin. QuickJS (pure Go interpreter) is comparable to goja for JSON workloads and slower for CPU-heavy code. otto is the slowest across all tests.
 
 Run `make bench` to reproduce.
 
@@ -484,17 +509,19 @@ Ramune also supports `package.json` `"exports"` field resolution (conditional ex
 ## Known Limitations
 
 - **N-API / Native addons**: Not supported. Packages that require `.node` native binaries (e.g., `bcrypt`, `sharp`, `better-sqlite3`) will not work. Use pure JS alternatives instead.
-- **HTTP self-fetch**: Ramune.serve() handlers cannot fetch their own server (same JSC context deadlock).
-- **Windows**: No JavaScriptCore available.
-- **Linux multi-runtime**: Architecture-dependent signal handling. On arm64, `CGO_ENABLED=1` and gcc are required for multi-runtime (cgo's signal forwarding is needed for JSC's GC). On x86_64, multi-runtime works without cgo (`CGO_ENABLED=0`).
-- **Multi-worker limit**: 2-3 workers recommended for sustained high-throughput; 4+ may trigger JSC JIT contention.
+- **HTTP self-fetch**: Ramune.serve() handlers cannot fetch their own server (same JS context deadlock).
+- **Windows**: JSC backend not available. Use `-tags quickjs` for Windows support.
+- **Linux multi-runtime (JSC)**: Architecture-dependent signal handling. On arm64, `CGO_ENABLED=1` and gcc are required for multi-runtime (cgo's signal forwarding is needed for JSC's GC). On x86_64, multi-runtime works without cgo (`CGO_ENABLED=0`).
+- **Multi-worker limit (JSC)**: 2-3 workers recommended for sustained high-throughput; 4+ may trigger JSC JIT contention.
+- **QuickJS backend**: No JIT — CPU-bound JS is ~67x slower than JSC. Error stack traces not available. Best for embedding/scripting, not compute-heavy workloads.
 
 ## Requirements
 
-| Dependency | Required | Purpose |
+| | JSC backend (default) | QuickJS backend (`-tags quickjs`) |
 |---|---|---|
-| **Go 1.26+** | Yes | Build and install |
-| **macOS** or **Linux** | Yes | macOS: JSC built-in. Linux: `apt install libjavascriptcoregtk-4.1-dev` |
+| **Go** | 1.26+ | 1.26+ |
+| **Platforms** | macOS, Linux | macOS, Linux, Windows, FreeBSD |
+| **System deps** | macOS: none. Linux: `apt install libjavascriptcoregtk-4.1-dev` | None |
 
 All tools are built in — no external dependencies needed for `check`, `fmt`, `lint`, or TypeScript transpilation. npm packages are fetched directly from the npm registry — no npm or bun CLI required.
 
