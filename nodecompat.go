@@ -1469,6 +1469,219 @@ func nodeCompatJSSource() string {
 		};
 	}
 
+	// --- performance ---
+	if (typeof globalThis.performance === 'undefined') {
+		var _perfOriginNs = JSON.parse(__go_hrtime());
+		var _perfOriginMs = Date.now();
+		var _perfMarks = {};
+		var _perfMeasures = [];
+		globalThis.performance = {
+			timeOrigin: _perfOriginMs,
+			now: function() {
+				var raw = JSON.parse(__go_hrtime());
+				var ds = raw[0] - _perfOriginNs[0];
+				var dn = raw[1] - _perfOriginNs[1];
+				return ds * 1e3 + dn / 1e6;
+			},
+			mark: function(name) {
+				var t = globalThis.performance.now();
+				_perfMarks[name] = t;
+				return { name: name, entryType: 'mark', startTime: t, duration: 0 };
+			},
+			measure: function(name, startMark, endMark) {
+				var s = startMark && _perfMarks[startMark] !== undefined ? _perfMarks[startMark] : 0;
+				var e = endMark && _perfMarks[endMark] !== undefined ? _perfMarks[endMark] : globalThis.performance.now();
+				var entry = { name: name, entryType: 'measure', startTime: s, duration: e - s };
+				_perfMeasures.push(entry);
+				return entry;
+			},
+			getEntriesByName: function(name) {
+				return _perfMeasures.filter(function(e) { return e.name === name; });
+			},
+			getEntriesByType: function(type) {
+				if (type === 'mark') {
+					return Object.keys(_perfMarks).map(function(k) { return { name: k, entryType: 'mark', startTime: _perfMarks[k], duration: 0 }; });
+				}
+				if (type === 'measure') return _perfMeasures.slice();
+				return [];
+			},
+			clearMarks: function(name) { if (name) delete _perfMarks[name]; else _perfMarks = {}; },
+			clearMeasures: function(name) { if (name) _perfMeasures = _perfMeasures.filter(function(e) { return e.name !== name; }); else _perfMeasures = []; }
+		};
+	}
+
+	// --- structuredClone ---
+	if (typeof globalThis.structuredClone === 'undefined') {
+		globalThis.structuredClone = function(obj) {
+			if (obj === null || typeof obj !== 'object') return obj;
+			var seen = new Map();
+			function clone(val) {
+				if (val === null || typeof val !== 'object') return val;
+				if (seen.has(val)) return seen.get(val);
+				if (val instanceof Date) return new Date(val.getTime());
+				if (val instanceof RegExp) return new RegExp(val.source, val.flags);
+				if (val instanceof Map) {
+					var m = new Map();
+					seen.set(val, m);
+					val.forEach(function(v, k) { m.set(clone(k), clone(v)); });
+					return m;
+				}
+				if (val instanceof Set) {
+					var s = new Set();
+					seen.set(val, s);
+					val.forEach(function(v) { s.add(clone(v)); });
+					return s;
+				}
+				if (ArrayBuffer.isView(val)) {
+					return new val.constructor(val.buffer.slice(0));
+				}
+				if (val instanceof ArrayBuffer) {
+					return val.slice(0);
+				}
+				if (Array.isArray(val)) {
+					var arr = [];
+					seen.set(val, arr);
+					for (var i = 0; i < val.length; i++) arr.push(clone(val[i]));
+					return arr;
+				}
+				if (val instanceof Error) {
+					var e = new val.constructor(val.message);
+					seen.set(val, e);
+					e.stack = val.stack;
+					return e;
+				}
+				var out = Object.create(Object.getPrototypeOf(val));
+				seen.set(val, out);
+				var keys = Object.keys(val);
+				for (var i = 0; i < keys.length; i++) out[keys[i]] = clone(val[keys[i]]);
+				return out;
+			}
+			return clone(obj);
+		};
+	}
+
+	// --- Blob / File ---
+	if (typeof globalThis.Blob === 'undefined') {
+		function Blob(parts, options) {
+			options = options || {};
+			this.type = options.type || '';
+			this._parts = [];
+			if (parts) {
+				for (var i = 0; i < parts.length; i++) {
+					var p = parts[i];
+					if (typeof p === 'string') this._parts.push(p);
+					else if (p instanceof Blob) this._parts.push(p._text());
+					else if (p instanceof ArrayBuffer) this._parts.push(new TextDecoder().decode(new Uint8Array(p)));
+					else if (ArrayBuffer.isView(p)) this._parts.push(new TextDecoder().decode(p instanceof Uint8Array ? p : new Uint8Array(p.buffer, p.byteOffset, p.byteLength)));
+					else this._parts.push(String(p));
+				}
+			}
+		}
+		Blob.prototype._text = function() { return this._parts.join(''); };
+		Object.defineProperty(Blob.prototype, 'size', { get: function() {
+			return new TextEncoder().encode(this._text()).length;
+		}});
+		Blob.prototype.text = function() { return Promise.resolve(this._text()); };
+		Blob.prototype.arrayBuffer = function() {
+			var buf = new TextEncoder().encode(this._text());
+			return Promise.resolve(buf.buffer);
+		};
+		Blob.prototype.slice = function(start, end, type) {
+			var t = this._text();
+			var bytes = new TextEncoder().encode(t);
+			start = start || 0; end = end !== undefined ? end : bytes.length;
+			if (start < 0) start = Math.max(bytes.length + start, 0);
+			if (end < 0) end = Math.max(bytes.length + end, 0);
+			var sliced = bytes.slice(start, end);
+			var str = new TextDecoder().decode(sliced);
+			return new Blob([str], { type: type || this.type });
+		};
+		Blob.prototype.stream = function() {
+			var text = this._text();
+			return { getReader: function() {
+				var done = false;
+				return { read: function() {
+					if (done) return Promise.resolve({ value: undefined, done: true });
+					done = true;
+					return Promise.resolve({ value: new TextEncoder().encode(text), done: false });
+				}, releaseLock: function() {} };
+			}};
+		};
+		Blob.prototype[Symbol.toStringTag] = 'Blob';
+		globalThis.Blob = Blob;
+
+		function File(parts, name, options) {
+			Blob.call(this, parts, options);
+			this.name = name;
+			this.lastModified = (options && options.lastModified) || Date.now();
+		}
+		File.prototype = Object.create(Blob.prototype);
+		File.prototype.constructor = File;
+		File.prototype[Symbol.toStringTag] = 'File';
+		globalThis.File = File;
+	}
+
+	// --- FormData ---
+	if (typeof globalThis.FormData === 'undefined') {
+		function FormData() {
+			this._entries = [];
+		}
+		FormData.prototype.append = function(name, value, filename) {
+			if (value instanceof Blob && !(value instanceof File)) {
+				value = new File([value._text()], filename || 'blob', { type: value.type });
+			}
+			this._entries.push([String(name), value]);
+		};
+		FormData.prototype.set = function(name, value, filename) {
+			this.delete(name);
+			this.append(name, value, filename);
+		};
+		FormData.prototype.delete = function(name) {
+			this._entries = this._entries.filter(function(e) { return e[0] !== name; });
+		};
+		FormData.prototype.get = function(name) {
+			for (var i = 0; i < this._entries.length; i++) {
+				if (this._entries[i][0] === name) return this._entries[i][1];
+			}
+			return null;
+		};
+		FormData.prototype.getAll = function(name) {
+			return this._entries.filter(function(e) { return e[0] === name; }).map(function(e) { return e[1]; });
+		};
+		FormData.prototype.has = function(name) {
+			return this._entries.some(function(e) { return e[0] === name; });
+		};
+		FormData.prototype.entries = function() {
+			var idx = 0, entries = this._entries;
+			return { next: function() {
+				if (idx >= entries.length) return { done: true, value: undefined };
+				return { done: false, value: entries[idx++].slice() };
+			}, [Symbol.iterator]: function() { return this; } };
+		};
+		FormData.prototype.keys = function() {
+			var idx = 0, entries = this._entries;
+			return { next: function() {
+				if (idx >= entries.length) return { done: true, value: undefined };
+				return { done: false, value: entries[idx++][0] };
+			}, [Symbol.iterator]: function() { return this; } };
+		};
+		FormData.prototype.values = function() {
+			var idx = 0, entries = this._entries;
+			return { next: function() {
+				if (idx >= entries.length) return { done: true, value: undefined };
+				return { done: false, value: entries[idx++][1] };
+			}, [Symbol.iterator]: function() { return this; } };
+		};
+		FormData.prototype.forEach = function(cb, thisArg) {
+			for (var i = 0; i < this._entries.length; i++) {
+				cb.call(thisArg, this._entries[i][1], this._entries[i][0], this);
+			}
+		};
+		FormData.prototype[Symbol.iterator] = FormData.prototype.entries;
+		FormData.prototype[Symbol.toStringTag] = 'FormData';
+		globalThis.FormData = FormData;
+	}
+
 	// --- Module registry ---
 	var _modules = {
 		'path': path,

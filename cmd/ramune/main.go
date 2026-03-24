@@ -314,7 +314,12 @@ func runCmd(args []string) {
 	fs.StringVar(&allowNet, "allow-net", "", "allow network access (comma-separated hosts)")
 	fs.StringVar(&allowEnv, "allow-env", "", "allow env access (comma-separated vars)")
 	fs.StringVar(&allowRun, "allow-run", "", "allow subprocess execution (comma-separated cmds)")
+	var envFile string
+	fs.StringVar(&envFile, "env-file", "", "load environment variables from file (default: .env)")
 	fs.Parse(args)
+
+	// Load .env file(s).
+	loadDotEnv(envFile)
 
 	filename := ""
 	if fs.NArg() >= 1 {
@@ -330,6 +335,16 @@ func runCmd(args []string) {
 		}
 		filename = entry
 		packages = append(packages, pkgDeps...)
+	}
+
+	// If filename doesn't look like a file, try package.json scripts.
+	if filename != "" && filename != "-" {
+		if _, statErr := os.Stat(filename); statErr != nil && !strings.Contains(filename, "/") && !strings.Contains(filename, "\\") {
+			if cmd, ok := lookupScript(filename); ok {
+				execScript(cmd, fs.Args()[1:])
+				return
+			}
+		}
 	}
 
 	var code []byte
@@ -802,6 +817,78 @@ func replBasicMode(rt *ramune.Runtime) {
 			fmt.Println(val.String())
 			val.Close()
 		}
+	}
+}
+
+// loadDotEnv loads environment variables from .env files.
+// If envFile is specified, only that file is loaded. Otherwise, .env and .env.local are loaded.
+func loadDotEnv(envFile string) {
+	files := []string{".env", ".env.local"}
+	if envFile != "" {
+		files = []string{envFile}
+	}
+	for _, f := range files {
+		data, err := os.ReadFile(f)
+		if err != nil {
+			if envFile != "" {
+				fmt.Fprintf(os.Stderr, "warning: could not read %s: %v\n", f, err)
+			}
+			continue
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+			idx := strings.IndexByte(line, '=')
+			if idx < 0 {
+				continue
+			}
+			key := strings.TrimSpace(line[:idx])
+			val := strings.TrimSpace(line[idx+1:])
+			// Strip surrounding quotes.
+			if len(val) >= 2 && ((val[0] == '"' && val[len(val)-1] == '"') || (val[0] == '\'' && val[len(val)-1] == '\'')) {
+				val = val[1 : len(val)-1]
+			}
+			// Don't override existing env vars.
+			if _, exists := os.LookupEnv(key); !exists {
+				os.Setenv(key, val)
+			}
+		}
+	}
+}
+
+// lookupScript reads package.json and returns the command for the given script name.
+func lookupScript(name string) (string, bool) {
+	data, err := os.ReadFile("package.json")
+	if err != nil {
+		return "", false
+	}
+	var pkg struct {
+		Scripts map[string]string `json:"scripts"`
+	}
+	if err := json.Unmarshal(data, &pkg); err != nil {
+		return "", false
+	}
+	cmd, ok := pkg.Scripts[name]
+	return cmd, ok
+}
+
+// execScript runs a package.json script command via the shell.
+func execScript(command string, extraArgs []string) {
+	if len(extraArgs) > 0 {
+		command += " " + strings.Join(extraArgs, " ")
+	}
+	cmd := exec.Command("sh", "-c", command)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			os.Exit(exitErr.ExitCode())
+		}
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
 	}
 }
 
