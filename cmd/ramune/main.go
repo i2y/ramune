@@ -1505,6 +1505,7 @@ globalThis.expect = function(actual) {
 };
 
 // --- jest.fn / jest.mock ---
+var _allMocks = [];
 globalThis.jest = {
 	fn: function(impl) {
 		function mockFn() {
@@ -1522,6 +1523,7 @@ globalThis.jest = {
 			}
 		}
 		mockFn._isMockFn = true;
+		_allMocks.push(mockFn);
 		mockFn._impl = impl || null;
 		mockFn._onceQueue = [];
 		mockFn.mock = { calls: [], results: [], instances: [] };
@@ -1546,8 +1548,8 @@ globalThis.jest = {
 	},
 	mock: function() {},
 	unmock: function() {},
-	clearAllMocks: function() {},
-	resetAllMocks: function() {}
+	clearAllMocks: function() { _allMocks.forEach(function(m) { m.mockClear(); }); },
+	resetAllMocks: function() { _allMocks.forEach(function(m) { m.mockReset(); }); }
 };
 `
 

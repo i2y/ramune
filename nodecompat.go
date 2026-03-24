@@ -3,6 +3,7 @@ package ramune
 import (
 	"fmt"
 	"os"
+	goruntime "runtime"
 	"strings"
 )
 
@@ -257,6 +258,11 @@ func (r *Runtime) installNodeCompat() error {
 		}
 		os.Exit(code)
 		return nil, nil
+	}); err != nil {
+		return err
+	}
+	if err := r.registerFuncLocked("__go_os_num_cpus", func(args []any) (any, error) {
+		return float64(goruntime.NumCPU()), nil
 	}); err != nil {
 		return err
 	}
@@ -691,7 +697,7 @@ func nodeCompatJSSource() string {
 	p.versions = { node: '20.0.0' };
 	p.argv = [];
 	p.exit = function(code) {
-		p._exitCode = code || 0;
+		if (code !== undefined && code !== null) p._exitCode = code;
 		p.emit('exit', p._exitCode);
 		if (typeof __go_process_exit === 'function') __go_process_exit(p._exitCode);
 	};
@@ -704,31 +710,10 @@ func nodeCompatJSSource() string {
 		return raw;
 	};
 	p.memoryUsage = function() { return { rss: 0, heapTotal: 0, heapUsed: 0, external: 0, arrayBuffers: 0 }; };
-	p._events = {};
 	p._exitCode = 0;
-	p.on = function(event, fn) {
-		if (!p._events[event]) p._events[event] = [];
-		p._events[event].push(fn);
-		return p;
-	};
-	p.off = function(event, fn) {
-		if (p._events[event]) p._events[event] = p._events[event].filter(function(f) { return f !== fn; });
-		return p;
-	};
-	p.once = function(event, fn) {
-		function wrapper() { p.off(event, wrapper); fn.apply(null, arguments); }
-		return p.on(event, wrapper);
-	};
-	p.emit = function(event) {
-		var args = Array.prototype.slice.call(arguments, 1);
-		var handlers = p._events[event];
-		if (handlers) for (var i = 0; i < handlers.length; i++) handlers[i].apply(null, args);
-		return !!(handlers && handlers.length);
-	};
-	p.removeAllListeners = function(event) {
-		if (event) delete p._events[event]; else p._events = {};
-		return p;
-	};
+	// EventEmitter methods are patched onto process after EventEmitter is defined (see below).
+	p.on = function() { return p; };
+	p.emit = function() { return false; };
 	Object.defineProperty(p, 'exitCode', {
 		get: function() { return p._exitCode; },
 		set: function(v) { p._exitCode = v; }
@@ -739,7 +724,7 @@ func nodeCompatJSSource() string {
 		globalThis.navigator = {
 			userAgent: 'Ramune/' + (globalThis.Ramune && globalThis.Ramune.version || '0.1.0'),
 			platform: p.platform || 'unknown',
-			hardwareConcurrency: typeof __go_os_cpus === 'function' ? (function() { try { return JSON.parse(__go_os_cpus()).length; } catch(e) { return 1; } })() : 1,
+			hardwareConcurrency: typeof __go_os_num_cpus === 'function' ? __go_os_num_cpus() : 1,
 			language: 'en',
 			languages: ['en']
 		};
@@ -794,6 +779,18 @@ func nodeCompatJSSource() string {
 			return new Promise(function(resolve) { emitter.once(event, resolve); });
 		}
 	};
+
+	// Patch process to use EventEmitter (process is defined before EventEmitter).
+	EventEmitter.call(p);
+	p.on = EventEmitter.prototype.on;
+	p.addListener = EventEmitter.prototype.addListener;
+	p.once = EventEmitter.prototype.once;
+	p.off = EventEmitter.prototype.removeListener;
+	p.removeListener = EventEmitter.prototype.removeListener;
+	p.removeAllListeners = EventEmitter.prototype.removeAllListeners;
+	p.emit = EventEmitter.prototype.emit;
+	p.listeners = EventEmitter.prototype.listeners;
+	p.listenerCount = EventEmitter.prototype.listenerCount;
 
 	// --- stream ---
 	function Readable(opts) {
@@ -1280,20 +1277,20 @@ func nodeCompatJSSource() string {
 	}
 	var _consoleTimers = {};
 	if (!globalThis.console.time) {
-		globalThis.console.time = function(label) { _consoleTimers[label || 'default'] = Date.now(); };
+		globalThis.console.time = function(label) { _consoleTimers[label || 'default'] = performance.now(); };
 	}
 	if (!globalThis.console.timeEnd) {
 		globalThis.console.timeEnd = function(label) {
 			label = label || 'default';
 			var start = _consoleTimers[label];
-			if (start !== undefined) { console.log(label + ': ' + (Date.now() - start) + 'ms'); delete _consoleTimers[label]; }
+			if (start !== undefined) { console.log(label + ': ' + (performance.now() - start).toFixed(3) + 'ms'); delete _consoleTimers[label]; }
 		};
 	}
 	if (!globalThis.console.timeLog) {
 		globalThis.console.timeLog = function(label) {
 			label = label || 'default';
 			var start = _consoleTimers[label];
-			if (start !== undefined) console.log(label + ': ' + (Date.now() - start) + 'ms');
+			if (start !== undefined) console.log(label + ': ' + (performance.now() - start).toFixed(3) + 'ms');
 		};
 	}
 	if (!globalThis.console.trace) {
