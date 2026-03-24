@@ -780,25 +780,95 @@ func bunCompatJSSource() string {
 			opts = opts || {};
 			this.url = url;
 			this.method = (opts.method || 'GET').toUpperCase();
-			this._body = opts.body || '';
 			this.headers = new (globalThis.Headers || function(){})(opts.headers || {});
+			this.bodyUsed = false;
+			if (opts.body instanceof ReadableStream) {
+				this._stream = opts.body;
+				this._body = null;
+			} else {
+				this._body = opts.body != null ? String(opts.body) : '';
+				this._stream = null;
+			}
 		};
-		Request.prototype.text = function() { return Promise.resolve(this._body); };
-		Request.prototype.json = function() { return Promise.resolve(JSON.parse(this._body)); };
+		Object.defineProperty(Request.prototype, 'body', { get: function() {
+			if (this._stream) return this._stream;
+			var text = this._body || '';
+			if (!text) return null;
+			return new ReadableStream({
+				start: function(c) { c.enqueue(new TextEncoder().encode(text)); c.close(); }
+			});
+		}});
+		Request.prototype.text = function() {
+			if (this._body !== null) { this.bodyUsed = true; return Promise.resolve(this._body); }
+			if (this.bodyUsed) return Promise.reject(new TypeError('Body already consumed'));
+			this.bodyUsed = true;
+			var reader = this._stream.getReader();
+			var chunks = [];
+			function pump() {
+				return reader.read().then(function(r) {
+					if (r.done) return chunks.join('');
+					chunks.push(typeof r.value === 'string' ? r.value : new TextDecoder().decode(r.value));
+					return pump();
+				});
+			}
+			return pump();
+		};
+		Request.prototype.json = function() {
+			if (this._body !== null) { this.bodyUsed = true; try { return Promise.resolve(JSON.parse(this._body)); } catch(e) { return Promise.reject(e); } }
+			return this.text().then(function(t) { return JSON.parse(t); });
+		};
+		Request.prototype.arrayBuffer = function() {
+			return this.text().then(function(t) { return new TextEncoder().encode(t).buffer; });
+		};
 		Request.prototype.clone = function() { return new Request(this.url, {method: this.method, body: this._body, headers: this.headers}); };
 	}
 
 	if (typeof Response === 'undefined') {
 		globalThis.Response = function(body, opts) {
 			opts = opts || {};
-			this._body = body || '';
 			this.status = opts.status || 200;
 			this.statusText = opts.statusText || 'OK';
 			this.headers = new (globalThis.Headers || function(){})(opts.headers || {});
 			this.ok = this.status >= 200 && this.status < 300;
+			this.bodyUsed = false;
+			if (body instanceof ReadableStream) {
+				this._stream = body;
+				this._body = null;
+			} else {
+				this._body = body != null ? String(body) : '';
+				this._stream = null;
+			}
 		};
-		Response.prototype.text = function() { return Promise.resolve(this._body); };
-		Response.prototype.json = function() { return Promise.resolve(JSON.parse(this._body)); };
+		Object.defineProperty(Response.prototype, 'body', { get: function() {
+			if (this._stream) return this._stream;
+			var text = this._body || '';
+			return new ReadableStream({
+				start: function(c) { if (text) c.enqueue(new TextEncoder().encode(text)); c.close(); }
+			});
+		}});
+		Response.prototype.text = function() {
+			if (this._body !== null) { this.bodyUsed = true; return Promise.resolve(this._body); }
+			if (this.bodyUsed) return Promise.reject(new TypeError('Body already consumed'));
+			this.bodyUsed = true;
+			var reader = this._stream.getReader();
+			var chunks = [];
+			function pump() {
+				return reader.read().then(function(r) {
+					if (r.done) return chunks.join('');
+					chunks.push(typeof r.value === 'string' ? r.value : new TextDecoder().decode(r.value));
+					return pump();
+				});
+			}
+			return pump();
+		};
+		Response.prototype.json = function() {
+			if (this._body !== null) { this.bodyUsed = true; try { return Promise.resolve(JSON.parse(this._body)); } catch(e) { return Promise.reject(e); } }
+			return this.text().then(function(t) { return JSON.parse(t); });
+		};
+		Response.prototype.arrayBuffer = function() {
+			if (this._body !== null) { this.bodyUsed = true; return Promise.resolve(new TextEncoder().encode(this._body).buffer); }
+			return this.text().then(function(t) { return new TextEncoder().encode(t).buffer; });
+		};
 		Response.prototype.clone = function() { return new Response(this._body, {status: this.status, headers: this.headers}); };
 		Response.json = function(data, opts) {
 			opts = opts || {};
@@ -806,6 +876,9 @@ func bunCompatJSSource() string {
 				status: opts.status || 200,
 				headers: Object.assign({'content-type': 'application/json'}, opts.headers || {})
 			});
+		};
+		Response.redirect = function(url, status) {
+			return new Response('', { status: status || 302, headers: { location: url } });
 		};
 	}
 

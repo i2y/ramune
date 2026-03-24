@@ -107,14 +107,25 @@ func fetchJSSource() string {
 		try {
 			var optsJSON = '';
 			if (options) {
+				var h = options.headers || {};
+				if (h && typeof h.forEach === 'function') {
+					var plain = {}; h.forEach(function(v, k) { plain[k] = v; }); h = plain;
+				}
 				optsJSON = JSON.stringify({
 					method: options.method || 'GET',
-					headers: options.headers || {},
+					headers: h,
 					body: options.body || ''
 				});
 			}
 			var raw = __go_http_request(String(url), optsJSON);
 			var resp = JSON.parse(raw);
+			if (typeof Response === 'function') {
+				return Promise.resolve(new Response(resp.body || '', {
+					status: resp.status,
+					statusText: resp.statusText,
+					headers: resp.headers || {}
+				}));
+			}
 			var _body = resp.body;
 			var _headers = resp.headers || {};
 			return Promise.resolve({

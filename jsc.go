@@ -414,6 +414,16 @@ func (r *Runtime) jscLoop(cfg config, initErr chan<- error) {
 			initErr <- fmt.Errorf("ramune: failed to install worker_threads: %w", err)
 			return
 		}
+		if err := r.installWebStreams(); err != nil {
+			releaseCtx()
+			initErr <- fmt.Errorf("ramune: failed to install Web Streams: %w", err)
+			return
+		}
+		if err := r.installWebCrypto(); err != nil {
+			releaseCtx()
+			initErr <- fmt.Errorf("ramune: failed to install Web Crypto: %w", err)
+			return
+		}
 		if err := r.installBunCompat(); err != nil {
 			releaseCtx()
 			initErr <- fmt.Errorf("ramune: failed to install Bun compat: %w", err)
