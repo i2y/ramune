@@ -15,6 +15,7 @@ ramune check app.ts           # Type-check
 ramune fmt .                  # Format
 ramune lint .                 # Lint
 ramune compile app.ts -o app  # Compile to standalone binary
+ramune skills install         # Install Agent Skills for AI agents
 ```
 
 ## What is Ramune?
@@ -534,6 +535,14 @@ Ramune also supports `package.json` `"exports"` field resolution (conditional ex
 | **System deps** | macOS: none. Linux: `apt install libjavascriptcoregtk-4.1-dev` | None |
 
 All tools are built in — no external dependencies needed for `check`, `fmt`, `lint`, or TypeScript transpilation. npm packages are fetched directly from the npm registry — no npm or bun CLI required.
+
+## Agent Skills
+
+Ramune ships with an [Agent Skill](https://agentskills.io/) that teaches AI agents (Claude Code, GitHub Copilot, etc.) how to use Ramune:
+
+```bash
+ramune skills install   # install to ~/.agents/skills/ and .claude/skills/
+```
 
 ## Development
 

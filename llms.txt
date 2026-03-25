@@ -9,7 +9,7 @@
 
 ## CLI Runtime
 
-- [CLI (cmd/ramune)](https://github.com/i2y/ramune/blob/main/cmd/ramune/main.go): `ramune run`, `ramune eval`, `ramune repl`, `ramune test`, `ramune check`, `ramune fmt`, `ramune lint`, `ramune build`, `ramune compile`, `ramune bench`, `ramune x`, `ramune init/add/remove/install`, `ramune setup-jit`
+- [CLI (cmd/ramune)](https://github.com/i2y/ramune/blob/main/cmd/ramune/main.go): `ramune run`, `ramune eval`, `ramune repl`, `ramune test`, `ramune check`, `ramune fmt`, `ramune lint`, `ramune build`, `ramune compile`, `ramune bench`, `ramune x`, `ramune init/add/remove/install`, `ramune setup-jit`, `ramune skills`
 - TypeScript/TSX support via esbuild transpilation
 - ESM (import/export) and CommonJS support with esbuild Build API bundling
 - `ramune compile` — compile JS/TS to standalone Go binary via go:embed
@@ -85,9 +85,9 @@ Run `make bench` to reproduce.
 
 ## Agent Skills
 
-- [ramune-test](https://github.com/i2y/ramune/blob/main/skills/ramune-test/SKILL.md): Build, test, and debug the project
+Ramune ships with an embedded [Agent Skill](https://agentskills.io/) that teaches AI agents how to use Ramune. Install via `ramune skills install` (writes to both `~/.agents/skills/` and `.claude/skills/`).
 
-- [js-eval](https://github.com/i2y/ramune/blob/main/skills/js-eval/SKILL.md): Evaluate JavaScript code
+- [ramune](https://github.com/i2y/ramune/blob/main/cmd/ramune/skills/ramune/SKILL.md): Use Ramune — CLI commands, Go library API, HTTP server, multi-core pool, Node.js compatibility
 
 ## Platform Support
 

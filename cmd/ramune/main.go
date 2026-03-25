@@ -16,6 +16,7 @@ package main
 
 import (
 	"bufio"
+	"embed"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -54,6 +55,9 @@ import (
 	"github.com/i2y/ramune/internal/tsgo/tspath"
 	"github.com/i2y/ramune/internal/tsgo/vfs/osvfs"
 )
+
+//go:embed skills
+var skillsFS embed.FS
 
 // Set at build time via -ldflags "-X main.version=..."
 // Falls back to Go module version from go install.
@@ -123,6 +127,8 @@ func main() {
 		compileCmd(os.Args[2:])
 	case "bench":
 		benchCmd(os.Args[2:])
+	case "skills":
+		skillsCmd(os.Args[2:])
 	case "version", "--version", "-v":
 		printLogo()
 	case "help", "-h", "--help":
@@ -153,6 +159,7 @@ Commands:
   repl              Interactive REPL (JS/TS)
   setup-jit         Enable JSC JIT compiler (macOS only)
   compile [file]    Compile JS/TS to standalone binary
+  skills <cmd>      Manage Agent Skills (install, list, update, uninstall)
   version           Show version
   help              Show this help
 
@@ -2316,6 +2323,36 @@ func evalCmd(args []string) {
 	if !val.IsUndefined() && !val.IsNull() {
 		fmt.Println(val.String())
 	}
+}
+
+func skillsCmd(args []string) {
+	if len(args) == 0 || args[0] != "install" {
+		fmt.Fprintln(os.Stderr, "usage: ramune skills install")
+		os.Exit(1)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	data, _ := skillsFS.ReadFile("skills/ramune/SKILL.md")
+	targets := []string{
+		filepath.Join(home, ".agents", "skills", "ramune"),
+		filepath.Join(".claude", "skills", "ramune"),
+	}
+	for _, dir := range targets {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), data, 0o644); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+	}
+	fmt.Println("+ ramune skill installed")
+	fmt.Printf("  %s\n", filepath.Join(home, ".agents", "skills", "ramune", "SKILL.md"))
+	fmt.Printf("  %s\n", filepath.Join(".claude", "skills", "ramune", "SKILL.md"))
 }
 
 // benchCmd implements `ramune bench [dir|file]`.
