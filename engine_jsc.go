@@ -484,6 +484,20 @@ func (r *Runtime) Close() error {
 			for _, ptr := range ptrs {
 				r.jsValueUnprotect(r.ctx, ptr)
 			}
+			// Unprotect cached JSC references not tracked in protectedPtrs.
+			if r.jsonStringifyFn != 0 {
+				r.jsValueUnprotect(r.ctx, r.jsonStringifyFn)
+				r.jsonStringifyFn = 0
+			}
+			if r.poolHandleFn != 0 {
+				r.jsValueUnprotect(r.ctx, r.poolHandleFn)
+				r.poolHandleFn = 0
+			}
+			if r.bunSrv != nil {
+				r.bunSrv.releaseCachedRefs(r)
+			}
+			// Flush GC synchronously before releasing the context.
+			r.jsGarbageCollect(r.ctx)
 			r.jsGlobalContextRelease(r.ctx)
 			if r.group != 0 {
 				r.jsContextGroupRelease(r.group)

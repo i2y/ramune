@@ -46,6 +46,19 @@ done:
 	}
 }
 
+// releaseCachedRefs unprotects cached JSC function references.
+// Must be called on the JSC goroutine during Runtime.Close().
+func (s *bunServerState) releaseCachedRefs(r *Runtime) {
+	if s.handleFastFn != 0 {
+		r.jsValueUnprotect(r.ctx, s.handleFastFn)
+		s.handleFastFn = 0
+	}
+	if s.handleFn != 0 {
+		r.jsValueUnprotect(r.ctx, s.handleFn)
+		s.handleFn = 0
+	}
+}
+
 // ensureHandlerCached caches JS function references for direct calls.
 // Must be called with rt.mu held.
 func (s *bunServerState) ensureHandlerCached(r *Runtime) {
