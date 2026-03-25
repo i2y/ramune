@@ -80,7 +80,7 @@ func printLogo() {
 
 	fmt.Fprint(os.Stderr, "\n")
 	fmt.Fprint(os.Stderr, logo)
-	fmt.Fprintf(os.Stderr, "  %s %s\n\n", dim.Render("v"+getVersion()), dim.Render("· JS/TS runtime for Go"))
+	fmt.Fprintf(os.Stderr, "  %s %s\n\n", dim.Render(getVersion()), dim.Render("· JS/TS runtime for Go"))
 }
 
 func main() {
