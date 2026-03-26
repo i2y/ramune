@@ -159,6 +159,10 @@ Commands:
   repl              Interactive REPL (JS/TS)
   setup-jit         Sign binary for JSC JIT (macOS, requires codesign)
   compile [file]    Compile JS/TS to standalone binary
+  init              Initialize a new project (creates package.json)
+  add <pkg...>      Add npm packages to package.json
+  remove <pkg...>   Remove npm packages from package.json
+  install           Install packages from package.json
   skills install    Install Ramune Agent Skill for AI agents
   version           Show version
   help              Show this help
