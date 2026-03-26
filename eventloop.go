@@ -67,10 +67,15 @@ func (r *Runtime) tickManagers() {
 	}
 }
 
-// RunEventLoop processes the event loop until all timers complete.
-// Default timeout is 30 seconds.
+// RunEventLoop processes the event loop until all pending operations complete.
+// For short-lived scripts (timers, promises), the default timeout is 30 seconds.
+// If an HTTP server (Ramune.serve) is active, the loop runs indefinitely.
 func (r *Runtime) RunEventLoop() error {
-	return r.RunEventLoopFor(30 * time.Second)
+	timeout := 30 * time.Second
+	if r.bunSrv != nil && r.bunSrv.hasActive() {
+		timeout = 365 * 24 * time.Hour
+	}
+	return r.RunEventLoopFor(timeout)
 }
 
 // RunEventLoopFor processes the event loop until all timers complete
