@@ -84,7 +84,7 @@ func printLogo() {
 
 	fmt.Fprint(os.Stderr, "\n")
 	fmt.Fprint(os.Stderr, logo)
-	fmt.Fprintf(os.Stderr, "  %s %s\n\n", dim.Render(getVersion()), dim.Render("· JS/TS runtime for Go"))
+	fmt.Fprintf(os.Stderr, "  %s %s\n\n", dim.Render(getVersion()), dim.Render("· JS/TS runtime for Go ("+backendName+")"))
 }
 
 func main() {
@@ -157,9 +157,9 @@ Commands:
   fmt [file|dir]    Format JS/TS files
   lint [file|dir]   Lint JS/TS files
   repl              Interactive REPL (JS/TS)
-  setup-jit         Enable JSC JIT compiler (macOS only)
+  setup-jit         Sign binary for JSC JIT (macOS, requires codesign)
   compile [file]    Compile JS/TS to standalone binary
-  skills <cmd>      Manage Agent Skills (install, list, update, uninstall)
+  skills install    Install Ramune Agent Skill for AI agents
   version           Show version
   help              Show this help
 
@@ -169,6 +169,7 @@ Run options:
   --check           Type-check before running
   --workers N       Run N parallel workers for Ramune.serve()
 
+Build with -tags quickjs to use QuickJS backend instead of JavaScriptCore.
 Supported file types: .js, .mjs, .ts, .tsx
 
 Examples:
