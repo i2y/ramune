@@ -1,6 +1,12 @@
 # Ramune
 
-> Ramune is a JavaScript/TypeScript runtime and embeddable JS engine for Go, powered by JavaScriptCore via purego — no Cgo required. It provides multi-core parallel JS execution, Node.js/Bun API compatibility, and can embed Go libraries into JavaScript.
+> Ramune is a JavaScript/TypeScript runtime and embeddable JS engine for Go. Dual backend: JavaScriptCore (JIT, macOS/Linux) via [purego](https://github.com/ebitengine/purego) and QuickJS (pure Go, cross-platform incl. Windows) via [modernc.org/quickjs](https://pkg.go.dev/modernc.org/quickjs) — no Cgo required for either.
+
+## Backends
+
+Two backends, same API:
+- **JSC** (default): Apple JavaScriptCore via purego. JIT, macOS/Linux.
+- **QuickJS** (`-tags quickjs`): modernc.org/quickjs, pure Go. No JIT, macOS/Linux/Windows/FreeBSD.
 
 ## Getting Started
 
@@ -9,7 +15,7 @@
 
 ## CLI Runtime
 
-- [CLI (cmd/ramune)](https://github.com/i2y/ramune/blob/main/cmd/ramune/main.go): `ramune run`, `ramune eval`, `ramune repl`, `ramune test`, `ramune check`, `ramune fmt`, `ramune lint`, `ramune build`, `ramune compile`, `ramune bench`, `ramune x`, `ramune init/add/remove/install`, `ramune setup-jit`, `ramune skills`
+- [CLI (cmd/ramune)](https://github.com/i2y/ramune/blob/main/cmd/ramune/main.go): `ramune run`, `ramune eval`, `ramune repl`, `ramune test`, `ramune check`, `ramune fmt`, `ramune lint`, `ramune build`, `ramune compile`, `ramune bench`, `ramune x`, `ramune init/add/remove/install`, `ramune setup-jit`, `ramune skills install`
 - TypeScript/TSX support via esbuild transpilation
 - ESM (import/export) and CommonJS support with esbuild Build API bundling
 - `ramune compile` — compile JS/TS to standalone Go binary via go:embed
@@ -27,14 +33,14 @@
 
 ## Core Library API
 
-- [Runtime (jsc.go)](https://github.com/i2y/ramune/blob/main/jsc.go): New(), Close(), Eval(), Exec(), EvalAsync(), NewObject(), NewArray(), NewUint8Array(), RegisterFunc(), GlobalObject(), dispatch(), Wake()
-- [Value (value.go)](https://github.com/i2y/ramune/blob/main/value.go): String(), Float64(), Bool(), Bytes(), Attr(), SetAttr(), Call(), Keys(), Len(), Index(), Has(), Delete(), ToMap(), ToSlice(), IsArray(), IsFunction(), Close()
+- [Runtime (engine_jsc.go)](https://github.com/i2y/ramune/blob/main/engine_jsc.go): New(), Close(), Eval(), Exec(), EvalAsync(), NewObject(), NewArray(), NewUint8Array(), RegisterFunc(), GlobalObject(), dispatch(), Wake()
+- [Value (value_jsc.go)](https://github.com/i2y/ramune/blob/main/value_jsc.go): String(), Float64(), Bool(), Bytes(), Attr(), SetAttr(), Call(), Keys(), Len(), Index(), Has(), Delete(), ToMap(), ToSlice(), IsArray(), IsFunction(), Close()
 - [Typed Registration (register.go)](https://github.com/i2y/ramune/blob/main/register.go): Register[F]() — generics-based typed Go function registration
 - [Struct Binding (bind.go)](https://github.com/i2y/ramune/blob/main/bind.go): Bind() — expose Go structs as JS objects with getters/setters/methods
 - [Plugin System (module.go)](https://github.com/i2y/ramune/blob/main/module.go): Module, WithModule(), LoadModule() — custom require() modules
-- [Type Conversion (convert.go)](https://github.com/i2y/ramune/blob/main/convert.go): Go↔JS conversion for bool, numbers, strings, nil, map[string]any, []any, []byte (Uint8Array)
+- [Type Conversion (convert_jsc.go)](https://github.com/i2y/ramune/blob/main/convert_jsc.go): Go↔JS conversion for bool, numbers, strings, nil, map[string]any, []any, []byte (Uint8Array)
 - [Error Handling (errors.go)](https://github.com/i2y/ramune/blob/main/errors.go): JSError with Message and Stack trace, ErrAlreadyClosed, ErrNilValue
-- [GC Config](https://github.com/i2y/ramune/blob/main/jsc.go): WithGC(GCConfig) — DisableAutoGC, GCInterval, GCPercent for JSC/Go GC interop
+- [GC Config (types.go)](https://github.com/i2y/ramune/blob/main/types.go): WithGC(GCConfig) — DisableAutoGC, GCInterval, GCPercent for JSC/Go GC interop
 - [Permissions (permissions.go)](https://github.com/i2y/ramune/blob/main/permissions.go): WithPermissions() — read/write/net/env/run access control
 - [RuntimePool (pool.go)](https://github.com/i2y/ramune/blob/main/pool.go): NewPool(n) for multi-core parallel JS execution with HTTP dispatch
 
@@ -53,22 +59,24 @@
 - [Web Streams (webstreams.go)](https://github.com/i2y/ramune/blob/main/webstreams.go): ReadableStream, WritableStream, TransformStream with pipeTo/pipeThrough/tee/async iterator
 - [Web Crypto (webcrypto.go)](https://github.com/i2y/ramune/blob/main/webcrypto.go): crypto.subtle — digest, sign/verify, encrypt/decrypt, importKey/exportKey, deriveBits/deriveKey, getRandomValues, randomUUID
 - Blob, File, FormData, Headers, Request, Response (with ReadableStream body)
-- performance.now/mark/measure, structuredClone, AbortController, TextEncoder/TextDecoder, URL/URLSearchParams, navigator
+- performance.now/mark/measure, structuredClone, AbortController, TextEncoder/TextDecoder, URL/URLSearchParams, navigator, WebSocket (server-side)
 
 ## Ramune APIs & Bun Compatibility
 
-- [Ramune/Bun APIs (buncompat.go)](https://github.com/i2y/ramune/blob/main/buncompat.go): Ramune.serve() (HTTP server, 101K req/s), Ramune.file(), Ramune.write(), Ramune.password, Ramune.sleep(), Ramune.plugin() (onLoad filters, virtual modules), Request/Response with ReadableStream body. Bun.* available as alias. Works with Hono.
+- [Ramune/Bun APIs (buncompat.go)](https://github.com/i2y/ramune/blob/main/buncompat.go): Ramune.serve() (HTTP server, 101K req/s), Ramune.file(), Ramune.write(), Ramune.password, Ramune.sleep(), Ramune.hash(), Ramune.plugin() (onLoad filters, virtual modules), Request/Response with ReadableStream body. Bun.* available as alias. Works with Hono.
 - [WebSocket (websocket.go)](https://github.com/i2y/ramune/blob/main/websocket.go): WebSocket server for Ramune.serve()
 - [SQLite (sqlite.go)](https://github.com/i2y/ramune/blob/main/sqlite.go): bun:sqlite — pure Go SQLite via modernc.org/sqlite
 
 ## Node.js Compatibility
 
-- [NodeCompat (nodecompat.go)](https://github.com/i2y/ramune/blob/main/nodecompat.go): fs (90%, async + sync + watch), path (100%), crypto (85% + crypto.subtle), child_process (80%), stream (70%), zlib (75%, gzip/deflate/brotli), os (85%), events (85%), http/https (70%), net/tls (60%), Buffer (60%), url (80%), assert (80%), util (80%, types/promisify/format), readline (70%), dns (basic), worker_threads (70%), vm (70%), querystring (80%), timers/promises (70%), perf_hooks, process (85%, signals/exit/env via EventEmitter)
+- [NodeCompat (nodecompat.go)](https://github.com/i2y/ramune/blob/main/nodecompat.go): fs (90%, async + sync + watch), path (100%), crypto (85% + crypto.subtle), child_process (80%), stream (70%), zlib (75%, gzip/deflate/brotli), os (85%), events (85%), http/https (70%), net/tls (60%), Buffer (60%), url (80%), assert (80%), util (80%, types/promisify/format), readline (70%), dns (basic), worker_threads (70%), vm (70%), querystring (80%), timers/promises (70%), perf_hooks (basic), process (85%, signals/exit/env via EventEmitter)
 - [npm Bundling (bundle.go)](https://github.com/i2y/ramune/blob/main/bundle.go): Dependencies() fetches from npm registry and bundles via esbuild (no npm/bun CLI required)
 - [Package Registry (internal/registry/)](https://github.com/i2y/ramune/blob/main/internal/registry/): npm registry client, semver resolution, lockfile (ramune.lock)
-- [VM Module (vm.go)](https://github.com/i2y/ramune/blob/main/vm.go): vm.createContext, runInContext, runInNewContext, Script — isolated JSC contexts
+- [VM Module (vm_jsc.go)](https://github.com/i2y/ramune/blob/main/vm_jsc.go): vm.createContext, runInContext, runInNewContext, Script — isolated JSC contexts
 
 ## Benchmarks
+
+### JSC backend (default)
 
 | Test | Ramune | Bun | Node.js |
 |------|--------|-----|---------|
@@ -77,9 +85,18 @@
 | JSON 10K | 17.6ms | 9.7ms | 22.9ms |
 | HTTP req/s (single) | 101K | 156K | 112K |
 
+### QuickJS backend (`-tags quickjs`)
+
+| Test | Ramune (QuickJS) | Ramune (JSC) | Bun | Node.js |
+|------|-----------------|--------------|-----|---------|
+| Hello World | 19.0ms | 14.2ms | 6.4ms | 17.1ms |
+| Fibonacci(35) | 3,089ms | 46.2ms | 39.3ms | 63.5ms |
+| JSON 10K | 65.1ms | 17.6ms | 9.0ms | 22.0ms |
+| HTTP req/s (single) | 66K | 101K | 165K | 111K |
+
 Multi-runtime pool: 1 worker 44K → 3 workers 68K req/s (JSON handler).
 
-vs Go runtimes: Ramune 31ms vs goja 1,964ms (64x) vs otto 26,203ms (852x) on fib(35).
+vs Go runtimes (fib(35)): Ramune (JSC+JIT) 31ms vs Ramune (QuickJS) 3,122ms vs goja 1,989ms vs otto 26,413ms.
 
 Run `make bench` to reproduce.
 
@@ -93,4 +110,5 @@ Ramune ships with an embedded [Agent Skill](https://agentskills.io/) that teache
 
 - macOS: JavaScriptCore built-in, JIT via `ramune setup-jit`
 - Linux: libjavascriptcoregtk (4.0/4.1/6.0)
+- Windows / FreeBSD: QuickJS backend (`-tags quickjs`), no system deps
 - [CI](https://github.com/i2y/ramune/blob/main/.github/workflows/ci.yml): macOS + Ubuntu 22.04/24.04

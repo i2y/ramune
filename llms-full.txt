@@ -1,12 +1,19 @@
 # Ramune — Full Documentation
 
-> Ramune is a JavaScript/TypeScript runtime and embeddable JS engine for Go, powered by JavaScriptCore via purego — no Cgo required. It provides multi-core parallel JS execution, Node.js/Bun API compatibility, and can embed Go libraries into JavaScript.
+> Ramune is a JavaScript/TypeScript runtime and embeddable JS engine for Go. Dual backend: JavaScriptCore (JIT, macOS/Linux) via [purego](https://github.com/ebitengine/purego) and QuickJS (pure Go, cross-platform incl. Windows) via [modernc.org/quickjs](https://pkg.go.dev/modernc.org/quickjs) — no Cgo required for either.
 
 ## Install
 
 ```
+# JSC backend (default, macOS/Linux)
 go install github.com/i2y/ramune/cmd/ramune@latest
 ramune setup-jit   # macOS only: enable JSC JIT for full performance
+
+# QuickJS backend (Windows / zero-dependency)
+go install -tags quickjs github.com/i2y/ramune/cmd/ramune@latest
+
+# Smaller binary
+go install -tags nosqlite -ldflags="-s -w" github.com/i2y/ramune/cmd/ramune@latest
 ```
 
 ## CLI Commands
@@ -30,6 +37,7 @@ ramune add <pkg>             Add dependency
 ramune remove <pkg>          Remove dependency
 ramune install               Install all dependencies
 ramune setup-jit             Enable JSC JIT on macOS
+ramune skills install        Install Agent Skills for AI agents
 ramune version               Show version
 ```
 
@@ -145,7 +153,9 @@ Supported APIs:
 - `Ramune.password.hash/verify` — bcrypt
 - `Ramune.sleep(ms)` — Promise-based delay
 - `Ramune.hash(data)` — FNV hash
+- `Ramune.plugin({setup})` — onLoad filters, virtual modules
 - `Request` / `Response` — Web API polyfills (enables Hono, etc.)
+- `Bun.*` — Alias for `Ramune.*` (partial Bun compatibility)
 - `bun:sqlite` — pure Go SQLite (Database, Statement)
 
 ## Node.js Compatibility
@@ -155,11 +165,11 @@ Enabled via `ramune.NodeCompat()`:
 | Module | Coverage | Key Functions |
 |--------|----------|---------------|
 | path | 100% | join, resolve, relative, normalize, isAbsolute, parse, format |
-| fs | 85% | readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync, readdirSync, statSync, rmSync, copyFileSync, realpathSync, accessSync, chmodSync, symlinkSync, createReadStream, createWriteStream, fs.promises |
+| fs | 90% | readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync, readdirSync, statSync, rmSync, copyFileSync, realpathSync, accessSync, chmodSync, symlinkSync, createReadStream, createWriteStream, fs.promises, fs.watch |
 | child_process | 80% | spawnSync, execSync, execFileSync, spawn (async goroutine I/O) |
-| crypto | 80% | randomBytes, randomUUID, createHash, createHmac, scryptSync, pbkdf2Sync, createCipheriv, createDecipheriv, randomInt, timingSafeEqual, createSign/Verify, generateKeyPairSync |
+| crypto | 85% | randomBytes, randomUUID, createHash, createHmac, scryptSync, pbkdf2Sync, createCipheriv, createDecipheriv, randomInt, timingSafeEqual, createSign/Verify, generateKeyPairSync, crypto.subtle |
 | stream | 70% | Readable, Writable, Transform, Duplex, PassThrough, pipe |
-| zlib | 70% | gzipSync, gunzipSync, deflateSync, inflateSync |
+| zlib | 75% | gzipSync, gunzipSync, deflateSync, inflateSync, brotliCompressSync, brotliDecompressSync |
 | os | 85% | platform, arch, hostname, type, cpus, totalmem, freemem, userInfo |
 | events | 85% | EventEmitter: on, once, emit, removeListener, setMaxListeners |
 | http/https | 70% | http.request, http.get, http.createServer (Go net/http backend) |
@@ -167,11 +177,38 @@ Enabled via `ramune.NodeCompat()`:
 | Buffer | 60% | from, alloc, concat, readUInt8/16/32, writeUInt8/16/32, fill, toString(hex/base64) |
 | url | 80% | parse, format, resolve, fileURLToPath |
 | assert | 80% | ok, strictEqual, deepStrictEqual, throws, doesNotThrow |
+| util | 80% | types, promisify, callbackify, format, inspect |
 | worker_threads | 70% | Worker, parentPort, workerData, postMessage |
-| dns | basic | lookup, resolve |
+| vm | 70% | createContext, runInContext, runInNewContext, Script |
 | readline | 70% | async iterator support |
+| querystring | 80% | escape, unescape, stringify, parse |
+| timers/promises | 70% | setTimeout, setImmediate as Promise |
+| perf_hooks | basic | performance.now, mark, measure |
+| process | 85% | env, cwd, platform, arch, hrtime, nextTick, exit, signals via EventEmitter |
+| dns | basic | lookup, resolve |
 
-Also: TextEncoder/TextDecoder, AbortController/AbortSignal, Symbol.dispose/asyncDispose, process (env, cwd, platform, arch, hrtime, nextTick).
+Also: TextEncoder/TextDecoder, AbortController/AbortSignal, Symbol.dispose/asyncDispose.
+
+## Web Platform APIs
+
+| API | Status |
+|-----|--------|
+| `fetch` | Supported (Go net/http backend) |
+| `ReadableStream` / `WritableStream` / `TransformStream` | Supported (pipeTo, pipeThrough, tee, async iterator) |
+| `crypto.subtle` | Supported (digest, sign/verify, encrypt/decrypt, importKey/exportKey, deriveBits/deriveKey) |
+| `crypto.getRandomValues` / `randomUUID` | Supported |
+| `Blob` / `File` | Supported |
+| `FormData` | Supported |
+| `Headers` / `Request` / `Response` | Supported (ReadableStream body) |
+| `TextEncoder` / `TextDecoder` | Supported (UTF-8) |
+| `AbortController` / `AbortSignal` | Supported |
+| `URL` / `URLSearchParams` | Supported |
+| `WebSocket` | Supported (server-side via Ramune.serve) |
+| `performance.now` / `mark` / `measure` | Supported |
+| `structuredClone` | Supported (circular refs, Map, Set, Date, RegExp, TypedArray) |
+| `setTimeout` / `setInterval` | Supported |
+| `navigator` | Supported (userAgent, platform, hardwareConcurrency) |
+| `console.time` / `table` / `trace` | Supported |
 
 ## TypeScript
 
@@ -192,8 +229,17 @@ describe("math", () => {
 });
 ```
 
-Matchers: toBe, toEqual, toBeTruthy, toBeFalsy, toContain, toThrow, toBeGreaterThan, toBeLessThan, toHaveLength, toBeNull, toBeUndefined, toBeDefined, not.*.
+Matchers: toBe, toEqual, toBeTruthy, toBeFalsy, toContain, toThrow, toBeGreaterThan, toBeLessThan, toHaveLength, toBeNull, toBeUndefined, toBeDefined, toHaveBeenCalledTimes, not.*.
 
+Mocking via `jest.fn()` and `jest.spyOn()`:
+
+```js
+test("mock", () => {
+    const fn = jest.fn().mockReturnValue(42);
+    expect(fn()).toBe(42);
+    expect(fn).toHaveBeenCalledTimes(1);
+});
+```
 
 ## Architecture
 
@@ -204,24 +250,66 @@ Matchers: toBe, toEqual, toBeTruthy, toBeFalsy, toContain, toThrow, toBeGreaterT
 - Multi-core via RuntimePool (N independent JSC contexts on separate OS threads)
 - HTTP server disables Go auto GC during serving (prevents JSC corruption)
 - Async handlers support setTimeout via real-time tick loop
+- QuickJS backend: single-threaded interpreter via modernc.org/quickjs, pure Go, no OS thread pinning needed
+- Backend selected at build time via `-tags quickjs` build tag
 
-## Performance (Apple M4 Max, JIT enabled)
+## Performance
+
+### JSC backend (Apple M4 Max, JIT enabled)
 
 | Test | Ramune | Bun | Node.js |
 |------|--------|-----|---------|
-| Hello World | 10.5ms | 6.3ms | 17.4ms |
-| Fibonacci(35) | 42.9ms | 39.3ms | 63.4ms |
-| JSON 10K | 14.2ms | 9.0ms | 22.2ms |
-| Crypto SHA256 | 16.7ms | 10.4ms | 19.8ms |
-| File I/O | 17.2ms | 11.9ms | 23.0ms |
-| HTTP req/s (single) | 101K | 170K | 114K |
+| Hello World | 14.2ms | 7.1ms | 18.0ms |
+| Fibonacci(35) | 46.2ms | 40.0ms | 64.7ms |
+| JSON 10K | 17.6ms | 9.7ms | 22.9ms |
+| Crypto SHA256 | 19.8ms | 11.0ms | 20.4ms |
+| File I/O | 20.7ms | 13.3ms | 24.2ms |
+| HTTP req/s (single) | 101K | 156K | 112K |
 | HTTP req/s (3 workers, fib(35)) | 85 | 32 | 22 |
+
+### QuickJS backend (same machine, no JIT)
+
+| Test | Ramune (QuickJS) | Ramune (JSC) | Bun | Node.js |
+|------|-----------------|--------------|-----|---------|
+| Hello World | 19.0ms | 14.2ms | 6.4ms | 17.1ms |
+| Fibonacci(35) | 3,089ms | 46.2ms | 39.3ms | 63.5ms |
+| JSON 10K | 65.1ms | 17.6ms | 9.0ms | 22.0ms |
+| Crypto SHA256 | 26.8ms | 19.8ms | 10.3ms | 19.5ms |
+| File I/O | 25.8ms | 20.7ms | 12.4ms | 22.7ms |
+| HTTP req/s (single) | 66K | 101K | 165K | 111K |
+
+### Multi-Runtime Pool
+
+| Workers | req/s | Scaling |
+|---------|-------|---------|
+| 1 | 44K | 1.0x |
+| 2 | 65K | 1.48x |
+| 3 | 68K | 1.56x |
+
+### vs Go JS Runtimes
+
+| Test | Ramune (JSC+JIT) | Ramune (QuickJS) | goja | otto |
+|------|-----------------|-----------------|------|------|
+| Fibonacci(35) | **31ms** | 3,122ms | 1,989ms | 26,413ms |
+| JSON 10K objects | **0.9ms** | 30ms | 11ms | 27ms |
 
 Run `make bench` to reproduce.
 
+## Known Limitations
+
+- **N-API / Native addons**: Not supported. Packages requiring `.node` native binaries won't work — use pure JS alternatives.
+- **HTTP self-fetch**: Ramune.serve() handlers cannot fetch their own server (same JS context deadlock).
+- **Windows**: JSC backend not available. Use `-tags quickjs` for Windows support.
+- **Linux multi-runtime (JSC)**: On arm64, `CGO_ENABLED=1` and gcc required (cgo signal forwarding for JSC GC). On x86_64, works without cgo.
+- **Multi-worker limit (JSC)**: 2-3 workers recommended; 4+ may trigger JSC JIT contention.
+- **QuickJS backend**: No JIT — CPU-bound JS is ~67x slower than JSC. Error stack traces not available.
+
 ## Requirements
 
-- macOS (JSC built-in) or Linux (libjavascriptcoregtk)
-- Go 1.26+
-- npm packages fetched directly from registry (no npm/bun CLI needed)
-- tsgo (optional, for type checking)
+| | JSC backend (default) | QuickJS backend (`-tags quickjs`) |
+|---|---|---|
+| **Go** | 1.26+ | 1.26+ |
+| **Platforms** | macOS, Linux | macOS, Linux, Windows, FreeBSD |
+| **System deps** | macOS: none. Linux: `apt install libjavascriptcoregtk-4.1-dev` | None |
+
+All tools are built in — no external dependencies needed for `check`, `fmt`, `lint`, or TypeScript transpilation. npm packages are fetched directly from the npm registry — no npm or bun CLI required.
