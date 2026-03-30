@@ -417,7 +417,7 @@ func TranspileToDir(filename string, outDir string, pkgName string) error {
 	// Write go.mod if not exists
 	goModPath := filepath.Join(outDir, "go.mod")
 	if _, err := os.Stat(goModPath); os.IsNotExist(err) {
-		goMod := fmt.Sprintf("module %s\n\ngo 1.26\n\nrequire github.com/i2y/ramune v0.3.2\n", baseName)
+		goMod := fmt.Sprintf("module %s\n\ngo 1.26\n\nrequire github.com/i2y/ramune v0.4.0\n", baseName)
 		if err := os.WriteFile(goModPath, []byte(goMod), 0o644); err != nil {
 			return fmt.Errorf("writing go.mod: %w", err)
 		}
@@ -673,7 +673,7 @@ func transpileProjectToDir(files []string, entryFile string, outDir string, modu
 		result.GoImports = dedupeGoImports(result.GoImports)
 
 		var b strings.Builder
-		fmt.Fprintf(&b, "module %s\n\ngo 1.26\n\nrequire github.com/i2y/ramune v0.3.2\n", moduleName)
+		fmt.Fprintf(&b, "module %s\n\ngo 1.26\n\nrequire github.com/i2y/ramune v0.4.0\n", moduleName)
 		if len(result.GoImports) > 0 {
 			b.WriteString("\nrequire (\n")
 			for _, mod := range result.GoImports {
