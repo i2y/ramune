@@ -211,6 +211,78 @@ func TestRegisterArgCountError(t *testing.T) {
 	}
 }
 
+func TestRegisterTypedSliceReturn(t *testing.T) {
+	r := newOrSkip(t)
+	defer r.Close()
+
+	ramune.Register(r, "getInts", func() []int { return []int{1, 2, 3} })
+
+	v, err := r.Eval("JSON.stringify(getInts())")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	s, _ := v.GoString()
+	if s != "[1,2,3]" {
+		t.Fatalf("got %q, want %q", s, "[1,2,3]")
+	}
+}
+
+func TestRegisterTypedMapReturn(t *testing.T) {
+	r := newOrSkip(t)
+	defer r.Close()
+
+	ramune.Register(r, "getMap", func() map[string]int {
+		return map[string]int{"a": 1, "b": 2}
+	})
+
+	v, err := r.Eval("getMap().a + getMap().b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	f, _ := v.Float64()
+	if f != 3.0 {
+		t.Fatalf("got %f, want 3.0", f)
+	}
+}
+
+func TestRegisterNestedSliceReturn(t *testing.T) {
+	r := newOrSkip(t)
+	defer r.Close()
+
+	ramune.Register(r, "getNested", func() [][]int {
+		return [][]int{{1, 2}, {3, 4}}
+	})
+
+	v, err := r.Eval("JSON.stringify(getNested())")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	s, _ := v.GoString()
+	if s != "[[1,2],[3,4]]" {
+		t.Fatalf("got %q, want %q", s, "[[1,2],[3,4]]")
+	}
+}
+
+func TestRegisterStringSliceReturn(t *testing.T) {
+	r := newOrSkip(t)
+	defer r.Close()
+
+	ramune.Register(r, "getNames", func() []string { return []string{"alice", "bob"} })
+
+	v, err := r.Eval(`getNames()[0] + " & " + getNames()[1]`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	s, _ := v.GoString()
+	if s != "alice & bob" {
+		t.Fatalf("got %q, want %q", s, "alice & bob")
+	}
+}
+
 func TestRegisterNotAFunction(t *testing.T) {
 	r := newOrSkip(t)
 	defer r.Close()

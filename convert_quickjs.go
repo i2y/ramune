@@ -64,6 +64,25 @@ func (r *Runtime) goToJS(v any) (quickjs.Value, error) {
 			return r.promiseToJSQJS(rv)
 		}
 
+		// Handle arbitrary slices via reflection (e.g. []int, []string)
+		if rv.Kind() == reflect.Slice {
+			elems := make([]any, rv.Len())
+			for i := 0; i < rv.Len(); i++ {
+				elems[i] = rv.Index(i).Interface()
+			}
+			return r.goToJS(elems)
+		}
+
+		// Handle arbitrary maps with string keys via reflection (e.g. map[string]int)
+		if rv.Kind() == reflect.Map && rv.Type().Key().Kind() == reflect.String {
+			m := make(map[string]any, rv.Len())
+			iter := rv.MapRange()
+			for iter.Next() {
+				m[iter.Key().String()] = iter.Value().Interface()
+			}
+			return r.goToJS(m)
+		}
+
 		if rv.Kind() == reflect.Ptr {
 			rv = rv.Elem()
 		}

@@ -706,6 +706,7 @@ TypeScript → Go transpiler → Go source → NativeModuleFromFuncs → require
 - Struct parameters: JS objects auto-converted to Go structs via field name matching
 - Struct returns: Go structs returned as JS objects with live getter/setter properties
 - Typed slice parameters: `number[]` → `[]float64`, etc.
+- Typed slice/map returns: `[]int` → JS array, `map[string]int` → JS object, nested supported
 - Error returns: `(T, error)` — errors become JS exceptions
 - Pointer returns: `*Struct` — returned with methods and mutable fields
 - Panics caught and converted to JS exceptions

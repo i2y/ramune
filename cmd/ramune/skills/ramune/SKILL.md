@@ -111,7 +111,7 @@ rt, _ := ramune.New(ramune.NodeCompat(), ramune.WithModule(mod))
 rt.Eval(`require('native:math').add(3, 4)`) // 7
 ```
 
-Supports struct parameters (JS objects auto-converted), struct returns with live getter/setter properties and methods, typed slices, error handling, and panic recovery.
+Supports struct parameters (JS objects auto-converted), struct returns with live getter/setter properties and methods, typed slices/maps (both parameters and returns), error handling, and panic recovery.
 
 ### Async / Promises
 
