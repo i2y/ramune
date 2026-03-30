@@ -168,6 +168,11 @@ func (r *Runtime) jsToGoCallback(ptr uintptr) any {
 	case jsTypeString:
 		return r.jsValueToGoString(ptr)
 	default:
+		// Function: wrap as *JSFunc for callable access from Go.
+		obj := r.jsValueToObject(r.ctx, ptr, 0)
+		if obj != 0 && r.jsObjectIsFunction(r.ctx, obj) {
+			return r.newJSFunc(obj)
+		}
 		// Object: convert via JSON.stringify → json.Unmarshal.
 		return r.jsObjectToGo(ptr)
 	}

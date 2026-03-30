@@ -181,6 +181,256 @@ func TestRegisterFuncArrayArg(t *testing.T) {
 	}
 }
 
+func TestJSFuncBasic(t *testing.T) {
+	r := newOrSkip(t)
+	defer r.Close()
+
+	err := r.RegisterFunc("callWith42", func(args []any) (any, error) {
+		fn, ok := args[0].(*ramune.JSFunc)
+		if !ok {
+			return nil, fmt.Errorf("expected *JSFunc, got %T", args[0])
+		}
+		defer fn.Close()
+		return fn.Call(42.0)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	v, err := r.Eval(`callWith42(function(x) { return x * 2; })`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+
+	f, err := v.Float64()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f != 84.0 {
+		t.Fatalf("got %f, want 84.0", f)
+	}
+}
+
+func TestJSFuncMultipleCalls(t *testing.T) {
+	r := newOrSkip(t)
+	defer r.Close()
+
+	err := r.RegisterFunc("callThrice", func(args []any) (any, error) {
+		fn, ok := args[0].(*ramune.JSFunc)
+		if !ok {
+			return nil, fmt.Errorf("expected *JSFunc, got %T", args[0])
+		}
+		defer fn.Close()
+		sum := 0.0
+		for i := 1; i <= 3; i++ {
+			result, err := fn.Call(float64(i))
+			if err != nil {
+				return nil, err
+			}
+			n, _ := result.(float64)
+			sum += n
+		}
+		return sum, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	v, err := r.Eval(`callThrice(function(x) { return x * 10; })`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+
+	f, err := v.Float64()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f != 60.0 {
+		t.Fatalf("got %f, want 60.0 (10+20+30)", f)
+	}
+}
+
+func TestJSFuncStringReturn(t *testing.T) {
+	r := newOrSkip(t)
+	defer r.Close()
+
+	err := r.RegisterFunc("applyToHello", func(args []any) (any, error) {
+		fn, ok := args[0].(*ramune.JSFunc)
+		if !ok {
+			return nil, fmt.Errorf("expected *JSFunc, got %T", args[0])
+		}
+		defer fn.Close()
+		return fn.Call("hello")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	v, err := r.Eval(`applyToHello(function(s) { return s.toUpperCase(); })`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+
+	s, err := v.GoString()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s != "HELLO" {
+		t.Fatalf("got %q, want %q", s, "HELLO")
+	}
+}
+
+func TestJSFuncMixedArgs(t *testing.T) {
+	r := newOrSkip(t)
+	defer r.Close()
+
+	err := r.RegisterFunc("mixedArgs", func(args []any) (any, error) {
+		prefix, _ := args[0].(string)
+		fn, ok := args[1].(*ramune.JSFunc)
+		if !ok {
+			return nil, fmt.Errorf("expected *JSFunc at args[1], got %T", args[1])
+		}
+		defer fn.Close()
+		n, _ := args[2].(float64)
+		result, err := fn.Call(n)
+		if err != nil {
+			return nil, err
+		}
+		s, _ := result.(string)
+		return prefix + s, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	v, err := r.Eval(`mixedArgs("result:", function(x) { return String(x * 2); }, 21)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+
+	s, err := v.GoString()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s != "result:42" {
+		t.Fatalf("got %q, want %q", s, "result:42")
+	}
+}
+
+func TestJSFuncClosure(t *testing.T) {
+	r := newOrSkip(t)
+	defer r.Close()
+
+	err := r.RegisterFunc("callFn", func(args []any) (any, error) {
+		fn, ok := args[0].(*ramune.JSFunc)
+		if !ok {
+			return nil, fmt.Errorf("expected *JSFunc, got %T", args[0])
+		}
+		defer fn.Close()
+		return fn.Call()
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	v, err := r.Eval(`
+		var captured = 99;
+		callFn(function() { return captured; });
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+
+	f, err := v.Float64()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f != 99.0 {
+		t.Fatalf("got %f, want 99.0", f)
+	}
+}
+
+func TestJSFuncCloseBeforeCall(t *testing.T) {
+	r := newOrSkip(t)
+	defer r.Close()
+
+	err := r.RegisterFunc("closeAndCall", func(args []any) (any, error) {
+		fn, ok := args[0].(*ramune.JSFunc)
+		if !ok {
+			return nil, fmt.Errorf("expected *JSFunc, got %T", args[0])
+		}
+		fn.Close()
+		_, err := fn.Call()
+		if err == nil {
+			return nil, fmt.Errorf("expected error after Close, got nil")
+		}
+		return "got error", nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	v, err := r.Eval(`closeAndCall(function() { return 1; })`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+
+	s, err := v.GoString()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s != "got error" {
+		t.Fatalf("got %q, want %q", s, "got error")
+	}
+}
+
+func TestJSFuncReentrant(t *testing.T) {
+	r := newOrSkip(t)
+	defer r.Close()
+
+	// Register a Go function that the JS callback will call.
+	err := r.RegisterFunc("double", func(args []any) (any, error) {
+		n, _ := args[0].(float64)
+		return n * 2, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = r.RegisterFunc("callFnWith5", func(args []any) (any, error) {
+		fn, ok := args[0].(*ramune.JSFunc)
+		if !ok {
+			return nil, fmt.Errorf("expected *JSFunc, got %T", args[0])
+		}
+		defer fn.Close()
+		return fn.Call(5.0)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// JS function calls back into Go (double), testing re-entrance.
+	v, err := r.Eval(`callFnWith5(function(x) { return double(x); })`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+
+	f, err := v.Float64()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f != 10.0 {
+		t.Fatalf("got %f, want 10.0", f)
+	}
+}
+
 func TestNodeCompatFsReadWrite(t *testing.T) {
 	r := sharedNodeCompat(t)
 

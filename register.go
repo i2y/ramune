@@ -3,6 +3,8 @@ package ramune
 import (
 	"fmt"
 	"reflect"
+	"strings"
+	"unicode"
 )
 
 // Register registers a typed Go function as a global JavaScript function.
@@ -25,76 +27,18 @@ import (
 //	    return a + b
 //	})
 func Register[F any](rt *Runtime, name string, fn F) error {
-	fnVal := reflect.ValueOf(fn)
-	fnType := fnVal.Type()
-
-	if fnType.Kind() != reflect.Func {
-		return fmt.Errorf("ramune: Register: expected function, got %s", fnType.Kind())
+	fnType := reflect.TypeOf(fn)
+	if fnType == nil || fnType.Kind() != reflect.Func {
+		return fmt.Errorf("ramune: Register: expected function, got %T", fn)
 	}
-
-	numIn := fnType.NumIn()
-	numOut := fnType.NumOut()
-
-	// Validate return signature.
-	if numOut > 2 {
-		return fmt.Errorf("ramune: Register: function has %d return values, max 2 supported", numOut)
+	if fnType.NumOut() > 2 {
+		return fmt.Errorf("ramune: Register: function has %d return values, max 2 supported", fnType.NumOut())
 	}
-
-	// If 2 return values, the second must be error.
 	errorInterface := reflect.TypeOf((*error)(nil)).Elem()
-	if numOut == 2 && !fnType.Out(1).Implements(errorInterface) {
+	if fnType.NumOut() == 2 && !fnType.Out(1).Implements(errorInterface) {
 		return fmt.Errorf("ramune: Register: second return value must be error, got %s", fnType.Out(1))
 	}
-
-	// Build parameter type list for conversion.
-	paramTypes := make([]reflect.Type, numIn)
-	for i := 0; i < numIn; i++ {
-		paramTypes[i] = fnType.In(i)
-	}
-
-	wrapper := func(args []any) (any, error) {
-		if len(args) < numIn {
-			return nil, fmt.Errorf("ramune: %s: expected %d arguments, got %d", name, numIn, len(args))
-		}
-
-		// Convert arguments.
-		in := make([]reflect.Value, numIn)
-		for i := 0; i < numIn; i++ {
-			converted, err := convertArg(args[i], paramTypes[i])
-			if err != nil {
-				return nil, fmt.Errorf("ramune: %s: argument %d: %w", name, i, err)
-			}
-			in[i] = converted
-		}
-
-		// Call the function.
-		out := fnVal.Call(in)
-
-		// Process return values.
-		switch numOut {
-		case 0:
-			return nil, nil
-		case 1:
-			if fnType.Out(0).Implements(errorInterface) {
-				// Single error return.
-				if out[0].IsNil() {
-					return nil, nil
-				}
-				return nil, out[0].Interface().(error)
-			}
-			return out[0].Interface(), nil
-		case 2:
-			var retErr error
-			if !out[1].IsNil() {
-				retErr = out[1].Interface().(error)
-			}
-			return out[0].Interface(), retErr
-		default:
-			return nil, nil
-		}
-	}
-
-	return rt.RegisterFunc(name, wrapper)
+	return rt.RegisterFunc(name, wrapTypedFunc(name, fn))
 }
 
 // convertArg converts a JS callback argument (any) to the target Go type.
@@ -102,6 +46,14 @@ func convertArg(arg any, target reflect.Type) (reflect.Value, error) {
 	// Handle nil → zero value.
 	if arg == nil {
 		return reflect.Zero(target), nil
+	}
+
+	// Handle *JSFunc pass-through.
+	if target == reflect.TypeOf((*JSFunc)(nil)) {
+		if jf, ok := arg.(*JSFunc); ok {
+			return reflect.ValueOf(jf), nil
+		}
+		return reflect.Value{}, fmt.Errorf("cannot convert %T to *JSFunc", arg)
 	}
 
 	switch target.Kind() {
@@ -223,11 +175,71 @@ func convertArg(arg any, target reflect.Type) (reflect.Value, error) {
 			}
 			return reflect.ValueOf(s), nil
 		}
-		return reflect.Value{}, fmt.Errorf("unsupported slice type %s", target)
+		// Typed slices: convert from []any element by element.
+		if srcSlice, ok := arg.([]any); ok {
+			elemType := target.Elem()
+			result := reflect.MakeSlice(target, len(srcSlice), len(srcSlice))
+			for i, elem := range srcSlice {
+				converted, err := convertArg(elem, elemType)
+				if err != nil {
+					return reflect.Value{}, fmt.Errorf("slice element %d: %w", i, err)
+				}
+				result.Index(i).Set(converted)
+			}
+			return result, nil
+		}
+		return reflect.Value{}, fmt.Errorf("cannot convert %T to %s", arg, target)
 
 	case reflect.Interface:
 		// any / interface{} — pass through as-is.
 		return reflect.ValueOf(arg), nil
+
+	case reflect.Struct:
+		// Convert map[string]any → struct by matching field names
+		m, ok := arg.(map[string]any)
+		if !ok {
+			return reflect.Value{}, fmt.Errorf("cannot convert %T to struct %s", arg, target)
+		}
+		result := reflect.New(target).Elem()
+		for i := 0; i < target.NumField(); i++ {
+			field := target.Field(i)
+			if !field.IsExported() {
+				continue
+			}
+			// Try json tag, then lowercase field name
+			name := field.Name
+			if tag := field.Tag.Get("json"); tag != "" {
+				parts := strings.SplitN(tag, ",", 2)
+				if parts[0] != "" && parts[0] != "-" {
+					name = parts[0]
+				}
+			} else {
+				runes := []rune(name)
+				runes[0] = unicode.ToLower(runes[0])
+				name = string(runes)
+			}
+			if val, exists := m[name]; exists {
+				converted, err := convertArg(val, field.Type)
+				if err != nil {
+					return reflect.Value{}, fmt.Errorf("struct field %s: %w", field.Name, err)
+				}
+				result.Field(i).Set(converted)
+			}
+		}
+		return result, nil
+
+	case reflect.Ptr:
+		// Pointer to struct: allocate and fill
+		if target.Elem().Kind() == reflect.Struct {
+			inner, err := convertArg(arg, target.Elem())
+			if err != nil {
+				return reflect.Value{}, err
+			}
+			ptr := reflect.New(target.Elem())
+			ptr.Elem().Set(inner)
+			return ptr, nil
+		}
+		return reflect.Value{}, fmt.Errorf("unsupported pointer type %s", target)
 
 	default:
 		return reflect.Value{}, fmt.Errorf("unsupported parameter type %s", target)

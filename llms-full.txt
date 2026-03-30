@@ -37,13 +37,143 @@ ramune add <pkg>             Add dependency
 ramune remove <pkg>          Remove dependency
 ramune install               Install all dependencies
 ramune setup-jit             Enable JSC JIT on macOS
+ramune typegen <pkg...>      Generate .d.ts for Go packages (go: imports)
 ramune skills install        Install Agent Skills for AI agents
 ramune version               Show version
 ```
 
 Run options: `-p <pkg>` (npm package), `-w`/`--watch`, `--check`, `--sandbox`, `--allow-read[=path]`, `--allow-write[=path]`, `--allow-net[=host]`, `--allow-env[=var]`, `--allow-run[=cmd]`.
 
-Compile options: `-o output`, `--minify`, `--http` (Ramune.serve event loop).
+Compile options: `-o output`, `--minify`, `--http` (Ramune.serve event loop), `--native <file.ts>` (repeatable; transpile TS to native Go extension).
+
+Transpile options: `-o outdir`, `--module name`, `--compile` (transpile + build binary).
+
+Typegen options: `-o output.d.ts` (default: `go.d.ts`). Accepts `go:pkg` or `pkg` syntax.
+
+## TypeScript-to-Go Transpiler
+
+Ramune includes a built-in TypeScript-to-Go transpiler that converts TypeScript source code to idiomatic Go.
+
+```
+ramune transpile main.ts -o out/                         # single file
+ramune transpile main.ts utils.ts -o out/ --module myapp # multi-file project
+ramune transpile main.ts --compile -o myapp              # transpile + build binary
+```
+
+### Supported TypeScript Features
+
+| Category | Features |
+|----------|----------|
+| Types | `number` → `float64`, `string`, `boolean`, `void`, `null`/`undefined` → `nil`, `any`, `unknown` → `any` |
+| Collections | `T[]` → `[]T`, `Map<K,V>` → `map[K]V`, `Set<T>` → `map[T]struct{}` |
+| Nullable | `T \| null`, `T \| undefined` → `*T` (pointer) |
+| Generics | Functions and classes with type parameters and constraints |
+| Enums | String enums → Go const block, numeric enums → iota |
+| Discriminated unions | `type Shape = Circle \| Square` with narrowing via `if (s.kind === "circle")` |
+| Union of literals | `"a" \| "b" \| "c"` → `string` |
+| Promises | `Promise<T>` → `*promise.Promise[T]`, `async`/`await` supported |
+| Classes | Fields, constructors, methods, inheritance (`extends`), static fields/methods, abstract classes, getter/setter accessors |
+| Interfaces | Converted to Go struct types |
+| Destructuring | Object `{a, b}` and array `[x, y]` patterns, default values (`{a = 1}`) |
+| Spread | `[...arr, elem]`, `{...obj, key: val}` |
+| Template literals | `` `Hello ${name}` `` → `fmt.Sprintf` |
+| Operators | `typeof`, `instanceof`, `in`, `delete`, `?.` (optional chaining), `??` (nullish coalescing), `**` (exponentiation), `>>>`, `&&=`, `\|\|=`, `??=` |
+| Array methods | `map`, `filter`, `reduce`, `find`, `forEach`, `includes`, `some`, `every`, `push`, `pop`, `slice`, `splice`, `concat`, `join`, etc. |
+| String methods | `split`, `includes`, `startsWith`, `endsWith`, `trim`, `replace`, `replaceAll`, `repeat`, `padStart`, `padEnd`, etc. |
+| Loops | `for`, `for...of`, `for...in`, `for await...of`, `while`, `do...while`, labeled `break`/`continue` |
+| Error handling | `try`/`catch`/`finally` |
+| Modules | Relative imports, Node.js built-in modules, npm packages (uuid, lodash, zod), Go packages via `go:` prefix, `export default`, re-exports |
+| Go interop | `go:` prefix imports any Go package, multi-return destructuring (`const [resp, err] = fn()`), auto go.mod |
+| Type resolution | Conditional types, mapped types (`Record<K,V>` → `map[K]V`), intersection types, utility types via checker |
+
+### Type Mapping
+
+| TypeScript | Go |
+|---|---|
+| `number` | `float64` |
+| `string` | `string` |
+| `boolean` | `bool` |
+| `T[]` | `[]T` |
+| `T \| null` | `*T` |
+| `Map<K, V>` | `map[K]V` |
+| `Set<T>` | `map[T]struct{}` |
+| `Promise<T>` | `*promise.Promise[T]` |
+| `any` / `unknown` | `any` |
+| Enum | Named type with const block |
+| Class | Struct with methods |
+| Interface | Struct type |
+
+### Transpiler Limitations
+
+- No decorators — complex metaprogramming, not yet supported
+- No generators / `yield` — Go has no generator concept; use channels or callbacks
+- No dynamic `import()` — use `require()`
+- No Symbol or Proxy — no Go equivalent
+- Numeric precision — all numbers are `float64`
+- `any`-typed property access uses `jsrt.GetField()` runtime reflection
+
+### Go Package Imports (`go:` prefix)
+
+Import any Go standard library or third-party package:
+
+```typescript
+import { Println, Sprintf } from "go:fmt"
+import * as http from "go:net/http"
+import { Default } from "go:github.com/gin-gonic/gin"
+
+const [resp, err] = http.Get("http://example.com")  // Go multi-return
+```
+
+Generate TypeScript type definitions for type checking:
+
+```
+ramune typegen go:fmt go:net/http -o go.d.ts
+```
+
+Generates `declare module "go:fmt" { ... }` with function signatures, interfaces, constants, and type mappings (number, string, boolean, Record, tuples for multi-return, Error | null for error returns).
+
+## Native Extension Modules
+
+Compile TypeScript functions to native Go code callable from JS at full compiled speed:
+
+```
+ramune compile app.js --native math.ts -o myapp
+ramune compile app.js --native math.ts --native geometry.ts -o myapp
+```
+
+The `--native` flag transpiles TypeScript to Go, exposing exported functions via `require('native:modulename')`.
+
+Workflow: TypeScript → Go transpiler → Go source → NativeModuleFromFuncs → require('native:name')
+
+Supported native function signatures:
+- Primitive parameters and returns: `number`, `string`, `boolean`
+- Struct parameters: JS objects auto-converted to Go structs via field name matching
+- Struct returns: Go structs returned as JS objects with live getter/setter properties
+- Typed slice parameters: `number[]` → `[]float64`, etc.
+- Error returns: `(T, error)` — errors become JS exceptions
+- Pointer returns: `*Struct` — returned with methods and mutable fields
+- Panics caught and converted to JS exceptions
+
+Not supported as native exports:
+- Generic functions (must be wrapped in a non-generic function)
+- Functions with channel parameters
+
+### NativeModuleFromFuncs (Go Library API)
+
+Create native modules from typed Go functions without manual argument parsing:
+
+```go
+mod := ramune.NativeModuleFromFuncs("native:math", map[string]any{
+    "add":       func(a, b float64) float64 { return a + b },
+    "fibonacci": mymath.Fibonacci,
+})
+rt, _ := ramune.New(ramune.NodeCompat(), ramune.WithModule(mod))
+rt.Eval(`require('native:math').add(3, 4)`) // 7
+```
+
+Supports struct parameters (JS objects → Go structs), struct returns with live properties, typed slices, error handling, and panic recovery.
+
+When a function returns a struct pointer, the JS object has live getter/setter properties and callable methods — mutations in JS are reflected in Go and vice versa.
 
 ## Go Library API
 
@@ -73,7 +203,15 @@ buf, _ := rt.NewUint8Array([]byte{0xFF})
 // Go callbacks (GoFunc can safely call Value methods — no deadlock)
 rt.RegisterFunc("name", func(args []any) (any, error) { ... })
 
-// Typed callbacks (generics)
+// JS function arguments are wrapped as *JSFunc, callable from Go
+rt.RegisterFunc("forEach", func(args []any) (any, error) {
+    fn := args[0].(*ramune.JSFunc)
+    defer fn.Close()
+    fn.Call("hello") // invoke the JS function
+    return nil, nil
+})
+
+// Typed callbacks (generics, supports *JSFunc parameters)
 ramune.Register(rt, "add", func(a, b float64) float64 { return a + b })
 
 // Struct binding
@@ -81,6 +219,12 @@ rt.Bind("user", &User{Name: "Alice", Age: 30})
 
 // Plugin system
 rt.LoadModule(ramune.Module{Name: "mydb", Exports: map[string]ramune.GoFunc{...}})
+
+// Native module from typed functions (reflection-based, no manual arg parsing)
+mod := ramune.NativeModuleFromFuncs("native:math", map[string]any{
+    "add": func(a, b float64) float64 { return a + b },
+})
+rt, _ = ramune.New(ramune.NodeCompat(), ramune.WithModule(mod))
 
 // Event loop
 rt.Tick()
@@ -117,6 +261,16 @@ val.ToMap()                 // → map[string]any (via JSON)
 val.ToSlice()               // → []any (via JSON)
 val.Call(args...)            // call as function
 val.Close()                 // release
+```
+
+### JSFunc
+
+JS functions passed as GoFunc callback arguments are wrapped as `*JSFunc`:
+
+```go
+fn := args[0].(*ramune.JSFunc)
+defer fn.Close()                    // release JS reference
+result, err := fn.Call(arg1, arg2)  // invoke, returns Go value
 ```
 
 ### GC Configuration
@@ -303,6 +457,8 @@ Run `make bench` to reproduce.
 - **Linux multi-runtime (JSC)**: On arm64, `CGO_ENABLED=1` and gcc required (cgo signal forwarding for JSC GC). On x86_64, works without cgo.
 - **Multi-worker limit (JSC)**: 2-3 workers recommended; 4+ may trigger JSC JIT contention.
 - **QuickJS backend**: No JIT — CPU-bound JS is ~67x slower than JSC. Error stack traces not available.
+- **Native module instance lifecycle**: Struct instances returned to JS are not automatically freed when JS GC collects the object. Cleaned up on Runtime.Close().
+- **Generic native exports**: Generic functions cannot be exposed as native module exports; wrap in a non-generic function.
 
 ## Requirements
 

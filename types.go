@@ -2,7 +2,7 @@ package ramune
 
 // GoFunc is a Go function that can be called from JavaScript.
 // Arguments are converted to Go types: bool, float64, string, nil,
-// map[string]any (for objects), or []any (for arrays).
+// map[string]any (for objects), []any (for arrays), or *JSFunc (for functions).
 type GoFunc func(args []any) (any, error)
 
 // GoFuncWithContext is a callback that receives a CallbackContext for safe

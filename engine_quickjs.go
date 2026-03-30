@@ -29,18 +29,20 @@ type Runtime struct {
 	wakeCh chan struct{}
 	qjsGID atomic.Int64
 
-	goFuncs      []GoFunc
-	fsMgr        *fsManager
-	fswatchMgr   *fsWatchManager
-	vmMgr        *vmManager
-	procMgr      *processManager
-	sockMgr      *socketManager
-	workerMgr    *workerManager
-	sqliteMgr    *sqliteManager
-	bunSrv       *bunServerState
-	gcConfig     GCConfig
-	perms        *Permissions
-	poolHandleFn uintptr // unused in quickjs but needed for pool.go shared code
+	goFuncs         []GoFunc
+	nativeMethodSeq int
+	nativeReg       *nativeTypeRegistry
+	fsMgr           *fsManager
+	fswatchMgr      *fsWatchManager
+	vmMgr           *vmManager
+	procMgr         *processManager
+	sockMgr         *socketManager
+	workerMgr       *workerManager
+	sqliteMgr       *sqliteManager
+	bunSrv          *bunServerState
+	gcConfig        GCConfig
+	perms           *Permissions
+	poolHandleFn    uintptr // unused in quickjs but needed for pool.go shared code
 
 	closeOnce sync.Once
 	closed    atomic.Bool
@@ -245,6 +247,9 @@ func (r *Runtime) Close() error {
 		}
 		if r.sqliteMgr != nil {
 			r.sqliteMgr.closeAll()
+		}
+		if r.nativeReg != nil {
+			r.nativeReg.clearInstances()
 		}
 
 		close(r.stopCh)

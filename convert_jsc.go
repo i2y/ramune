@@ -4,6 +4,7 @@ package ramune
 
 import (
 	"fmt"
+	"reflect"
 	"runtime"
 	"unsafe"
 )
@@ -28,6 +29,11 @@ func (r *Runtime) goToJS(v any) (uintptr, error) {
 			return r.jsValueMakeNull(r.ctx), nil
 		}
 		runtime.KeepAlive(val)
+		return val.ptr, nil
+	case *JSFunc:
+		if val == nil || val.ptr == 0 {
+			return r.jsValueMakeNull(r.ctx), nil
+		}
 		return val.ptr, nil
 	case bool:
 		return r.jsValueMakeBoolean(r.ctx, val), nil
@@ -109,8 +115,101 @@ func (r *Runtime) goToJS(v any) (uintptr, error) {
 		}
 		return arr, nil
 	default:
+		rv := reflect.ValueOf(v)
+		origVal := rv
+
+		// Check for Promise type (has Await() method) → convert to JS Promise
+		if rv.Kind() == reflect.Ptr && rv.MethodByName("Await").IsValid() {
+			return r.promiseToJS(rv)
+		}
+
+		if rv.Kind() == reflect.Ptr {
+			rv = rv.Elem()
+		}
+		if rv.Kind() == reflect.Struct {
+			return r.structToJSObject(origVal, rv)
+		}
 		return 0, fmt.Errorf("ramune: unsupported Go type %T", v)
 	}
+}
+
+// promiseToJS converts a Go *promise.Promise[T] to a JS Promise.
+// It spawns a goroutine that calls Await(), then resolves/rejects the JS Promise.
+func (r *Runtime) promiseToJS(rv reflect.Value) (uintptr, error) {
+	r.nativeMethodSeq++
+	seq := r.nativeMethodSeq
+	resolveName := fmt.Sprintf("__promise_resolve_%d", seq)
+	rejectName := fmt.Sprintf("__promise_reject_%d", seq)
+
+	// Create JS Promise that stores resolve/reject as globals
+	jsCode := fmt.Sprintf(
+		`new Promise(function(resolve, reject) {
+			globalThis.%s = function(v) { resolve(v); };
+			globalThis.%s = function(e) { reject(e); };
+		})`,
+		resolveName, rejectName,
+	)
+	jsPromise, err := r.evalScriptLocked(jsCode, "promise-bridge")
+	if err != nil {
+		return 0, fmt.Errorf("promiseToJS: %w", err)
+	}
+
+	awaitMethod := rv.MethodByName("Await")
+	go func() {
+		results := awaitMethod.Call(nil)
+		// results[0] = value, results[1] = error
+		r.dispatch(func() {
+			if len(results) >= 2 && !results[1].IsNil() {
+				errMsg := results[1].Interface().(error).Error()
+				r.execLocked(fmt.Sprintf("globalThis.%s(%q);delete globalThis.%s;delete globalThis.%s;",
+					rejectName, errMsg, resolveName, rejectName))
+			} else if len(results) >= 1 {
+				val := results[0].Interface()
+				// Convert value to JSON for passing to JS
+				jsVal, convErr := r.goToJS(val)
+				if convErr != nil {
+					r.execLocked(fmt.Sprintf("globalThis.%s(%q);delete globalThis.%s;delete globalThis.%s;",
+						rejectName, convErr.Error(), resolveName, rejectName))
+					return
+				}
+				// Store value in temp, resolve, cleanup
+				tmpName := fmt.Sprintf("__pval_%d", seq)
+				jsKey := r.jsStringCreateWithUTF8CString(tmpName)
+				globalObj := r.jsContextGetGlobalObject(r.ctx)
+				r.jsObjectSetProperty(r.ctx, globalObj, jsKey, jsVal, 0, 0)
+				r.jsStringRelease(jsKey)
+				r.execLocked(fmt.Sprintf("globalThis.%s(globalThis.%s);delete globalThis.%s;delete globalThis.%s;delete globalThis.%s;",
+					resolveName, tmpName, resolveName, rejectName, tmpName))
+			}
+		})
+		r.Wake()
+	}()
+
+	return jsPromise, nil
+}
+
+// structToJSObject converts a Go struct to a JS object with live getter/setter
+// properties and callable methods. Uses per-type callback registration to avoid
+// leaking GoFuncs for every instance.
+func (r *Runtime) structToJSObject(origVal, rv reflect.Value) (uintptr, error) {
+	methodTarget := origVal
+	if methodTarget.Kind() != reflect.Ptr {
+		ptr := reflect.New(rv.Type())
+		ptr.Elem().Set(rv)
+		methodTarget = ptr
+	}
+
+	r.ensureNativeReg()
+	info := r.nativeReg.ensureTypeRegistered(r, rv.Type())
+	instanceID := r.nativeReg.registerInstance(methodTarget)
+	jsCode := info.generateJSObject(instanceID)
+
+	jsObj, err := r.evalScriptLocked(jsCode, "native-struct")
+	if err != nil {
+		r.nativeReg.releaseInstance(instanceID)
+		return 0, fmt.Errorf("structToJSObject: %w", err)
+	}
+	return jsObj, nil
 }
 
 // jsToGo converts a JSValueRef to a Go value.

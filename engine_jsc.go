@@ -173,21 +173,23 @@ type Runtime struct {
 	jsObjectGetArrayBufferBytesPtr   func(uintptr, uintptr, uintptr) uintptr
 	jsObjectGetArrayBufferByteLength func(uintptr, uintptr, uintptr) uint64
 
-	callbacks       []uintptr       // prevent GC of purego callbacks
-	jsonStringifyFn uintptr         // cached JSON.stringify JSObjectRef
-	goFuncs         []GoFunc        // registered Go functions (ID dispatch)
-	dispatcherReady bool            // single dispatcher callback created
-	fsMgr           *fsManager      // async filesystem manager
-	fswatchMgr      *fsWatchManager // fs.watch() manager
-	vmMgr           *vmManager      // vm module context manager
-	procMgr         *processManager // async subprocess manager
-	sockMgr         *socketManager  // async socket manager
-	workerMgr       *workerManager  // worker threads manager
-	sqliteMgr       *sqliteManager  // bun:sqlite database manager
-	bunSrv          *bunServerState // Bun.serve() state
-	gcConfig        GCConfig        // GC configuration
-	perms           *Permissions    // permission policy
-	poolHandleFn    uintptr         // cached __poolHandleFast JSObjectRef (for RuntimePool)
+	callbacks       []uintptr           // prevent GC of purego callbacks
+	jsonStringifyFn uintptr             // cached JSON.stringify JSObjectRef
+	goFuncs         []GoFunc            // registered Go functions (ID dispatch)
+	dispatcherReady bool                // single dispatcher callback created
+	nativeMethodSeq int                 // counter for unique native method callback names
+	nativeReg       *nativeTypeRegistry // per-type struct callback registry
+	fsMgr           *fsManager          // async filesystem manager
+	fswatchMgr      *fsWatchManager     // fs.watch() manager
+	vmMgr           *vmManager          // vm module context manager
+	procMgr         *processManager     // async subprocess manager
+	sockMgr         *socketManager      // async socket manager
+	workerMgr       *workerManager      // worker threads manager
+	sqliteMgr       *sqliteManager      // bun:sqlite database manager
+	bunSrv          *bunServerState     // Bun.serve() state
+	gcConfig        GCConfig            // GC configuration
+	perms           *Permissions        // permission policy
+	poolHandleFn    uintptr             // cached __poolHandleFast JSObjectRef (for RuntimePool)
 
 	// Protected value tracking: values are unprotected on Runtime.Close()
 	// if not explicitly closed. No Go finalizers are used to avoid SIGTRAP
@@ -467,6 +469,9 @@ func (r *Runtime) Close() error {
 		}
 		if r.sqliteMgr != nil {
 			r.sqliteMgr.closeAll()
+		}
+		if r.nativeReg != nil {
+			r.nativeReg.clearInstances()
 		}
 		// Send cleanup work to the dedicated JSC goroutine.
 		done := make(chan struct{})

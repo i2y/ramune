@@ -39,6 +39,7 @@ import (
 	"github.com/evanw/esbuild/pkg/api"
 	"github.com/fsnotify/fsnotify"
 	"github.com/i2y/ramune"
+	"github.com/i2y/ramune/internal/gotranspiler"
 	"github.com/i2y/ramune/internal/registry"
 	"github.com/i2y/ramune/internal/rslint/config"
 	"github.com/i2y/ramune/internal/rslint/linter"
@@ -125,6 +126,10 @@ func main() {
 		buildCmd(os.Args[2:])
 	case "compile":
 		compileCmd(os.Args[2:])
+	case "transpile":
+		transpileCmd(os.Args[2:])
+	case "typegen":
+		typegenCmd(os.Args[2:])
 	case "bench":
 		benchCmd(os.Args[2:])
 	case "skills":
@@ -159,6 +164,8 @@ Commands:
   repl              Interactive REPL (JS/TS)
   setup-jit         Sign binary for JSC JIT (macOS, requires codesign)
   compile [file]    Compile JS/TS to standalone binary
+  transpile <files> Transpile TS to Go source (--compile for binary)
+  typegen <pkg...>  Generate .d.ts for Go packages (go: imports)
   init              Initialize a new project (creates package.json)
   add <pkg...>      Add npm packages to package.json
   remove <pkg...>   Remove npm packages from package.json
@@ -1265,7 +1272,7 @@ func bundleESM(filename string, code []byte) ([]byte, error) {
 		"child_process", "fs", "path", "os", "net", "http", "https", "tls",
 		"stream", "events", "util", "buffer", "crypto", "url", "querystring",
 		"zlib", "string_decoder", "assert", "readline", "dns", "worker_threads",
-		"bun:sqlite", "node:*",
+		"bun:sqlite", "node:*", "native:*",
 	}
 
 	result := api.Build(api.BuildOptions{
@@ -2541,15 +2548,26 @@ func buildCmd(args []string) {
 	}
 }
 
-// compileCmd implements `ramune compile <file> -o <output> [--minify] [--http]`.
+// stringSliceFlag implements flag.Value for repeatable string flags.
+type stringSliceFlag []string
+
+func (s *stringSliceFlag) String() string { return strings.Join(*s, ", ") }
+func (s *stringSliceFlag) Set(v string) error {
+	*s = append(*s, v)
+	return nil
+}
+
+// compileCmd implements `ramune compile <file> -o <output> [--minify] [--http] [--native <file.ts>]`.
 // Bundles JS/TS into a standalone Go binary via go:embed.
 func compileCmd(args []string) {
 	fs := flag.NewFlagSet("compile", flag.ExitOnError)
 	var output string
 	var minify, httpMode bool
+	var nativeFiles stringSliceFlag
 	fs.StringVar(&output, "o", "", "output binary name")
 	fs.BoolVar(&minify, "minify", false, "minify bundled JS")
 	fs.BoolVar(&httpMode, "http", false, "run event loop for HTTP server")
+	fs.Var(&nativeFiles, "native", "TypeScript file to transpile as native extension (repeatable)")
 	fs.Parse(args)
 
 	if fs.NArg() < 1 {
@@ -2579,7 +2597,7 @@ func compileCmd(args []string) {
 		"child_process", "fs", "path", "os", "net", "http", "https", "tls",
 		"stream", "events", "util", "buffer", "crypto", "url", "querystring",
 		"zlib", "string_decoder", "assert", "readline", "dns", "worker_threads",
-		"bun:sqlite", "node:*",
+		"bun:sqlite", "node:*", "native:*",
 	}
 	buildOpts := api.BuildOptions{
 		EntryPoints: []string{absPath},
@@ -2631,6 +2649,105 @@ func compileCmd(args []string) {
 		timeImport = `"time"`
 	}
 
+	// Process native extension files.
+	var nativeImports, nativeModules string
+	if len(nativeFiles) == 1 {
+		// Single file: transpile as library
+		nf := nativeFiles[0]
+		baseName := strings.TrimSuffix(filepath.Base(nf), filepath.Ext(nf))
+		pkgAlias := "native" + baseName
+		pkgDir := filepath.Join(tmpDir, pkgAlias)
+		if err := os.MkdirAll(pkgDir, 0o755); err != nil {
+			fmt.Fprintf(os.Stderr, "error creating native dir: %v\n", err)
+			os.Exit(1)
+		}
+		result, err := gotranspiler.TranspileLibraryFile(nf, pkgAlias)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "native transpile error (%s): %v\n", nf, err)
+			os.Exit(1)
+		}
+		if err := os.WriteFile(filepath.Join(pkgDir, baseName+".go"), []byte(result.GoSource), 0o644); err != nil {
+			fmt.Fprintf(os.Stderr, "error writing native module: %v\n", err)
+			os.Exit(1)
+		}
+		funcs, err := gotranspiler.DiscoverExportedFuncs(result.GoSource)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "native discovery error (%s): %v\n", nf, err)
+			os.Exit(1)
+		}
+		if len(funcs) > 0 {
+			pkgImport := "ramune-compiled-app/" + pkgAlias
+			nativeImports += gotranspiler.GenerateNativeImport(pkgImport, pkgAlias)
+			nativeModules += gotranspiler.GenerateBridgeCode("native:"+baseName, pkgAlias, funcs)
+			nonGeneric := 0
+			for _, f := range funcs {
+				if !f.Generic {
+					nonGeneric++
+				}
+			}
+			fmt.Fprintf(os.Stderr, "native: %s → %d functions\n", baseName, nonGeneric)
+			for _, w := range gotranspiler.GenericWarnings(funcs) {
+				fmt.Fprintln(os.Stderr, w)
+			}
+		}
+	} else if len(nativeFiles) > 1 {
+		// Multiple files: transpile as a project so inter-file imports resolve
+		// Use __none__ as entryFile to make all files libraries (no func main)
+		projResult, err := gotranspiler.TranspileProject(nativeFiles, "__none__", "", "ramune-compiled-app")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "native transpile error: %v\n", err)
+			os.Exit(1)
+		}
+		// Write each generated file and discover exports
+		for relPath, goSource := range projResult.Files {
+			outPath := filepath.Join(tmpDir, relPath)
+			if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
+				fmt.Fprintf(os.Stderr, "error creating native dir: %v\n", err)
+				os.Exit(1)
+			}
+			if err := os.WriteFile(outPath, []byte(goSource), 0o644); err != nil {
+				fmt.Fprintf(os.Stderr, "error writing native module: %v\n", err)
+				os.Exit(1)
+			}
+			// Discover exports for each file
+			funcs, err := gotranspiler.DiscoverExportedFuncs(goSource)
+			if err != nil || len(funcs) == 0 {
+				continue
+			}
+			// Derive module name and Go import path from relative path
+			dir := filepath.Dir(relPath)
+			var pkgAlias, modName, pkgImport string
+			if dir == "." {
+				base := strings.TrimSuffix(filepath.Base(relPath), ".go")
+				pkgAlias = "native" + base
+				modName = base
+				pkgImport = "ramune-compiled-app/" + base
+			} else {
+				pkgAlias = "native" + strings.ReplaceAll(dir, "/", "_")
+				modName = filepath.Base(dir)
+				pkgImport = "ramune-compiled-app/" + dir
+			}
+			nativeImports += gotranspiler.GenerateNativeImport(pkgImport, pkgAlias)
+			nativeModules += gotranspiler.GenerateBridgeCode("native:"+modName, pkgAlias, funcs)
+			nonGeneric := 0
+			for _, f := range funcs {
+				if !f.Generic {
+					nonGeneric++
+				}
+			}
+			fmt.Fprintf(os.Stderr, "native: %s → %d functions\n", modName, nonGeneric)
+			for _, w := range gotranspiler.GenericWarnings(funcs) {
+				fmt.Fprintln(os.Stderr, w)
+			}
+		}
+	}
+
+	// Build runtime options for the main.go template.
+	runtimeOpts := "ramune.NodeCompat(), ramune.WithFetch()"
+	if nativeModules != "" {
+		runtimeOpts += ",\n" + nativeModules
+	}
+
 	mainGo := fmt.Sprintf(`package main
 
 import (
@@ -2642,13 +2759,13 @@ import (
 	%s
 
 	"github.com/i2y/ramune"
-)
+%s)
 
 //go:embed app.bundle.js
 var appJS string
 
 func main() {
-	rt, err := ramune.New(ramune.NodeCompat(), ramune.WithFetch())
+	rt, err := ramune.New(%s)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -2680,7 +2797,7 @@ func main() {
 	}
 	%s
 }
-`, timeImport, eventLoop)
+`, timeImport, nativeImports, runtimeOpts, eventLoop)
 
 	if err := os.WriteFile(filepath.Join(tmpDir, "main.go"), []byte(mainGo), 0o644); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
@@ -2901,4 +3018,127 @@ func findPackageBin(workDir, pkgName string) string {
 		return filepath.Join(workDir, "node_modules", pkgName, main)
 	}
 	return ""
+}
+
+// transpileCmd implements `ramune transpile <files...> -o <outdir> [--compile] [--module <name>]`.
+func transpileCmd(args []string) {
+	fs := flag.NewFlagSet("transpile", flag.ExitOnError)
+	var outDir, moduleName string
+	var doCompile bool
+	fs.StringVar(&outDir, "o", "", "output directory (or binary name with --compile)")
+	fs.StringVar(&moduleName, "module", "", "Go module name (default: derived from entry file)")
+	fs.BoolVar(&doCompile, "compile", false, "compile to binary after transpilation")
+	fs.Parse(args)
+
+	if fs.NArg() < 1 {
+		fmt.Fprintln(os.Stderr, "usage: ramune transpile <files...> [-o output] [--compile] [--module name]")
+		os.Exit(1)
+	}
+
+	files := fs.Args()
+	entryFile := files[0]
+
+	if moduleName == "" {
+		moduleName = strings.TrimSuffix(filepath.Base(entryFile), filepath.Ext(entryFile))
+	}
+
+	var outBinary string
+	if doCompile {
+		outBinary = outDir
+		if outBinary == "" {
+			outBinary = moduleName
+		}
+		tmpDir, err := os.MkdirTemp("", "ramune-transpile-*")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		defer os.RemoveAll(tmpDir)
+		outDir = tmpDir
+	} else if outDir == "" {
+		outDir = "."
+	}
+
+	// Detect node_modules for npm package resolution
+	hasNodeModules := false
+	if cwd, err := os.Getwd(); err == nil {
+		if info, err := os.Stat(filepath.Join(cwd, "node_modules")); err == nil && info.IsDir() {
+			hasNodeModules = true
+		}
+	}
+
+	if len(files) == 1 {
+		fmt.Fprintf(os.Stderr, "transpiling %s → Go...\n", entryFile)
+		if err := gotranspiler.TranspileToDir(entryFile, outDir, "main"); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+	} else if hasNodeModules {
+		fmt.Fprintf(os.Stderr, "transpiling %d files → Go project %s (with npm)...\n", len(files), moduleName)
+		if err := gotranspiler.TranspileProjectToDirWithNpm(files, entryFile, outDir, moduleName); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+	} else {
+		fmt.Fprintf(os.Stderr, "transpiling %d files → Go project %s...\n", len(files), moduleName)
+		if err := gotranspiler.TranspileProjectToDir(files, entryFile, outDir, moduleName); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+	}
+
+	if doCompile {
+		if ramuneModPath := findRamuneModPath(); ramuneModPath != "" {
+			goModPath := filepath.Join(outDir, "go.mod")
+			goModData, _ := os.ReadFile(goModPath)
+			goModData = append(goModData, []byte(fmt.Sprintf("\nreplace github.com/i2y/ramune => %s\n", ramuneModPath))...)
+			os.WriteFile(goModPath, goModData, 0o644)
+		}
+
+		tidyCmd := exec.Command("go", "mod", "tidy")
+		tidyCmd.Dir = outDir
+		tidyCmd.Stderr = os.Stderr
+		if err := tidyCmd.Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "go mod tidy error: %v\n", err)
+			os.Exit(1)
+		}
+
+		fmt.Fprintf(os.Stderr, "compiling %s...\n", outBinary)
+		absOut, _ := filepath.Abs(outBinary)
+		buildCmd := exec.Command("go", "build", "-o", absOut, ".")
+		buildCmd.Dir = outDir
+		buildCmd.Stdout = os.Stdout
+		buildCmd.Stderr = os.Stderr
+		if err := buildCmd.Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "go build error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stderr, "✓ built %s\n", outBinary)
+	} else {
+		fmt.Fprintf(os.Stderr, "✓ wrote to %s\n", outDir)
+	}
+}
+
+func typegenCmd(args []string) {
+	fs := flag.NewFlagSet("typegen", flag.ExitOnError)
+	var outFile string
+	fs.StringVar(&outFile, "o", "go.d.ts", "output .d.ts file")
+	fs.Parse(args)
+
+	if fs.NArg() < 1 {
+		fmt.Fprintln(os.Stderr, "usage: ramune typegen <go:pkg...> [-o output.d.ts]")
+		os.Exit(1)
+	}
+
+	content, err := gotranspiler.GenerateDTS(fs.Args())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+
+	if err := os.WriteFile(outFile, []byte(content), 0o644); err != nil {
+		fmt.Fprintf(os.Stderr, "error writing %s: %v\n", outFile, err)
+		os.Exit(1)
+	}
+	fmt.Fprintf(os.Stderr, "wrote %s\n", outFile)
 }

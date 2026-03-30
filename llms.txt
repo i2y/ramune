@@ -15,10 +15,13 @@ Two backends, same API:
 
 ## CLI Runtime
 
-- [CLI (cmd/ramune)](https://github.com/i2y/ramune/blob/main/cmd/ramune/main.go): `ramune run`, `ramune eval`, `ramune repl`, `ramune test`, `ramune check`, `ramune fmt`, `ramune lint`, `ramune build`, `ramune compile`, `ramune bench`, `ramune x`, `ramune init/add/remove/install`, `ramune setup-jit`, `ramune skills install`
+- [CLI (cmd/ramune)](https://github.com/i2y/ramune/blob/main/cmd/ramune/main.go): `ramune run`, `ramune eval`, `ramune repl`, `ramune test`, `ramune check`, `ramune fmt`, `ramune lint`, `ramune build`, `ramune compile`, `ramune transpile`, `ramune bench`, `ramune x`, `ramune init/add/remove/install`, `ramune setup-jit`, `ramune skills install`
 - TypeScript/TSX support via esbuild transpilation
 - ESM (import/export) and CommonJS support with esbuild Build API bundling
 - `ramune compile` — compile JS/TS to standalone Go binary via go:embed
+- `ramune compile --native <file.ts>` — transpile TypeScript to native Go extensions callable from JS via `require('native:name')`
+- `ramune transpile` — transpile TypeScript source files to Go source code
+- `ramune typegen go:pkg... -o types.d.ts` — generate TypeScript .d.ts declarations from Go packages
 - `ramune run --workers N` — multi-worker HTTP serving with parallel JSC VMs
 - `ramune run --env-file` — .env file auto-loading (like Bun/Deno)
 - `ramune run <script>` — package.json scripts runner
@@ -31,14 +34,29 @@ Two backends, same API:
 - Deno-style permissions (`--sandbox`, `--allow-read`, `--allow-write`, `--allow-net`)
 - Rich REPL with history, tab completion, colors (ergochat/readline + charmbracelet/lipgloss)
 
+## TypeScript-to-Go Transpiler
+
+- [Transpiler (internal/gotranspiler/)](https://github.com/i2y/ramune/blob/main/internal/gotranspiler/): Built-in TypeScript-to-Go transpiler
+- [Native Bridge (internal/gotranspiler/nativebridge.go)](https://github.com/i2y/ramune/blob/main/internal/gotranspiler/nativebridge.go): Discovers exported Go functions, generates NativeModuleFromFuncs bridge code
+- Supported: number, string, boolean, arrays, Map, Set, Promise, generics, classes (static, abstract, getter/setter), interfaces, enums, discriminated unions, async/await, destructuring with defaults, template literals, array/string methods
+- Operators: typeof, instanceof, in, delete, ?. (optional chaining), ?? (nullish coalescing), ** (exponentiation), >>>, &&=, ||=, ??=
+- Loops: for, for...of, for...in, for await...of, while, labeled break/continue
+- Modules: relative imports, Node.js built-in modules, npm packages (uuid, lodash, zod adapters), Go packages via `go:` prefix, export default, re-exports
+- Type mapping: number→float64, string→string, boolean→bool, T[]→[]T, T|null→*T, Map<K,V>→map[K]V, Promise<T>→*promise.Promise[T], Class→struct+methods, conditional/mapped/intersection types resolved via checker
+- Go interop: `go:` prefix imports any Go stdlib/third-party package, multi-return destructuring (`const [resp, err] = http.Get(url)`), auto go.mod for third-party modules
+- Type generation: `ramune typegen go:fmt go:net/http` generates .d.ts with full function signatures, interfaces, and type mappings
+- Limitations: no decorators, no generators/yield, no Symbol/Proxy, all numbers float64
+
 ## Core Library API
 
 - [Runtime (engine_jsc.go)](https://github.com/i2y/ramune/blob/main/engine_jsc.go): New(), Close(), Eval(), Exec(), EvalAsync(), NewObject(), NewArray(), NewUint8Array(), RegisterFunc(), GlobalObject(), dispatch(), Wake()
 - [Value (value_jsc.go)](https://github.com/i2y/ramune/blob/main/value_jsc.go): String(), Float64(), Bool(), Bytes(), Attr(), SetAttr(), Call(), Keys(), Len(), Index(), Has(), Delete(), ToMap(), ToSlice(), IsArray(), IsFunction(), Close()
-- [Typed Registration (register.go)](https://github.com/i2y/ramune/blob/main/register.go): Register[F]() — generics-based typed Go function registration
+- [JSFunc (jsfunc_jsc.go)](https://github.com/i2y/ramune/blob/main/jsfunc_jsc.go): Wraps JS function references passed to GoFunc callbacks; Call(args...) invokes the function, Close() releases the reference
+- [Typed Registration (register.go)](https://github.com/i2y/ramune/blob/main/register.go): Register[F]() — generics-based typed Go function registration (supports *JSFunc parameters)
 - [Struct Binding (bind.go)](https://github.com/i2y/ramune/blob/main/bind.go): Bind() — expose Go structs as JS objects with getters/setters/methods
-- [Plugin System (module.go)](https://github.com/i2y/ramune/blob/main/module.go): Module, WithModule(), LoadModule() — custom require() modules
-- [Type Conversion (convert_jsc.go)](https://github.com/i2y/ramune/blob/main/convert_jsc.go): Go↔JS conversion for bool, numbers, strings, nil, map[string]any, []any, []byte (Uint8Array)
+- [Plugin System (module.go)](https://github.com/i2y/ramune/blob/main/module.go): Module, WithModule(), LoadModule(), NativeModuleFromFuncs() — custom require() modules and reflection-based native module creation
+- [Native Instance (native_instance.go)](https://github.com/i2y/ramune/blob/main/native_instance.go): Per-type callback registry for struct→JS conversion with live getter/setter properties and methods
+- [Type Conversion (convert_jsc.go)](https://github.com/i2y/ramune/blob/main/convert_jsc.go): Go↔JS conversion for bool, numbers, strings, nil, map[string]any, []any, []byte (Uint8Array), structs (live binding), *promise.Promise[T] (→JS Promise), *JSFunc (→JS function)
 - [Error Handling (errors.go)](https://github.com/i2y/ramune/blob/main/errors.go): JSError with Message and Stack trace, ErrAlreadyClosed, ErrNilValue
 - [GC Config (types.go)](https://github.com/i2y/ramune/blob/main/types.go): WithGC(GCConfig) — DisableAutoGC, GCInterval, GCPercent for JSC/Go GC interop
 - [Permissions (permissions.go)](https://github.com/i2y/ramune/blob/main/permissions.go): WithPermissions() — read/write/net/env/run access control

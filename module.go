@@ -2,6 +2,7 @@ package ramune
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 )
 
@@ -86,6 +87,99 @@ func (r *Runtime) loadModuleLocked(m Module) error {
 		}
 	}
 	return nil
+}
+
+// NativeModuleFromFuncs creates a Module from a map of typed Go functions.
+// Each function is automatically wrapped with reflection-based argument conversion,
+// similar to Register[F]. This is used to expose transpiled Go code as a JS module.
+//
+// Example:
+//
+//	mod := ramune.NativeModuleFromFuncs("native:math", map[string]any{
+//	    "fibonacci": mymath.Fibonacci,  // func(float64) float64
+//	    "isPrime":   mymath.IsPrime,    // func(float64) bool
+//	})
+//	rt, _ := ramune.New(ramune.WithModule(mod))
+//	rt.Eval(`require('native:math').fibonacci(10)`) // 55
+func NativeModuleFromFuncs(name string, funcs map[string]any) Module {
+	exports := make(map[string]GoFunc, len(funcs))
+	for jsName, fn := range funcs {
+		exports[jsName] = wrapTypedFunc(jsName, fn)
+	}
+	return Module{
+		Name:    name,
+		Exports: exports,
+		Init: func(r *Runtime) error {
+			r.installNativeReleaseBridge()
+			return nil
+		},
+	}
+}
+
+// wrapTypedFunc wraps a typed Go function into a GoFunc using reflection.
+// Handles argument conversion, return value processing, and panic recovery.
+func wrapTypedFunc(name string, fn any) GoFunc {
+	fnVal := reflect.ValueOf(fn)
+	fnType := fnVal.Type()
+
+	if fnType.Kind() != reflect.Func {
+		return func(args []any) (any, error) {
+			return nil, fmt.Errorf("native:%s: expected function, got %s", name, fnType.Kind())
+		}
+	}
+
+	numIn := fnType.NumIn()
+	numOut := fnType.NumOut()
+	errorInterface := reflect.TypeOf((*error)(nil)).Elem()
+
+	paramTypes := make([]reflect.Type, numIn)
+	for i := 0; i < numIn; i++ {
+		paramTypes[i] = fnType.In(i)
+	}
+
+	return func(args []any) (result any, err error) {
+		defer func() {
+			if r := recover(); r != nil {
+				err = fmt.Errorf("native:%s: %v", name, r)
+			}
+		}()
+
+		if len(args) < numIn {
+			return nil, fmt.Errorf("native:%s: expected %d arguments, got %d", name, numIn, len(args))
+		}
+
+		in := make([]reflect.Value, numIn)
+		for i := 0; i < numIn; i++ {
+			converted, convErr := convertArg(args[i], paramTypes[i])
+			if convErr != nil {
+				return nil, fmt.Errorf("native:%s: argument %d: %w", name, i, convErr)
+			}
+			in[i] = converted
+		}
+
+		out := fnVal.Call(in)
+
+		switch numOut {
+		case 0:
+			return nil, nil
+		case 1:
+			if fnType.Out(0).Implements(errorInterface) {
+				if out[0].IsNil() {
+					return nil, nil
+				}
+				return nil, out[0].Interface().(error)
+			}
+			return out[0].Interface(), nil
+		case 2:
+			var retErr error
+			if !out[1].IsNil() {
+				retErr = out[1].Interface().(error)
+			}
+			return out[0].Interface(), retErr
+		default:
+			return nil, nil
+		}
+	}
 }
 
 // sanitizeModName converts a module name to a valid identifier fragment.
