@@ -50,9 +50,9 @@ Transpile options: `-o outdir`, `--module name`, `--compile` (transpile + build 
 
 Typegen options: `-o output.d.ts` (default: `go.d.ts`). Accepts `go:pkg` or `pkg` syntax.
 
-## TypeScript-to-Go Transpiler
+## TypeScript-to-Go Transpiler (Experimental)
 
-Ramune includes a built-in TypeScript-to-Go transpiler that converts TypeScript source code to idiomatic Go.
+Ramune includes a built-in TypeScript-to-Go transpiler that converts TypeScript source code to idiomatic Go. This feature is experimental and under active development — generated code may require manual adjustments for complex codebases.
 
 ```
 ramune transpile main.ts -o out/                         # single file

@@ -53,7 +53,9 @@ ramune compile app.js --native math.ts --native geometry.ts -o myapp
 
 Exported functions become available via `require('native:modulename')`. Supports structs with live properties, typed arrays, error handling, and class-like instances.
 
-### Transpile TypeScript to Go
+### Transpile TypeScript to Go (Experimental)
+
+> **Note:** Experimental — under active development. Generated code may require manual adjustments for complex codebases.
 
 ```bash
 ramune transpile main.ts -o out/                         # single file

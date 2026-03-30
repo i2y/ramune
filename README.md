@@ -209,7 +209,9 @@ c.increment();
 console.log(c.count); // 101
 ```
 
-### Transpile TypeScript to Go
+### Transpile TypeScript to Go (Experimental)
+
+> **Note:** The TypeScript-to-Go transpiler is experimental and under active development. Generated code may require manual adjustments for complex codebases.
 
 Transpile TypeScript source code directly to Go:
 
@@ -642,7 +644,9 @@ Linux does not need JIT setup.
 
 Ramune also supports `package.json` `"exports"` field resolution (conditional exports with `require`/`import`/`default` and subpath exports).
 
-## TypeScript-to-Go Transpiler
+## TypeScript-to-Go Transpiler (Experimental)
+
+> **Warning:** This feature is experimental and under active development. While many TypeScript patterns are supported, complex real-world codebases (e.g., frameworks with advanced generics, method overloads, or nullable string patterns) may produce code that requires manual fixes. Contributions and bug reports are welcome.
 
 Ramune includes a built-in TypeScript-to-Go transpiler. It converts TypeScript source code to idiomatic Go, supporting a wide range of TypeScript features.
 

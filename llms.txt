@@ -34,9 +34,9 @@ Two backends, same API:
 - Deno-style permissions (`--sandbox`, `--allow-read`, `--allow-write`, `--allow-net`)
 - Rich REPL with history, tab completion, colors (ergochat/readline + charmbracelet/lipgloss)
 
-## TypeScript-to-Go Transpiler
+## TypeScript-to-Go Transpiler (Experimental)
 
-- [Transpiler (internal/gotranspiler/)](https://github.com/i2y/ramune/blob/main/internal/gotranspiler/): Built-in TypeScript-to-Go transpiler
+- [Transpiler (internal/gotranspiler/)](https://github.com/i2y/ramune/blob/main/internal/gotranspiler/): Built-in TypeScript-to-Go transpiler (experimental — under active development)
 - [Native Bridge (internal/gotranspiler/nativebridge.go)](https://github.com/i2y/ramune/blob/main/internal/gotranspiler/nativebridge.go): Discovers exported Go functions, generates NativeModuleFromFuncs bridge code
 - Supported: number, string, boolean, arrays, Map, Set, Promise, generics, classes (static, abstract, getter/setter), interfaces, enums, discriminated unions, async/await, destructuring with defaults, template literals, array/string methods
 - Operators: typeof, instanceof, in, delete, ?. (optional chaining), ?? (nullish coalescing), ** (exponentiation), >>>, &&=, ||=, ??=
