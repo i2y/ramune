@@ -61,7 +61,7 @@ func (t *Transpiler) mapConstraint(constraint *ast.Node) string {
 	case ast.KindTypeReference:
 		ref := constraint.AsTypeReference()
 		if ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier {
-			return goTypeName(ref.TypeName.AsIdentifier().Text)
+			return t.tm.qualifyTypeName(ref.TypeName.AsIdentifier().Text)
 		}
 	}
 
@@ -192,7 +192,55 @@ func (t *Transpiler) emitInterfaceDeclaration(node *ast.Node) {
 	}
 
 	if !hasProps && !hasMethods {
-		// Empty or call-signature-only interface — skip (avoids name collision with same-name variables)
+		// Check for call signatures → emit as func type
+		if iface.Members != nil {
+			for _, member := range iface.Members.Nodes {
+				if member.Kind == ast.KindCallSignature {
+					// Callable interface → type Name = func(params) retType
+					if t.ck != nil {
+						// Skip if a same-name function/variable exists (avoids redeclaration)
+						tsName := nodeText(name)
+						if (t.samePackageExports != nil && t.samePackageExports[tsName]) ||
+							(t.samePackageExports != nil && t.samePackageExports[toCamelCase(tsName)]) {
+							return
+						}
+						ifaceType := t.ck.GetTypeAtLocation(node)
+						if ifaceType != nil {
+							sigs := t.ck.GetSignaturesOfType(ifaceType, checker.SignatureKindCall)
+							if len(sigs) > 0 {
+								t.w.writef("type %s = func(", goName)
+								for i, p := range sigs[0].Parameters() {
+									if i > 0 {
+										t.w.write(", ")
+									}
+									pt := t.ck.GetTypeOfSymbol(p)
+									pType := "any"
+									if pt != nil {
+										pType = t.tm.goType(pt)
+										pType = replaceCrossPackageTypes(pType)
+										pType = t.replaceUnknownTypes(pType)
+									}
+									t.w.writef("%s %s", goVarName(p.Name), pType)
+								}
+								t.w.write(")")
+								retType := t.ck.GetReturnTypeOfSignature(sigs[0])
+								if retType != nil {
+									goRet := t.tm.goType(retType)
+									if goRet != "" {
+										goRet = replaceCrossPackageTypes(goRet)
+										goRet = t.replaceUnknownTypes(goRet)
+										t.w.writef(" %s", goRet)
+									}
+								}
+								t.w.newline()
+								t.w.newline()
+								return
+							}
+						}
+					}
+				}
+			}
+		}
 		return
 	}
 
@@ -387,6 +435,28 @@ func (t *Transpiler) collectTypeAlias(node *ast.Node) {
 
 	goType := t.tm.goType(aliasType)
 
+	// For intersection types (e.g., string & HtmlEscaped), try to resolve named constituents
+	// from the TS AST directly, since the checker may expand aliases to anonymous types.
+	if (goType == "string" || goType == "float64" || goType == "bool" || goType == "any") &&
+		aliasType != nil && aliasType.Flags()&checker.TypeFlagsIntersection != 0 {
+		if ta.Type.Kind == ast.KindIntersectionType {
+			// Scan intersection constituents for named type references
+			for _, member := range ta.Type.AsIntersectionTypeNode().Types.Nodes {
+				if member.Kind == ast.KindTypeReference {
+					ref := member.AsTypeReference()
+					if ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier {
+						refName := ref.TypeName.AsIdentifier().Text
+						goRefName := goTypeName(refName)
+						if goRefName != goName && goRefName != "string" && goRefName != "float64" && goRefName != "bool" {
+							goType = t.tm.qualifyTypeName(refName)
+							break
+						}
+					}
+				}
+			}
+		}
+	}
+
 	if t.tm.typeAliases == nil {
 		t.tm.typeAliases = make(map[string]string)
 	}
@@ -426,6 +496,13 @@ func (t *Transpiler) emitTypeAliasDeclaration(node *ast.Node) {
 		aliasType := t.ck.GetTypeAtLocation(ta.Type)
 		goType := t.tm.goType(aliasType)
 
+		// Use pre-pass mapping if available (handles intersection types resolved from AST)
+		if t.tm.typeAliases != nil {
+			if prePassType, ok := t.tm.typeAliases[goName]; ok && prePassType != goType {
+				goType = prePassType
+			}
+		}
+
 		// Record alias mapping so goTypeInfo can resolve alias names to concrete Go types.
 		if t.tm.typeAliases == nil {
 			t.tm.typeAliases = make(map[string]string)
@@ -441,17 +518,228 @@ func (t *Transpiler) emitTypeAliasDeclaration(node *ast.Node) {
 			}
 		}
 
+		// If type alias resolves to itself (e.g., Env → Env), try to emit as struct
+		if goType == goName || goType == "any" {
+			if aliasType != nil && (aliasType.Flags()&checker.TypeFlagsObject != 0 ||
+				aliasType.Flags()&checker.TypeFlagsIntersection != 0) {
+				props := t.ck.GetPropertiesOfType(aliasType)
+				if len(props) > 0 {
+					t.w.writef("type %s struct", goName)
+					t.w.openBlock()
+					// For intersection types (e.g., string & HtmlEscaped):
+					// - Add Value field for primitive part
+					// - Embed named type for object part (promotes its fields)
+					if aliasType.Flags()&checker.TypeFlagsIntersection != 0 {
+						inter := aliasType.AsIntersectionType()
+						for _, u := range inter.Types() {
+							if u.Flags()&checker.TypeFlagsStringLike != 0 {
+								t.w.writeln("Value string")
+							} else if u.Flags()&checker.TypeFlagsNumberLike != 0 {
+								t.w.writeln("Value float64")
+							} else if u.Flags()&checker.TypeFlagsBooleanLike != 0 {
+								t.w.writeln("Value bool")
+							}
+						}
+						// Embed named type constituents from AST
+						if ta.Type != nil && ta.Type.Kind == ast.KindIntersectionType {
+							for _, member := range ta.Type.AsIntersectionTypeNode().Types.Nodes {
+								if member.Kind == ast.KindTypeReference {
+									ref := member.AsTypeReference()
+									if ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier {
+										refName := goExportedName(ref.TypeName.AsIdentifier().Text)
+										t.w.writeln(refName)
+									}
+								}
+							}
+						}
+						// Skip individual property emission — they come from the embedded type
+						props = nil
+					}
+					// For intersection types, extract properties from the TS AST type declaration
+					// (not from checker which merges ALL constituent properties including prototypes)
+					if aliasType.Flags()&checker.TypeFlagsIntersection != 0 && ta.Type != nil {
+						props = nil // reset
+						// Walk the AST intersection members and extract explicit property signatures
+						if ta.Type.Kind == ast.KindIntersectionType {
+							for _, member := range ta.Type.AsIntersectionTypeNode().Types.Nodes {
+								if member.Kind == ast.KindTypeLiteral {
+									// Inline object type: { isEscaped: true, callbacks?: ... }
+									typeLit := member.AsTypeLiteralNode()
+									if typeLit.Members != nil {
+										for _, m := range typeLit.Members.Nodes {
+											if m.Kind == ast.KindPropertySignature && m.Name() != nil {
+												sym := t.ck.GetSymbolAtLocation(m.Name())
+												if sym != nil {
+													props = append(props, sym)
+												}
+											}
+										}
+									}
+								} else if member.Kind == ast.KindTypeReference {
+									// Named type reference (e.g., HtmlEscaped) → get its declared properties
+									ref := member.AsTypeReference()
+									if ref.TypeName != nil {
+										refType := t.ck.GetTypeAtLocation(ref.TypeName)
+										if refType != nil && refType.Flags()&checker.TypeFlagsObject != 0 {
+											// Use the referenced type's own properties (not merged)
+											refProps := t.ck.GetPropertiesOfType(refType)
+											for _, p := range refProps {
+												if isValidGoIdentifier(p.Name) && !strings.HasPrefix(p.Name, "__") {
+													props = append(props, p)
+												}
+											}
+										}
+									}
+								}
+							}
+						}
+					}
+					for _, p := range props {
+						// Skip internal/special properties (e.g., __@iterator)
+						if !isValidGoIdentifier(p.Name) || strings.HasPrefix(p.Name, "__") {
+							continue
+						}
+						propName := goExportedName(p.Name)
+						propType := "any"
+						pt := t.ck.GetTypeOfSymbol(p)
+						if pt != nil {
+							propType = t.tm.goType(pt)
+						}
+						if propType == "" || propType == goName {
+							propType = "any"
+						}
+						t.w.writelnf("%s %s", propName, propType)
+					}
+					t.w.closeBlock()
+					t.w.newline()
+					return
+				}
+			}
+			// If it's a callable type (function signature), emit as func type
+			// Skip if same-name function exists (avoids redeclaration)
+			tsName := nodeText(name)
+			hasSameNameFunc := (t.samePackageExports != nil && t.samePackageExports[tsName]) ||
+				(t.samePackageExports != nil && t.samePackageExports[toCamelCase(tsName)])
+			if aliasType != nil && !hasSameNameFunc {
+				sigs := t.ck.GetSignaturesOfType(aliasType, checker.SignatureKindCall)
+				if len(sigs) > 0 {
+					t.w.writef("type %s = func(", goName)
+					for i, p := range sigs[0].Parameters() {
+						if i > 0 {
+							t.w.write(", ")
+						}
+						pt := t.ck.GetTypeOfSymbol(p)
+						pType := "any"
+						if pt != nil {
+							pType = t.tm.goType(pt)
+							// Avoid import cycles: use any for cross-package types in type aliases
+							if strings.Contains(pType, ".") {
+								pType = "any"
+							}
+						}
+						t.w.writef("%s %s", goVarName(p.Name), pType)
+					}
+					t.w.write(")")
+					retType := t.ck.GetReturnTypeOfSignature(sigs[0])
+					if retType != nil {
+						goRet := t.tm.goType(retType)
+						if goRet != "" {
+							goRet = replaceCrossPackageTypes(goRet)
+							goRet = t.replaceUnknownTypes(goRet)
+							t.w.writef(" %s", goRet)
+						}
+					}
+					t.w.newline()
+					t.w.newline()
+					return
+				}
+			}
+		}
+
 		if goType != "" && goType != "any" && goType != goName {
-			// Skip primitive type aliases and unresolved type parameters
 			switch goType {
 			case "bool", "string", "float64", "int":
-				// skip emit (but alias is recorded above)
+				// Emit primitive type aliases only if exported and non-generic
+				if isExported(node) && (ta.TypeParameters == nil || len(ta.TypeParameters.Nodes) == 0) {
+					t.w.writelnf("type %s = %s", goName, goType)
+				}
 			default:
 				if aliasType != nil && aliasType.Flags()&checker.TypeFlagsTypeParameter != 0 {
 					break
 				}
-				t.w.writelnf("type %s = %s", goName, goType)
+				// Skip if a same-name function/variable exists (avoids redeclaration)
+				tsName := nodeText(name)
+				if (t.samePackageExports != nil && t.samePackageExports[tsName]) ||
+					(t.samePackageExports != nil && t.samePackageExports[toCamelCase(tsName)]) {
+					break
+				}
+				// For intersection types with primitives, emit struct with Value field
+				if aliasType != nil && aliasType.Flags()&checker.TypeFlagsIntersection != 0 {
+					inter := aliasType.AsIntersectionType()
+					var valueType string
+					for _, u := range inter.Types() {
+						if u.Flags()&checker.TypeFlagsStringLike != 0 {
+							valueType = "string"
+						} else if u.Flags()&checker.TypeFlagsNumberLike != 0 {
+							valueType = "float64"
+						}
+					}
+					if valueType != "" {
+						t.w.writef("type %s struct", goName)
+						t.w.openBlock()
+						t.w.writelnf("Value %s", valueType)
+						// Embed the object type
+						t.w.writeln(goType)
+						t.w.closeBlock()
+						t.w.newline()
+						// Update alias mapping to self — HtmlEscapedString is now its own struct
+						if t.tm.typeAliases != nil {
+							t.tm.typeAliases[goName] = goName
+						}
+						break
+					}
+				}
+				// Replace cross-package and unresolvable type references with any
+				emitGoType := replaceCrossPackageTypes(goType)
+				emitGoType = t.replaceUnknownTypes(emitGoType)
+				t.w.writelnf("type %s = %s", goName, emitGoType)
 			}
+		}
+		// Fallback: emit type alias for any-resolved types that are still referenced
+		// Skip if a same-name function/variable exists (avoids redeclaration)
+		fallbackTsName := nodeText(name)
+		hasSameNameFallback := (t.samePackageExports != nil && t.samePackageExports[fallbackTsName]) ||
+			(t.samePackageExports != nil && t.samePackageExports[toCamelCase(fallbackTsName)])
+		if !hasSameNameFallback && (goType == "any" || goType == goName) {
+			// Determine a reasonable Go type based on the TS type structure
+			fallbackType := "any"
+			if aliasType != nil && aliasType.Flags()&checker.TypeFlagsUnion != 0 {
+				// Analyze union members to pick the best Go type
+				members := aliasType.Types()
+				allNumber := true
+				allString := true
+				allRecord := true
+				for _, m := range members {
+					if m.Flags()&checker.TypeFlagsNumberLike == 0 {
+						allNumber = false
+					}
+					if m.Flags()&checker.TypeFlagsStringLike == 0 {
+						allString = false
+					}
+					if m.Flags()&checker.TypeFlagsObject == 0 {
+						allRecord = false
+					}
+				}
+				if allNumber && len(members) > 0 {
+					fallbackType = "int"
+				} else if allString && len(members) > 0 {
+					fallbackType = "string"
+				} else if allRecord && len(members) > 0 {
+					fallbackType = "map[string]any"
+				}
+			}
+			// Only emit if the type is actually used (referenced in other declarations)
+			t.w.writelnf("type %s = %s", goName, fallbackType)
 		}
 	} else {
 		// No checker — skip rather than emit useless `type X = any`
@@ -563,6 +851,25 @@ func (t *Transpiler) emitClassDeclaration(node *ast.Node) {
 		}
 	}
 
+	// Track overloaded method names (methods with multiple declarations)
+	methodNameCount := map[string]int{}
+	overloadedMethods := map[string]bool{}
+
+	if classDecl.Members != nil {
+		for _, member := range classDecl.Members.Nodes {
+			if member.Kind == ast.KindMethodDeclaration {
+				if n := member.Name(); n != nil {
+					methodNameCount[nodeText(n)]++
+				}
+			}
+		}
+		for name, count := range methodNameCount {
+			if count > 1 {
+				overloadedMethods[name] = true
+			}
+		}
+	}
+
 	if classDecl.Members != nil {
 		for _, member := range classDecl.Members.Nodes {
 			isStatic := ast.HasSyntacticModifier(member, ast.ModifierFlagsStatic)
@@ -622,8 +929,15 @@ func (t *Transpiler) emitClassDeclaration(node *ast.Node) {
 			t.w.writelnf("%s", baseClassName)
 		}
 	}
+	var arrowFieldMethods []*ast.Node
 	for _, field := range fields {
-		t.emitClassField(field)
+		pd := field.AsPropertyDeclaration()
+		if pd.Initializer != nil &&
+			(pd.Initializer.Kind == ast.KindArrowFunction || pd.Initializer.Kind == ast.KindFunctionExpression) {
+			arrowFieldMethods = append(arrowFieldMethods, field)
+		} else {
+			t.emitClassField(field)
+		}
 	}
 	t.w.closeBlock()
 	t.w.newline()
@@ -642,10 +956,50 @@ func (t *Transpiler) emitClassDeclaration(node *ast.Node) {
 		typeParamSuffix = "[" + strings.Join(parts, ", ") + "]"
 	}
 
-	// Emit methods
+	// Emit methods (including arrow function fields converted to methods)
 	for _, method := range methods {
-		t.emitClassMethod(method, className, typeParamSuffix)
+		t.emitClassMethod(method, className, typeParamSuffix, overloadedMethods)
 	}
+	for _, field := range arrowFieldMethods {
+		t.emitArrowFieldAsMethod(field, className, typeParamSuffix)
+	}
+	// Emit arrow function fields collected from constructor body
+	for _, caf := range t.constructorArrowFields {
+		goClassName := goExportedName(className)
+		receiverVar := strings.ToLower(goClassName[:1])
+		t.w.writef("func (%s *%s%s) %s(", receiverVar, goClassName, typeParamSuffix, caf.goName)
+		savedPtrStringVars := t.goPtrStringVars
+		t.goPtrStringVars = nil
+		t.emitParameterList(caf.initNode)
+		t.w.write(")")
+		retType := t.getFuncReturnType(caf.initNode)
+		if retType != "" {
+			t.w.writef(" %s", retType)
+		}
+		body := caf.initNode.Body()
+		if caf.initNode.Kind == ast.KindArrowFunction {
+			body = caf.initNode.AsArrowFunction().Body
+		}
+		savedReceiver := t.thisReceiver
+		savedRetType := t.currentRetType
+		t.thisReceiver = receiverVar
+		t.currentRetType = retType
+		if body != nil && body.Kind == ast.KindBlock {
+			t.needsDefaultReturn = retType != ""
+			t.emitBlock(body)
+		} else if body != nil {
+			t.w.write(" { return ")
+			t.emitExpr(body)
+			t.w.write(" }")
+		} else {
+			t.w.write(" {}")
+		}
+		t.thisReceiver = savedReceiver
+		t.currentRetType = savedRetType
+		t.goPtrStringVars = savedPtrStringVars
+		t.w.newline()
+	}
+	t.constructorArrowFields = nil
 
 	// Emit getters as methods: get foo() → func (r *Class) Foo() RetType
 	for _, getter := range getters {
@@ -766,6 +1120,112 @@ func (t *Transpiler) emitConstructor(node *ast.Node, className string, baseClass
 	t.w.newline()
 }
 
+// replaceCrossPackageTypes replaces qualified type references like "pkgcontext.Context[any, any, any]"
+// with "any" in type alias definitions to avoid import cycles.
+// Preserves well-known packages: promise.Promise, web.Response, etc.
+func replaceCrossPackageTypes(goType string) string {
+	if !strings.Contains(goType, ".") {
+		return goType
+	}
+	var result strings.Builder
+	i := 0
+	for i < len(goType) {
+		// Find qualified name: identifier.Identifier possibly followed by [...]
+		if i > 0 && goType[i-1] != ' ' && goType[i-1] != '(' && goType[i-1] != '*' && goType[i-1] != ',' {
+			result.WriteByte(goType[i])
+			i++
+			continue
+		}
+		// Try to match pkg.Name[...] pattern
+		j := i
+		for j < len(goType) && (goType[j] == '_' || (goType[j] >= 'a' && goType[j] <= 'z') || (goType[j] >= 'A' && goType[j] <= 'Z') || (j > i && goType[j] >= '0' && goType[j] <= '9')) {
+			j++
+		}
+		if j < len(goType) && goType[j] == '.' {
+			pkg := goType[i:j]
+			// Allow well-known packages
+			if pkg == "promise" || pkg == "web" || pkg == "jsrt" || pkg == "jsarray" {
+				result.WriteString(goType[i : j+1])
+				i = j + 1
+				continue
+			}
+			// Skip the qualified type name including any [...] suffix
+			k := j + 1
+			for k < len(goType) && (goType[k] == '_' || (goType[k] >= 'a' && goType[k] <= 'z') || (goType[k] >= 'A' && goType[k] <= 'Z') || (goType[k] >= '0' && goType[k] <= '9')) {
+				k++
+			}
+			// Skip generic args [...]
+			if k < len(goType) && goType[k] == '[' {
+				depth := 1
+				k++
+				for k < len(goType) && depth > 0 {
+					if goType[k] == '[' {
+						depth++
+					} else if goType[k] == ']' {
+						depth--
+					}
+					k++
+				}
+			}
+			result.WriteString("any")
+			i = k
+		} else {
+			result.WriteByte(goType[i])
+			i++
+		}
+	}
+	return result.String()
+}
+
+// replaceUnknownTypes replaces non-primitive, non-well-known generic types with any
+// when they reference types not available in the current package (e.g., Hono[any, any, any, any]).
+func (t *Transpiler) replaceUnknownTypes(goType string) string {
+	// Quick check — only process types with generic instantiations
+	if !strings.Contains(goType, "[") {
+		return goType
+	}
+	var result strings.Builder
+	i := 0
+	for i < len(goType) {
+		// Try to match PascalCase identifier followed by [...]
+		if (i == 0 || goType[i-1] == ' ' || goType[i-1] == '(' || goType[i-1] == ')' || goType[i-1] == '*' || goType[i-1] == ',' || goType[i-1] == '[') &&
+			goType[i] >= 'A' && goType[i] <= 'Z' {
+			j := i
+			for j < len(goType) && (goType[j] == '_' || (goType[j] >= 'a' && goType[j] <= 'z') || (goType[j] >= 'A' && goType[j] <= 'Z') || (j > i && goType[j] >= '0' && goType[j] <= '9')) {
+				j++
+			}
+			name := goType[i:j]
+			if j < len(goType) && goType[j] == '[' {
+				// Keep if the type is defined in the current file's package
+				if t.localTypeNames != nil && t.localTypeNames[name] {
+					result.WriteString(goType[i : j+1])
+					i = j + 1
+					continue
+				}
+				// Replace with any — type is from another package
+				{
+					depth := 1
+					k := j + 1
+					for k < len(goType) && depth > 0 {
+						if goType[k] == '[' {
+							depth++
+						} else if goType[k] == ']' {
+							depth--
+						}
+						k++
+					}
+					result.WriteString("any")
+					i = k
+					continue
+				}
+			}
+		}
+		result.WriteByte(goType[i])
+		i++
+	}
+	return result.String()
+}
+
 // emitConstructorStatement handles statements inside a constructor.
 func (t *Transpiler) emitConstructorStatement(node *ast.Node, receiverVar string, baseClassName string) {
 	if node.Kind == ast.KindExpressionStatement {
@@ -780,6 +1240,20 @@ func (t *Transpiler) emitConstructorStatement(node *ast.Node, receiverVar string
 					if pf, ok := t.privateFields[propName]; ok {
 						goName = pf
 					}
+
+					// Skip arrow function / function expression assignments in constructor —
+					// these are handled as methods via emitArrowFieldAsMethod
+					if bin.Right.Kind == ast.KindArrowFunction || bin.Right.Kind == ast.KindFunctionExpression {
+						t.w.writelnf("/* %s.%s assigned in constructor — emitted as method */", receiverVar, goName)
+						// Collect and emit as method later
+						t.constructorArrowFields = append(t.constructorArrowFields, constructorArrowField{
+							propName: propName,
+							goName:   goName,
+							initNode: bin.Right,
+						})
+						return
+					}
+
 					// If the field has a concrete type and the RHS might be any, add type assertion
 					goLeft := ""
 					if t.ck != nil {
@@ -802,13 +1276,32 @@ func (t *Transpiler) emitConstructorStatement(node *ast.Node, receiverVar string
 					return
 				}
 			}
+			// this[dynamic] = expr → skip (Go structs can't do dynamic property set)
+			if bin.OperatorToken.Kind == ast.KindEqualsToken && bin.Left.Kind == ast.KindElementAccessExpression {
+				ea := bin.Left.AsElementAccessExpression()
+				if ea.Expression.Kind == ast.KindThisKeyword {
+					t.w.writeln("/* dynamic property assignment skipped (Go struct limitation) */")
+					return
+				}
+			}
+		}
+		// Object.assign(this, obj) → skip
+		if exprStmt.Expression.Kind == ast.KindCallExpression {
+			call := exprStmt.Expression.AsCallExpression()
+			if call.Expression.Kind == ast.KindPropertyAccessExpression {
+				prop := call.Expression.AsPropertyAccessExpression()
+				if prop.Expression.Kind == ast.KindIdentifier && prop.Expression.AsIdentifier().Text == "Object" &&
+					nodeText(prop.Name()) == "assign" {
+					t.w.writeln("/* Object.assign skipped */")
+					return
+				}
+			}
 		}
 		// super(args...) → s.BaseClass = *NewBaseClass(args...)
 		if exprStmt.Expression.Kind == ast.KindCallExpression {
 			call := exprStmt.Expression.AsCallExpression()
 			if call.Expression.Kind == ast.KindSuperKeyword && baseClassName != "" {
 				if baseClassName == "Error" {
-					// extends Error: super(msg) → s.Message = msg.(string)
 					t.w.writef("%s.Message = ", receiverVar)
 					if call.Arguments != nil && len(call.Arguments.Nodes) > 0 {
 						rhs := t.captureExpr(call.Arguments.Nodes[0])
@@ -831,9 +1324,135 @@ func (t *Transpiler) emitConstructorStatement(node *ast.Node, receiverVar string
 				return
 			}
 		}
+		// forEach with dynamic property assignment → skip entire loop
+		if exprStmt.Expression.Kind == ast.KindCallExpression {
+			call := exprStmt.Expression.AsCallExpression()
+			if call.Expression.Kind == ast.KindPropertyAccessExpression {
+				prop := call.Expression.AsPropertyAccessExpression()
+				methodName := nodeText(prop.Name())
+				if methodName == "forEach" {
+					// Check if callback contains this[dynamic] = ... pattern
+					if t.callbackContainsDynamicThisAssign(call) {
+						t.w.writeln("/* forEach with dynamic this[method] assignment skipped */")
+						return
+					}
+				}
+			}
+		}
+	}
+	// Variable statement with rest destructuring → handle rest
+	if node.Kind == ast.KindVariableStatement {
+		varStmt := node.AsVariableStatement()
+		declList := varStmt.DeclarationList.AsVariableDeclarationList()
+		if declList.Declarations != nil {
+			for _, decl := range declList.Declarations.Nodes {
+				vd := decl.AsVariableDeclaration()
+				name := decl.Name()
+				if name != nil && name.Kind == ast.KindObjectBindingPattern {
+					bp := name.AsBindingPattern()
+					if bp.Elements != nil {
+						hasRest := false
+						for _, elem := range bp.Elements.Nodes {
+							be := elem.AsBindingElement()
+							if be.DotDotDotToken != nil {
+								hasRest = true
+								break
+							}
+						}
+						if hasRest && vd.Initializer != nil {
+							t.emitObjectDestructuringWithRest(name, vd.Initializer, receiverVar)
+							return
+						}
+					}
+				}
+			}
+		}
 	}
 	// Fallback
 	t.emitStatement(node)
+}
+
+// constructorArrowField tracks arrow function assignments found in constructor body
+// that should be emitted as methods.
+type constructorArrowField struct {
+	propName string
+	goName   string
+	initNode *ast.Node
+}
+
+// callbackContainsDynamicThisAssign checks if a forEach call's callback contains this[x] = ... patterns.
+func (t *Transpiler) callbackContainsDynamicThisAssign(call *ast.CallExpression) bool {
+	if call.Arguments == nil || len(call.Arguments.Nodes) == 0 {
+		return false
+	}
+	cb := call.Arguments.Nodes[0]
+	if cb.Kind != ast.KindArrowFunction && cb.Kind != ast.KindFunctionExpression {
+		return false
+	}
+	body := cb.Body()
+	if cb.Kind == ast.KindArrowFunction {
+		body = cb.AsArrowFunction().Body
+	}
+	if body == nil || body.Kind != ast.KindBlock {
+		return false
+	}
+	block := body.AsBlock()
+	if block.Statements == nil {
+		return false
+	}
+	for _, stmt := range block.Statements.Nodes {
+		if stmt.Kind == ast.KindExpressionStatement {
+			expr := stmt.AsExpressionStatement().Expression
+			if expr.Kind == ast.KindBinaryExpression {
+				bin := expr.AsBinaryExpression()
+				if bin.OperatorToken.Kind == ast.KindEqualsToken && bin.Left.Kind == ast.KindElementAccessExpression {
+					ea := bin.Left.AsElementAccessExpression()
+					if ea.Expression.Kind == ast.KindThisKeyword {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
+}
+
+// emitObjectDestructuringWithRest handles const { a, b, ...rest } = obj in constructor context.
+func (t *Transpiler) emitObjectDestructuringWithRest(pattern *ast.Node, initializer *ast.Node, receiverVar string) {
+	bp := pattern.AsBindingPattern()
+	if bp.Elements == nil {
+		return
+	}
+
+	initCode := t.captureExpr(initializer)
+	var namedKeys []string
+
+	for _, elem := range bp.Elements.Nodes {
+		be := elem.AsBindingElement()
+		name := be.Name()
+		if name == nil {
+			continue
+		}
+		if be.DotDotDotToken != nil {
+			// Rest element: ...rest → rest := jsrt.OmitFields(obj, "key1", "key2", ...)
+			restName := goVarName(name.AsIdentifier().Text)
+			t.w.addImport("github.com/i2y/ramune/jsrt", "")
+			t.w.writef("%s := jsrt.OmitFields(%s", restName, initCode)
+			for _, k := range namedKeys {
+				t.w.writef(", %q", goExportedName(k))
+			}
+			t.w.write(")")
+			t.w.newline()
+		} else {
+			// Named element: a → a := jsrt.GetField(obj, "A")
+			propName := name.AsIdentifier().Text
+			varName := goVarName(propName)
+			namedKeys = append(namedKeys, propName)
+			t.w.addImport("github.com/i2y/ramune/jsrt", "")
+			t.w.writef("%s := jsrt.GetField(%s, %q)", varName, initCode, goExportedName(propName))
+			t.w.newline()
+		}
+	}
 }
 
 // isPrivateOrProtected checks if a node has private or protected modifier.
@@ -849,6 +1468,105 @@ func (t *Transpiler) isTypeParam(name string) bool {
 	return false
 }
 
+// emitArrowFieldAsMethod converts a class field with arrow function initializer to a method.
+func (t *Transpiler) emitArrowFieldAsMethod(node *ast.Node, className string, typeParamSuffix string) {
+	pd := node.AsPropertyDeclaration()
+	name := node.Name()
+	if name == nil || pd.Initializer == nil {
+		return
+	}
+
+	var propName string
+	if ast.IsPrivateIdentifier(name) {
+		propName = strings.TrimPrefix(name.AsPrivateIdentifier().Text, "#")
+	} else {
+		propName = nodeText(name)
+	}
+
+	methodName := goExportedName(propName)
+	if isPrivateOrProtected(node) || ast.IsPrivateIdentifier(name) {
+		methodName = goVarName(toCamelCase(propName))
+	}
+
+	goClassName := goExportedName(className)
+	receiverVar := strings.ToLower(goClassName[:1])
+
+	// Remove method-level type params from scope (Go methods can't have extra type params)
+	savedTypeParams := t.tm.typeParams
+	if pd.Initializer != nil {
+		methodTPs := pd.Initializer.TypeParameterList()
+		if methodTPs != nil && len(methodTPs.Nodes) > 0 {
+			newParams := make(map[string]bool)
+			for k, v := range savedTypeParams {
+				newParams[k] = v
+			}
+			for _, tp := range methodTPs.Nodes {
+				delete(newParams, tp.Name().AsIdentifier().Text)
+			}
+			t.tm.typeParams = newParams
+		}
+	}
+
+	t.w.writef("func (%s *%s%s) %s(", receiverVar, goClassName, typeParamSuffix, methodName)
+
+	savedPtrStringVars := t.goPtrStringVars
+	t.goPtrStringVars = nil
+	t.emitParameterList(pd.Initializer)
+	t.w.write(")")
+
+	retType := t.getFuncReturnType(pd.Initializer)
+	if retType != "" {
+		t.w.writef(" %s", retType)
+	}
+
+	body := pd.Initializer.Body()
+	if pd.Initializer.Kind == ast.KindArrowFunction {
+		body = pd.Initializer.AsArrowFunction().Body
+	}
+
+	savedReceiver := t.thisReceiver
+	savedRetType := t.currentRetType
+	t.thisReceiver = receiverVar
+	t.currentRetType = retType
+
+	if body != nil && body.Kind == ast.KindBlock {
+		t.needsDefaultReturn = retType != ""
+		t.emitBlock(body)
+	} else if body != nil {
+		// Check for assignment-in-return: (a = b) → { a = b; return a }
+		inner := body
+		for inner.Kind == ast.KindParenthesizedExpression {
+			inner = inner.AsParenthesizedExpression().Expression
+		}
+		if inner.Kind == ast.KindBinaryExpression {
+			bin := inner.AsBinaryExpression()
+			if bin.OperatorToken.Kind == ast.KindEqualsToken {
+				t.w.write(" { ")
+				t.emitExpr(inner)
+				t.w.write("; return ")
+				t.emitExpr(bin.Left)
+				t.w.write(" }")
+			} else {
+				t.w.write(" { return ")
+				t.emitExpr(body)
+				t.w.write(" }")
+			}
+		} else {
+			t.w.write(" { return ")
+			t.emitExpr(body)
+			t.w.write(" }")
+		}
+	} else {
+		t.w.write(" {}")
+	}
+
+	t.thisReceiver = savedReceiver
+	t.currentRetType = savedRetType
+	t.goPtrStringVars = savedPtrStringVars
+	t.tm.typeParams = savedTypeParams
+	t.w.newline()
+}
+
 // isPrimitiveOrCollectionType returns true for types that can be used as Promise type params.
 func isPrimitiveOrCollectionType(t string) bool {
 	switch t {
@@ -859,7 +1577,7 @@ func isPrimitiveOrCollectionType(t string) bool {
 }
 
 // emitClassMethod emits a class method as a Go method on the struct.
-func (t *Transpiler) emitClassMethod(node *ast.Node, className string, typeParamSuffix string) {
+func (t *Transpiler) emitClassMethod(node *ast.Node, className string, typeParamSuffix string, overloadedMethods map[string]bool) {
 	name := node.Name()
 	if name == nil {
 		return
@@ -876,6 +1594,24 @@ func (t *Transpiler) emitClassMethod(node *ast.Node, className string, typeParam
 	}
 	receiverVar := toCamelCase(string([]rune(className)[0:1]))
 
+	// Save and clear method-level type params to prevent scope leaking.
+	// Method-level generics (e.g., json<T>()) cannot be expressed in Go methods,
+	// so we remove them from scope → they'll resolve to 'any'.
+	savedTypeParams := t.tm.typeParams
+	methodTypeParams := node.TypeParameterList()
+	if methodTypeParams != nil && len(methodTypeParams.Nodes) > 0 {
+		// Copy the class-level type params, but do NOT add method-level ones
+		newParams := make(map[string]bool)
+		for k, v := range savedTypeParams {
+			newParams[k] = v
+		}
+		// Explicitly remove method-level type params so they resolve to 'any'
+		for _, tp := range methodTypeParams.Nodes {
+			delete(newParams, tp.Name().AsIdentifier().Text)
+		}
+		t.tm.typeParams = newParams
+	}
+
 	t.w.writef("func (%s *%s%s) %s(", receiverVar, className, typeParamSuffix, methodName)
 	savedPtrStringVars := t.goPtrStringVars
 	t.goPtrStringVars = nil
@@ -883,8 +1619,11 @@ func (t *Transpiler) emitClassMethod(node *ast.Node, className string, typeParam
 	t.w.write(")")
 
 	retType := t.getFuncReturnType(node)
-	isAsync := ast.HasSyntacticModifier(node, ast.ModifierFlagsAsync)
-	if isAsync && strings.HasPrefix(retType, "*promise.Promise[") {
+	// Overloaded methods return different types → use any
+	if overloadedMethods[rawName] {
+		retType = "any"
+	}
+	if strings.HasPrefix(retType, "*promise.Promise[") {
 		innerType := retType[len("*promise.Promise[") : len(retType)-1]
 		switch innerType {
 		case "string", "float64", "bool", "int", "any", "[]any", "[]string", "[]float64":
@@ -912,6 +1651,7 @@ func (t *Transpiler) emitClassMethod(node *ast.Node, className string, typeParam
 		t.w.closeBlock()
 	}
 	t.goPtrStringVars = savedPtrStringVars
+	t.tm.typeParams = savedTypeParams
 	t.w.newline()
 }
 

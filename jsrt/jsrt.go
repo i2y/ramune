@@ -193,8 +193,108 @@ func Index(v any, key any) any {
 		if idx >= 0 && idx < len(s) {
 			return string(s[idx])
 		}
+	case reflect.Struct:
+		name, ok := key.(string)
+		if ok {
+			field := rv.FieldByName(name)
+			if field.IsValid() {
+				return field.Interface()
+			}
+		}
 	}
 	return nil
+}
+
+// CallMethod calls a method on an object by name at runtime using reflection.
+// Returns the first return value, or nil if the method doesn't exist.
+func CallMethod(obj any, method string, args ...any) any {
+	if obj == nil {
+		return nil
+	}
+	rv := reflect.ValueOf(obj)
+	m := rv.MethodByName(method)
+	if !m.IsValid() {
+		// Try pointer receiver
+		if rv.Kind() != reflect.Ptr {
+			ptr := reflect.New(rv.Type())
+			ptr.Elem().Set(rv)
+			m = ptr.MethodByName(method)
+		}
+	}
+	if !m.IsValid() {
+		return nil
+	}
+	var in []reflect.Value
+	for _, a := range args {
+		in = append(in, reflect.ValueOf(a))
+	}
+	out := m.Call(in)
+	if len(out) > 0 {
+		return out[0].Interface()
+	}
+	return nil
+}
+
+// GoExportedName converts a camelCase JS name to Go exported PascalCase.
+func GoExportedName(s string) string {
+	if s == "" {
+		return s
+	}
+	r := []rune(s)
+	if r[0] >= 'a' && r[0] <= 'z' {
+		r[0] = r[0] - 'a' + 'A'
+	}
+	return string(r)
+}
+
+// OmitFields returns a copy of a map[string]any with the specified keys removed.
+func OmitFields(obj any, keys ...string) map[string]any {
+	result := map[string]any{}
+	if m, ok := obj.(map[string]any); ok {
+		omit := make(map[string]bool)
+		for _, k := range keys {
+			omit[k] = true
+		}
+		for k, v := range m {
+			if !omit[k] {
+				result[k] = v
+			}
+		}
+	}
+	return result
+}
+
+// Flat flattens a slice one level: [[1,2],[3]] → [1,2,3].
+func Flat(v any) []any {
+	if v == nil {
+		return nil
+	}
+	rv := reflect.ValueOf(v)
+	for rv.Kind() == reflect.Ptr || rv.Kind() == reflect.Interface {
+		rv = rv.Elem()
+	}
+	if rv.Kind() != reflect.Slice {
+		return []any{v}
+	}
+	var result []any
+	for i := 0; i < rv.Len(); i++ {
+		elem := rv.Index(i).Interface()
+		erv := reflect.ValueOf(elem)
+		for erv.Kind() == reflect.Ptr || erv.Kind() == reflect.Interface {
+			if erv.IsNil() {
+				break
+			}
+			erv = erv.Elem()
+		}
+		if erv.Kind() == reflect.Slice {
+			for j := 0; j < erv.Len(); j++ {
+				result = append(result, erv.Index(j).Interface())
+			}
+		} else {
+			result = append(result, elem)
+		}
+	}
+	return result
 }
 
 // Len returns the length of a slice, array, map, string, or channel at runtime.

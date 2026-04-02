@@ -4,10 +4,22 @@
 package web
 
 import (
+	"crypto/hmac"
+	"crypto/md5"
+	"crypto/sha1"
+	"crypto/sha256"
+	"crypto/sha512"
+	cryptosubtle "crypto/subtle"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"hash"
 	"io"
 	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/i2y/ramune/jsrt/promise"
 )
 
 // Headers wraps http.Header with Web API-compatible methods.
@@ -15,11 +27,24 @@ type Headers struct {
 	h http.Header
 }
 
-func NewHeaders(init ...map[string]string) *Headers {
+func NewHeaders(init ...any) *Headers {
 	h := &Headers{h: http.Header{}}
-	if len(init) > 0 {
-		for k, v := range init[0] {
-			h.h.Set(k, v)
+	if len(init) > 0 && init[0] != nil {
+		switch v := init[0].(type) {
+		case map[string]string:
+			for k, val := range v {
+				h.h.Set(k, val)
+			}
+		case *Headers:
+			if v != nil {
+				v.ForEach(func(val, key string) { h.h.Set(key, val) })
+			}
+		case map[string]any:
+			for k, val := range v {
+				if s, ok := val.(string); ok {
+					h.h.Set(k, s)
+				}
+			}
 		}
 	}
 	return h
@@ -30,14 +55,14 @@ func (h *Headers) Set(name, value string)    { h.h.Set(name, value) }
 func (h *Headers) Delete(name string)        { h.h.Del(name) }
 func (h *Headers) Has(name string) bool      { _, ok := h.h[http.CanonicalHeaderKey(name)]; return ok }
 func (h *Headers) Append(name, value string) { h.h.Add(name, value) }
-func (h *Headers) Entries() map[string]string {
-	m := make(map[string]string)
+func (h *Headers) Entries() [][]any {
+	var entries [][]any
 	for k, v := range h.h {
 		if len(v) > 0 {
-			m[k] = v[0]
+			entries = append(entries, []any{k, v[0]})
 		}
 	}
-	return m
+	return entries
 }
 func (h *Headers) ForEach(fn func(value, key string)) {
 	for k, vs := range h.h {
@@ -160,12 +185,75 @@ func (r *Response) Clone() *Response {
 	return clone
 }
 
+// JSON parses the response body as JSON.
+func (r *Response) JSON() any {
+	if r.bodyBytes == nil {
+		return nil
+	}
+	var v any
+	json.Unmarshal(r.bodyBytes, &v)
+	return v
+}
+
+// Json is an alias for JSON (used by transpiler's PascalCase convention).
+func (r *Response) Json() any { return r.JSON() }
+
+// ArrayBuffer returns the response body as a byte slice.
+func (r *Response) ArrayBuffer() []byte {
+	if r.bodyBytes == nil {
+		return nil
+	}
+	return r.bodyBytes
+}
+
+// Blob returns the response body as a byte slice (simplified).
+func (r *Response) Blob() any {
+	return r.ArrayBuffer()
+}
+
+// FormData parses the response body as multipart form data.
+func (r *Response) FormData() *promise.Promise[*FormData] {
+	return promise.Resolve(r.parseFormData())
+}
+
+func (r *Response) parseFormData() *FormData {
+	fd := NewFormData()
+	if r.bodyBytes == nil {
+		return fd
+	}
+	ct := ""
+	if r.Headers != nil {
+		ct = r.Headers.Get("Content-Type")
+	}
+	if strings.Contains(ct, "application/x-www-form-urlencoded") {
+		vals, err := url.ParseQuery(string(r.bodyBytes))
+		if err == nil {
+			for k, vs := range vals {
+				for _, v := range vs {
+					fd.Append(k, v)
+				}
+			}
+		}
+	}
+	return fd
+}
+
 // Request represents a Web API Request.
 type Request struct {
-	Url     string
-	Method  string
-	Headers *Headers
-	Body    io.Reader
+	Url            string
+	Method         string
+	Headers        *Headers
+	Body           io.Reader
+	BodyUsed       bool
+	Cache          string
+	Credentials    string
+	Integrity      string
+	Keepalive      bool
+	Mode           string
+	Redirect       string
+	Referrer       string
+	ReferrerPolicy string
+	Signal         any
 }
 
 func NewRequest(urlStr string, init ...map[string]any) *Request {
@@ -192,6 +280,28 @@ func NewRequest(urlStr string, init ...map[string]any) *Request {
 	return r
 }
 
+// Clone creates a copy of the request.
+func (r *Request) Clone() *Request {
+	clone := &Request{
+		Url:            r.Url,
+		Method:         r.Method,
+		Headers:        NewHeaders(),
+		Cache:          r.Cache,
+		Credentials:    r.Credentials,
+		Integrity:      r.Integrity,
+		Keepalive:      r.Keepalive,
+		Mode:           r.Mode,
+		Redirect:       r.Redirect,
+		Referrer:       r.Referrer,
+		ReferrerPolicy: r.ReferrerPolicy,
+		Signal:         r.Signal,
+	}
+	if r.Headers != nil {
+		r.Headers.ForEach(func(v, k string) { clone.Headers.Set(k, v) })
+	}
+	return clone
+}
+
 // Text returns the request body as a string.
 func (r *Request) Text() string {
 	if r.Body != nil {
@@ -203,8 +313,17 @@ func (r *Request) Text() string {
 
 // JSON parses the request body as JSON.
 func (r *Request) JSON() any {
-	return nil // simplified
+	if r.Body != nil {
+		b, _ := io.ReadAll(r.Body)
+		var v any
+		json.Unmarshal(b, &v)
+		return v
+	}
+	return nil
 }
+
+// Json is an alias for JSON (used by transpiler's PascalCase convention).
+func (r *Request) Json() any { return r.JSON() }
 
 // FormData returns the request body parsed as FormData.
 func (r *Request) FormData() *FormData {
@@ -227,14 +346,6 @@ func (r *Request) ArrayBuffer() []byte {
 		return b
 	}
 	return nil
-}
-
-func (r *Request) Clone() *Request {
-	return &Request{
-		Url:     r.Url,
-		Method:  r.Method,
-		Headers: r.Headers, // shallow copy of headers
-	}
 }
 
 // URL represents the Web API URL.
@@ -273,11 +384,47 @@ type TextEncoder struct{}
 
 func NewTextEncoder() *TextEncoder { return &TextEncoder{} }
 
-func (e *TextEncoder) Encode(s *string) []byte {
-	if s == nil {
-		return nil
+func (e *TextEncoder) Encode(input any) []byte {
+	switch v := input.(type) {
+	case string:
+		return []byte(v)
+	case *string:
+		if v == nil {
+			return nil
+		}
+		return []byte(*v)
+	case []byte:
+		return v
+	default:
+		if v == nil {
+			return nil
+		}
+		return []byte(fmt.Sprint(v))
 	}
-	return []byte(*s)
+}
+
+// TextDecoder provides TextDecoder.decode().
+type TextDecoder struct {
+	encoding string
+}
+
+func NewTextDecoder(args ...string) *TextDecoder {
+	enc := "utf-8"
+	if len(args) > 0 && args[0] != "" {
+		enc = args[0]
+	}
+	return &TextDecoder{encoding: enc}
+}
+
+func (d *TextDecoder) Decode(buf any) string {
+	switch v := buf.(type) {
+	case []byte:
+		return string(v)
+	case string:
+		return v
+	default:
+		return ""
+	}
 }
 
 // FormData is a simplified FormData representation.
@@ -306,4 +453,145 @@ func (f *FormData) ForEach(fn func(value any, key string)) {
 			fn(v, k)
 		}
 	}
+}
+
+// Btoa encodes a string to base64 (Web API btoa).
+func Btoa(s string) string {
+	return base64.StdEncoding.EncodeToString([]byte(s))
+}
+
+// Atob decodes a base64 string (Web API atob).
+func Atob(s string) string {
+	b, _ := base64.StdEncoding.DecodeString(s)
+	return string(b)
+}
+
+// CryptoKey holds key material for Web Crypto API operations.
+type CryptoKey struct {
+	Algorithm string
+	Key       []byte
+}
+
+// CryptoSubtle implements a subset of the Web Crypto API (SubtleCrypto).
+type CryptoSubtle struct{}
+
+// Subtle is the package-level SubtleCrypto singleton.
+var Subtle = &CryptoSubtle{}
+
+// Crypto is a truthy sentinel indicating crypto is always available in Go.
+var Crypto = true
+
+func getHashFunc(name string) func() hash.Hash {
+	switch strings.ToUpper(strings.ReplaceAll(name, "-", "")) {
+	case "SHA256", "SHA2":
+		return sha256.New
+	case "SHA1":
+		return sha1.New
+	case "SHA384":
+		return sha512.New384
+	case "SHA512":
+		return sha512.New
+	case "MD5":
+		return md5.New
+	default:
+		return sha256.New
+	}
+}
+
+func extractAlgorithmName(algorithm any) (name string, hashName string) {
+	switch a := algorithm.(type) {
+	case string:
+		return a, ""
+	case map[string]any:
+		if n, ok := a["name"]; ok {
+			name, _ = n.(string)
+		}
+		if h, ok := a["hash"]; ok {
+			switch hv := h.(type) {
+			case string:
+				hashName = hv
+			case map[string]any:
+				if hn, ok := hv["name"]; ok {
+					hashName, _ = hn.(string)
+				}
+			}
+		}
+		return name, hashName
+	}
+	return "", ""
+}
+
+func (c *CryptoSubtle) ImportKey(format string, keyData any, algorithm any, extractable bool, keyUsages []string) *promise.Promise[any] {
+	return promise.Resolve[any](func() any {
+		var rawKey []byte
+		switch k := keyData.(type) {
+		case []byte:
+			rawKey = k
+		case string:
+			rawKey = []byte(k)
+		default:
+			rawKey = nil
+		}
+		_, hashName := extractAlgorithmName(algorithm)
+		if hashName == "" {
+			hashName = "SHA-256"
+		}
+		return &CryptoKey{Algorithm: hashName, Key: rawKey}
+	}())
+}
+
+func (c *CryptoSubtle) Sign(algorithm any, key any, data any) *promise.Promise[[]byte] {
+	return promise.Resolve(func() []byte {
+		ck, ok := key.(*CryptoKey)
+		if !ok {
+			return nil
+		}
+		h := getHashFunc(ck.Algorithm)
+		mac := hmac.New(h, ck.Key)
+		switch d := data.(type) {
+		case []byte:
+			mac.Write(d)
+		case string:
+			mac.Write([]byte(d))
+		}
+		return mac.Sum(nil)
+	}())
+}
+
+func (c *CryptoSubtle) Verify(algorithm any, key any, signature any, data any) *promise.Promise[bool] {
+	return promise.Resolve(func() bool {
+		ck, ok := key.(*CryptoKey)
+		if !ok {
+			return false
+		}
+		var sigBytes []byte
+		switch s := signature.(type) {
+		case []byte:
+			sigBytes = s
+		}
+		h := getHashFunc(ck.Algorithm)
+		mac := hmac.New(h, ck.Key)
+		switch d := data.(type) {
+		case []byte:
+			mac.Write(d)
+		case string:
+			mac.Write([]byte(d))
+		}
+		expected := mac.Sum(nil)
+		return cryptosubtle.ConstantTimeCompare(sigBytes, expected) == 1
+	}())
+}
+
+func (c *CryptoSubtle) Digest(algorithm any, data any) *promise.Promise[[]byte] {
+	return promise.Resolve(func() []byte {
+		name, _ := extractAlgorithmName(algorithm)
+		h := getHashFunc(name)()
+		switch d := data.(type) {
+		case []byte:
+			h.Write(d)
+		case string:
+			h.Write([]byte(d))
+		}
+		return h.Sum(nil)
+	}())
 }

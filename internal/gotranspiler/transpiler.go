@@ -57,8 +57,14 @@ type Transpiler struct {
 	npmResolver           *npmResolver // Resolves npm packages for transpilation
 	// goNativeImports maps Go package alias → full import path for go: prefix imports.
 	goNativeImports map[string]string
-	// classNames tracks declared class names for static member access detection.
+	// classNames tracks declared class names for static member access detection (shared across files).
 	classNames map[string]bool
+	// localTypeNames tracks type/class/interface names declared in the current file's package.
+	// Used by replaceUnknownTypes to distinguish same-package types from cross-package ones.
+	localTypeNames map[string]bool
+	// constructorArrowFields collects this.field = arrowFunc assignments in constructor
+	// so they can be emitted as methods after the constructor.
+	constructorArrowFields []constructorArrowField
 	// pendingImports maps Go package alias → import path for lazy import resolution.
 	// Imports are only added to the output when the alias is actually used in code.
 	pendingImports map[string]string
@@ -72,8 +78,16 @@ type Transpiler struct {
 	// goAnyVars tracks variables that are any at Go level even though
 	// the TS checker says they have a concrete type (e.g., from []any indexing).
 	goAnyVars map[string]bool
+	// goVarTypes is the unified Go type tracker: maps variable names to their
+	// actual emitted Go type string. Replaces ad-hoc maps (goAnyVars, concreteVarTypes,
+	// goPtrStringVars, intVars) with a single source of truth.
+	goVarTypes map[string]string
 	// inThenCallback is set when emitting a .then() callback to force any types.
 	inThenCallback bool
+	// inCallArg is set when emitting an expression as a function call argument.
+	// Used by emitArrowFunction/emitFunctionExpression to use closeBlockInline()
+	// instead of closeBlock(), avoiding trailing newline that requires fixTrailingFuncArgs.
+	inCallArg bool
 	// needsDefaultReturn is set before emitting a function body to add missing returns.
 	needsDefaultReturn bool
 	// concreteVarTypes tracks variables whose Go type is known to be concrete
@@ -116,6 +130,255 @@ func (t *Transpiler) getGoType(node *ast.Node) GoTypeInfo {
 		return GoTypeInfo{Category: GoTypeJSObject, GoStr: "any"}
 	}
 	return t.tm.goTypeInfo(typ)
+}
+
+// getEmittedGoType returns the actual Go type of an identifier as tracked at emit time.
+// This overrides checker-based type queries when the emitted Go code has a different type
+// than what the TS checker reports (e.g., optional params → *string, jsrt.Index → any).
+// Returns empty GoTypeInfo if no tracked type exists.
+func (t *Transpiler) getEmittedGoType(node *ast.Node) GoTypeInfo {
+	if node == nil || node.Kind != ast.KindIdentifier {
+		return GoTypeInfo{}
+	}
+	name := goVarName(node.AsIdentifier().Text)
+	// Check samePackageExports for exported name casing
+	if t.samePackageExports != nil && t.samePackageExports[node.AsIdentifier().Text] {
+		name = goExportedName(node.AsIdentifier().Text)
+	}
+	if t.goVarTypes != nil {
+		if goType, ok := t.goVarTypes[name]; ok {
+			return goTypeInfoFromString(goType)
+		}
+	}
+	return GoTypeInfo{}
+}
+
+// trackGoVarType records the actual Go type of a variable at emit time.
+func (t *Transpiler) trackGoVarType(name string, goType string) {
+	if t.goVarTypes == nil {
+		t.goVarTypes = make(map[string]string)
+	}
+	t.goVarTypes[name] = goType
+	// Keep legacy maps in sync during migration
+	if goType == "any" {
+		if t.goAnyVars == nil {
+			t.goAnyVars = make(map[string]bool)
+		}
+		t.goAnyVars[name] = true
+	} else if t.goAnyVars != nil {
+		delete(t.goAnyVars, name)
+	}
+	if goType == "*string" {
+		if t.goPtrStringVars == nil {
+			t.goPtrStringVars = make(map[string]bool)
+		}
+		t.goPtrStringVars[name] = true
+	} else if t.goPtrStringVars != nil {
+		delete(t.goPtrStringVars, name)
+	}
+	if goType == "int" {
+		if t.intVars == nil {
+			t.intVars = make(map[string]bool)
+		}
+		t.intVars[name] = true
+	}
+	if strings.HasPrefix(goType, "[]") || goType == "[]byte" || goType == "[]any" {
+		if t.concreteVarTypes == nil {
+			t.concreteVarTypes = make(map[string]string)
+		}
+		t.concreteVarTypes[name] = goType
+	}
+}
+
+// goTypeInfoFromString constructs a GoTypeInfo from a Go type string.
+func goTypeInfoFromString(goType string) GoTypeInfo {
+	switch {
+	case goType == "any":
+		return GoTypeInfo{Category: GoTypeJSObject, GoStr: "any"}
+	case goType == "string" || goType == "float64" || goType == "bool" || goType == "int":
+		return GoTypeInfo{Category: GoTypePrimitive, GoStr: goType}
+	case strings.HasPrefix(goType, "*promise.Promise["):
+		inner := goType[len("*promise.Promise[") : len(goType)-1]
+		return GoTypeInfo{Category: GoTypePromise, GoStr: goType, ElemType: inner}
+	case strings.HasPrefix(goType, "[]"):
+		return GoTypeInfo{Category: GoTypeSlice, GoStr: goType, ElemType: goType[2:]}
+	case strings.HasPrefix(goType, "map["):
+		return GoTypeInfo{Category: GoTypeMap, GoStr: goType}
+	case strings.HasPrefix(goType, "func("):
+		return GoTypeInfo{Category: GoTypeFunc, GoStr: goType}
+	case strings.HasPrefix(goType, "*"):
+		return GoTypeInfo{Category: GoTypePointer, GoStr: goType, Name: goType[1:]}
+	case isGenericType(goType):
+		bracketIdx := strings.Index(goType, "[")
+		return GoTypeInfo{Category: GoTypePointer, GoStr: goType, Name: goType[:bracketIdx]}
+	case isValidGoIdentifier(goType):
+		return GoTypeInfo{Category: GoTypePointer, GoStr: goType, Name: goType}
+	default:
+		return GoTypeInfo{Category: GoTypeJSObject, GoStr: goType}
+	}
+}
+
+// codeProducesConcreteType checks if a captured Go expression produces a concrete (non-interface) type
+// that cannot have type assertions applied.
+// This prevents double assertions: once .(Type) is applied, the result is concrete.
+func codeProducesConcreteType(code string) bool {
+	trimmed := strings.TrimSpace(code)
+	// Map literal: map[...]...{...}
+	if strings.HasPrefix(trimmed, "map[") {
+		return true
+	}
+	// Slice literal: []T{...}
+	if strings.HasPrefix(trimmed, "[]") && strings.Contains(trimmed, "{") {
+		return true
+	}
+	// Struct literal: &Type{...} or Type{...}
+	if strings.HasPrefix(trimmed, "&") && strings.Contains(trimmed, "{") {
+		return true
+	}
+	// Already has type assertion: expr.(Type) → result is concrete
+	// Strip outer parentheses for matching
+	inner := trimmed
+	for strings.HasPrefix(inner, "(") && strings.HasSuffix(inner, ")") {
+		inner = inner[1 : len(inner)-1]
+	}
+	// Match .(Identifier) at end — type assertion result
+	if strings.HasSuffix(inner, ")") {
+		idx := strings.LastIndex(inner, ".(")
+		if idx >= 0 {
+			typeName := inner[idx+2 : len(inner)-1]
+			if isValidGoIdentifier(typeName) || (strings.Contains(typeName, ".") && !strings.Contains(typeName, "(")) {
+				return true
+			}
+			if isGenericType(typeName) {
+				return true
+			}
+			// map[K]V, []T, *T type assertions produce concrete types
+			if strings.HasPrefix(typeName, "map[") || strings.HasPrefix(typeName, "[]") || strings.HasPrefix(typeName, "*") {
+				return true
+			}
+		}
+	}
+	// Type conversion: Type(expr) — e.g., T(form)
+	if len(inner) > 2 && inner[0] >= 'A' && inner[0] <= 'Z' && strings.HasSuffix(inner, ")") {
+		parenIdx := strings.Index(inner, "(")
+		if parenIdx > 0 && isValidGoIdentifier(inner[:parenIdx]) {
+			return true
+		}
+	}
+	// fmt.Sprint/Sprintf always returns string (concrete)
+	if strings.HasPrefix(inner, "fmt.Sprint") {
+		return true
+	}
+	// Struct field access: expr.FieldName — field result is concrete if expr is concrete
+	// Pattern: ends with .PascalCaseField (not a method call, no parens after)
+	if dotIdx := strings.LastIndex(inner, "."); dotIdx > 0 && !strings.HasSuffix(inner, ")") {
+		fieldName := inner[dotIdx+1:]
+		if fieldName != "" && fieldName[0] >= 'A' && fieldName[0] <= 'Z' && isValidGoIdentifier(fieldName) {
+			// Check if the object part produces concrete
+			objPart := inner[:dotIdx]
+			if codeProducesConcreteType(objPart) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// exprProducesConcreteGoType checks if an AST expression produces a concrete Go type
+// (tracked in goVarTypes) that shouldn't have type assertions applied.
+func (t *Transpiler) exprProducesConcreteGoType(node *ast.Node) bool {
+	if node == nil {
+		return false
+	}
+	// Check goVarTypes for identifiers
+	if node.Kind == ast.KindIdentifier {
+		emitted := t.getEmittedGoType(node)
+		if emitted.GoStr != "" && !emitted.IsAny() {
+			return true
+		}
+	}
+	// Check captured code
+	code := t.captureExpr(node)
+	return codeProducesConcreteType(code)
+}
+
+// writeTypeAssertion writes .(targetType) to the buffer, but only if the last-written code
+// doesn't already produce a concrete type. Prevents double assertions and assertions on concrete types.
+func (t *Transpiler) writeTypeAssertion(targetType string) {
+	if targetType == "" || targetType == "any" {
+		return
+	}
+	// Check if the buffer already ends with a concrete type expression
+	buf := t.w.buf.String()
+	lastExpr := lastExprInBuffer(buf)
+	if len(lastExpr) > 0 && codeProducesConcreteType(lastExpr) {
+		return
+	}
+	// Check if the last expression is a tracked variable with known concrete Go type
+	varName := strings.TrimSpace(lastExpr)
+	if t.goVarTypes != nil {
+		if goType, ok := t.goVarTypes[varName]; ok && goType != "any" {
+			return // concrete variable — no assertion needed
+		}
+	}
+	t.w.writef(".(%s)", targetType)
+}
+
+// writeTypeAssertionChecked writes .(targetType) only if the given AST expression
+// produces an any/interface type at Go level. Uses checker + tracker for accurate detection.
+func (t *Transpiler) writeTypeAssertionChecked(targetType string, expr *ast.Node) {
+	if targetType == "" || targetType == "any" {
+		return
+	}
+	if expr != nil && t.exprProducesConcreteGoType(expr) {
+		return
+	}
+	t.w.writef(".(%s)", targetType)
+}
+
+// lastExprInBuffer extracts a rough approximation of the last expression from the buffer.
+func lastExprInBuffer(buf string) string {
+	// Find the last line
+	lastNewline := strings.LastIndex(buf, "\n")
+	var line string
+	if lastNewline >= 0 {
+		line = strings.TrimSpace(buf[lastNewline+1:])
+	} else {
+		line = strings.TrimSpace(buf)
+	}
+	// If it's an assignment, look at the RHS
+	if eqIdx := strings.LastIndex(line, " = "); eqIdx >= 0 {
+		rhs := strings.TrimSpace(line[eqIdx+3:])
+		if rhs != "" {
+			return rhs
+		}
+	}
+	return line
+}
+
+// emitTypeAssertionOrConversion writes a type assertion .() or conversion T() for a return expression.
+// If the expression produces a concrete Go type, uses conversion instead of assertion.
+// If the target type equals the expression type, skips entirely.
+func (t *Transpiler) emitReturnTypeCoercion(exprCode string, expr *ast.Node, targetType string) {
+	if targetType == "" || targetType == "any" {
+		return
+	}
+	// Check if expression produces a concrete Go type
+	isConcrete := codeProducesConcreteType(exprCode)
+	if !isConcrete && expr != nil {
+		isConcrete = t.exprProducesConcreteGoType(expr)
+	}
+	if isConcrete {
+		if t.isTypeParam(targetType) {
+			// Concrete → type parameter: need type conversion T(expr)
+			// Re-emit as T(expr) — but exprCode is already written, so wrap it
+			// Actually, we can't wrap already-written code. This is called AFTER expr is written.
+			// So we just skip the assertion. The caller should handle conversion before calling.
+		}
+		// Same concrete type or incompatible → skip assertion (Go compiler handles)
+		return
+	}
+	t.w.writef(".(%s)", targetType)
 }
 
 // getDeclaredGoType returns the GoTypeInfo for a symbol's declared type (ignoring narrowing).
@@ -297,7 +560,24 @@ func (t *Transpiler) emitSourceFile(sf *ast.SourceFile) {
 		}
 	}
 
-	// Pre-scan: collect exported names for same-file forward references.
+	// Pre-scan: collect local type names and exported names for same-file forward references.
+	t.localTypeNames = make(map[string]bool)
+	for _, node := range sf.Statements.Nodes {
+		switch node.Kind {
+		case ast.KindClassDeclaration:
+			if node.Name() != nil {
+				t.localTypeNames[goExportedName(nodeText(node.Name()))] = true
+			}
+		case ast.KindInterfaceDeclaration:
+			if node.Name() != nil {
+				t.localTypeNames[goExportedName(nodeText(node.Name()))] = true
+			}
+		case ast.KindTypeAliasDeclaration:
+			if node.Name() != nil {
+				t.localTypeNames[goExportedName(nodeText(node.Name()))] = true
+			}
+		}
+	}
 	for _, node := range sf.Statements.Nodes {
 		if node.Kind == ast.KindVariableStatement && isExported(node) {
 			varStmt := node.AsVariableStatement()

@@ -103,6 +103,15 @@ func (m *typeMapper) goTypeInfo(t *checker.Type) GoTypeInfo {
 		if t != nil && t.Flags()&checker.TypeFlagsUnion != 0 {
 			info.Category = GoTypeInterface
 			info.Name = goStr
+		} else if isGenericType(goStr) {
+			// Generic instantiation like Foo[string, any] → treat as struct (pointer)
+			info.Category = GoTypePointer
+			bracketIdx := strings.Index(goStr, "[")
+			if bracketIdx > 0 {
+				info.Name = goStr[:bracketIdx]
+			} else {
+				info.Name = goStr
+			}
 		} else if isValidGoIdentifier(goStr) && goStr != "" {
 			// Check if this named type is actually a map-like type (has string index signatures)
 			if t != nil && t.Flags()&checker.TypeFlagsObject != 0 {
@@ -126,6 +135,15 @@ func (m *typeMapper) goTypeInfo(t *checker.Type) GoTypeInfo {
 		}
 	}
 	return info
+}
+
+// isGenericType checks if goStr is a generic type instantiation like "Foo[string, any]".
+func isGenericType(goStr string) bool {
+	bracketIdx := strings.Index(goStr, "[")
+	if bracketIdx <= 0 || !strings.HasSuffix(goStr, "]") {
+		return false
+	}
+	return isValidGoIdentifier(goStr[:bracketIdx])
 }
 
 // typeMapper converts TypeScript types (from the checker) to Go type strings.
@@ -396,8 +414,8 @@ func (m *typeMapper) goObjectType(t *checker.Type) string {
 						return mapped
 					}
 					// Custom generic class (e.g., HonoRequest<P, I>) → include type args
+					goName := m.qualifyTypeName(name)
 					if len(typeArgs) > 0 {
-						goName := m.qualifyTypeName(name)
 						parts := make([]string, len(typeArgs))
 						for i, ta := range typeArgs {
 							gt := m.goType(ta)
@@ -407,6 +425,17 @@ func (m *typeMapper) goObjectType(t *checker.Type) string {
 							parts[i] = gt
 						}
 						return goName + "[" + strings.Join(parts, ", ") + "]"
+					}
+					// No type args but target has type params → use defaults (any)
+					if target != nil && target.Symbol() != nil {
+						localTPs := m.checker.GetLocalTypeParametersOfClassOrInterfaceOrTypeAlias(target.Symbol())
+						if len(localTPs) > 0 {
+							parts := make([]string, len(localTPs))
+							for i := range localTPs {
+								parts[i] = "any"
+							}
+							return goName + "[" + strings.Join(parts, ", ") + "]"
+						}
 					}
 				}
 			}
@@ -490,54 +519,119 @@ func (m *typeMapper) qualifyTypeName(name string) string {
 }
 
 // goIntersectionType handles intersection types (T & U).
+// For primitive & object intersections (e.g., string & {callbacks: ...}):
+//   - If the object part has properties → use the named type (struct)
+//   - If no named type exists → use the primitive
 func (m *typeMapper) goIntersectionType(t *checker.Type) string {
+	// Use the type alias name if available (e.g., HtmlEscapedString for string & HtmlEscaped).
+	// The alias is preserved by the checker but was previously inaccessible.
+	if alias := t.Alias(); alias != nil && alias.Symbol() != nil {
+		aliasName := alias.Symbol().Name
+		if isValidGoIdentifier(aliasName) && !strings.HasPrefix(aliasName, "__") {
+			return m.qualifyTypeName(aliasName)
+		}
+	}
+
 	inter := t.AsIntersectionType()
 	types := inter.Types()
 
-	// If any constituent is a named object type with a valid Go name, use it
+	hasPrimitive := false
+	for _, u := range types {
+		if u.Flags()&(checker.TypeFlagsStringLike|checker.TypeFlagsNumberLike|checker.TypeFlagsBooleanLike) != 0 {
+			hasPrimitive = true
+		}
+	}
+
+	// Try named object types first
 	for _, u := range types {
 		if u.Flags()&checker.TypeFlagsObject != 0 {
-			// Use goObjectType to handle Web API types and other special cases
+			// Check if this object type has a symbol name (named type, not anonymous)
+			if u.Symbol() != nil && isValidGoIdentifier(u.Symbol().Name) && !strings.HasPrefix(u.Symbol().Name, "__") {
+				symName := u.Symbol().Name
+				// Apply well-known type mapping first
+				if mapped := m.mapWellKnownType(symName); mapped != "" {
+					return mapped
+				}
+				return m.qualifyTypeName(symName)
+			}
+			// Try TypeToString for alias names
+			name := m.checker.TypeToString(u)
+			if name != "" && isValidGoIdentifier(name) && !strings.Contains(name, "{") && !strings.Contains(name, "|") {
+				if mapped := m.mapWellKnownType(name); mapped != "" {
+					return mapped
+				}
+				return m.qualifyTypeName(name)
+			}
 			result := m.goObjectType(u)
 			if result != "any" {
 				return result
 			}
 		}
 	}
+
+	// Check if the intersection type itself has a named alias
+	if t.Symbol() != nil {
+		name := t.Symbol().Name
+		if isValidGoIdentifier(name) && !strings.HasPrefix(name, "__") {
+			return m.qualifyTypeName(name)
+		}
+	}
+
+	// Fallback to primitive if no named object type found
+	if hasPrimitive {
+		for _, u := range types {
+			if u.Flags()&checker.TypeFlagsStringLike != 0 {
+				return "string"
+			}
+			if u.Flags()&checker.TypeFlagsNumberLike != 0 {
+				return "float64"
+			}
+			if u.Flags()&checker.TypeFlagsBooleanLike != 0 {
+				return "bool"
+			}
+		}
+	}
 	return "any"
+}
+
+// wellKnownTypeMap maps Web API / global type names to their Go equivalents.
+// Data-driven: add new mappings here without changing dispatch logic.
+var wellKnownTypeMap = map[string]string{
+	// Web API types with concrete Go structs
+	"Response":    "*web.Response",
+	"Request":     "*web.Request",
+	"Headers":     "*web.Headers",
+	"HeadersInit": "*web.Headers",
+	"URL":         "*web.URL",
+	"TextEncoder": "*web.TextEncoder",
+	"TextDecoder": "*web.TextDecoder",
+	"FormData":    "*web.FormData",
+	// JS built-in collections
+	"Array": "[]any",
+	// Error types
+	"Error":          "*jsrt.JSError",
+	"TypeError":      "*jsrt.JSError",
+	"RangeError":     "*jsrt.JSError",
+	"SyntaxError":    "*jsrt.JSError",
+	"ReferenceError": "*jsrt.JSError",
+	// Types mapped to any (no Go equivalent)
+	"ReadableStream": "any", "WritableStream": "any", "TransformStream": "any",
+	"ReadableStreamDefaultReader": "any", "WritableStreamDefaultWriter": "any",
+	"ReadableStreamDefaultController": "any",
+	"Uint8Array":                      "any", "ArrayBuffer": "any", "ArrayBufferLike": "any",
+	"BufferSource": "any", "ArrayBufferView": "any",
+	"Blob": "any", "File": "any", "AbortController": "any", "AbortSignal": "any",
+	"URLSearchParams": "any", "CryptoKey": "any", "SubtleCrypto": "any",
+	"Function": "any", "RegExp": "any", "Date": "any", "Symbol": "any", "Proxy": "any",
+	"PromiseLike": "any", "IterableIterator": "any", "Iterator": "any",
+	"PropertyKey": "any", "SharedArrayBuffer": "any", "DataView": "any",
 }
 
 // mapWellKnownType maps a type name to its Go equivalent if it's a well-known Web API / global type.
 // Returns empty string if no mapping exists.
 func (m *typeMapper) mapWellKnownType(name string) string {
-	switch name {
-	case "Response":
-		return "*web.Response"
-	case "Request":
-		return "*web.Request"
-	case "Headers":
-		return "*web.Headers"
-	case "URL":
-		return "*web.URL"
-	case "TextEncoder":
-		return "*web.TextEncoder"
-	case "FormData":
-		return "*web.FormData"
-	case "Array":
-		return "[]any"
-	case "ReadableStream", "WritableStream", "TransformStream",
-		"ReadableStreamDefaultReader", "WritableStreamDefaultWriter",
-		"ReadableStreamDefaultController",
-		"TextDecoder", "Uint8Array", "ArrayBuffer", "ArrayBufferLike",
-		"BufferSource", "ArrayBufferView",
-		"Blob", "File", "AbortController", "AbortSignal",
-		"URLSearchParams", "CryptoKey", "SubtleCrypto",
-		"Function", "RegExp", "Date", "Symbol", "Proxy",
-		"PromiseLike", "IterableIterator", "Iterator",
-		"PropertyKey", "SharedArrayBuffer", "DataView":
-		return "any"
-	case "Error", "TypeError", "RangeError", "SyntaxError":
-		return "*jsrt.JSError"
+	if goType, ok := wellKnownTypeMap[name]; ok {
+		return goType
 	}
 	return ""
 }

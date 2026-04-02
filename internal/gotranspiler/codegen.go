@@ -205,10 +205,8 @@ func (w *goWriter) renderFile(pkgName string) (string, error) {
 
 	out.WriteString(body)
 
-	// Fix common Go formatting issues before gofmt:
-	// - "}\n)" → "},\n)" — trailing comma needed when func literal is last call arg
-	// - "}\n\t)" and deeper indentation variants
 	raw := out.String()
+	// Safety net: fix trailing commas where inCallArg context doesn't fully cover
 	raw = fixTrailingFuncArgs(raw)
 
 	formatted, err := format.Source([]byte(raw))
@@ -219,6 +217,110 @@ func (w *goWriter) renderFile(pkgName string) (string, error) {
 	return string(formatted), nil
 }
 
+// replaceUndefinedGenericTypes replaces PascalCase[...] patterns with "any" when the type
+// is not defined in the current file (not declared as type/struct/interface).
+func replaceUndefinedGenericTypes(raw string, body string) string {
+	// Collect all defined names in this file (types, functions, variables)
+	defined := make(map[string]bool)
+	for _, line := range strings.Split(body, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "type ") {
+			rest := trimmed[5:]
+			end := strings.IndexAny(rest, " =[{")
+			if end > 0 {
+				defined[rest[:end]] = true
+			}
+		}
+		if strings.HasPrefix(trimmed, "func ") && !strings.HasPrefix(trimmed, "func (") {
+			rest := trimmed[5:]
+			end := strings.IndexAny(rest, "([< ")
+			if end > 0 {
+				defined[rest[:end]] = true
+			}
+		}
+		if strings.HasPrefix(trimmed, "var ") {
+			rest := trimmed[4:]
+			end := strings.IndexAny(rest, " =")
+			if end > 0 {
+				defined[rest[:end]] = true
+			}
+		}
+	}
+	// Also add well-known types from imports
+	for _, kw := range []string{"Promise", "Headers", "Request", "Response", "FormData", "URL"} {
+		defined[kw] = true
+	}
+
+	// Replace PascalCase[...] patterns that are not defined
+	var result strings.Builder
+	i := 0
+	for i < len(raw) {
+		if raw[i] >= 'A' && raw[i] <= 'Z' &&
+			(i == 0 || raw[i-1] == ' ' || raw[i-1] == ')' || raw[i-1] == '(' || raw[i-1] == '*' || raw[i-1] == ',' || raw[i-1] == '[') {
+			j := i
+			for j < len(raw) && (raw[j] == '_' || (raw[j] >= 'a' && raw[j] <= 'z') || (raw[j] >= 'A' && raw[j] <= 'Z') || (j > i && raw[j] >= '0' && raw[j] <= '9')) {
+				j++
+			}
+			name := raw[i:j]
+			if j < len(raw) && raw[j] == '[' && !defined[name] {
+				// Skip Name[...] → replace with "any"
+				depth := 1
+				k := j + 1
+				for k < len(raw) && depth > 0 {
+					if raw[k] == '[' {
+						depth++
+					} else if raw[k] == ']' {
+						depth--
+					}
+					k++
+				}
+				result.WriteString("any")
+				i = k
+				continue
+			}
+		}
+		result.WriteByte(raw[i])
+		i++
+	}
+	return result.String()
+}
+
+// removeDuplicateTypeFuncDecls removes `type X = func(...)` lines when `func X(...)` exists.
+func removeDuplicateTypeFuncDecls(src string) string {
+	lines := strings.Split(src, "\n")
+	// Collect declared function names
+	funcNames := make(map[string]bool)
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "func ") && !strings.HasPrefix(trimmed, "func (") {
+			// func Name(... — extract name
+			rest := trimmed[5:]
+			end := strings.IndexAny(rest, "([< ")
+			if end > 0 {
+				funcNames[rest[:end]] = true
+			}
+		}
+	}
+	// Remove type aliases that conflict with function declarations
+	var result []string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "type ") && strings.Contains(trimmed, " = func(") {
+			// type Name = func(... — extract name
+			rest := trimmed[5:]
+			end := strings.IndexAny(rest, " =")
+			if end > 0 {
+				name := rest[:end]
+				if funcNames[name] {
+					continue // skip duplicate
+				}
+			}
+		}
+		result = append(result, line)
+	}
+	return strings.Join(result, "\n")
+}
+
 // fixTrailingFuncArgs adds trailing commas where a closing brace (from a func literal)
 // is followed by a line starting with ) or , — Go requires a trailing comma in this case.
 func fixTrailingFuncArgs(src string) string {
@@ -227,15 +329,40 @@ func fixTrailingFuncArgs(src string) string {
 		trimmed := strings.TrimRight(lines[i], " \t")
 		nextTrimmed := strings.TrimSpace(lines[i+1])
 		if strings.HasSuffix(trimmed, "}") && !strings.HasSuffix(trimmed, "},") {
+			// Only add comma when } is a func literal closing brace, not an if/for/else block.
 			if strings.HasPrefix(nextTrimmed, ")") || strings.HasPrefix(nextTrimmed, "})") {
-				lines[i] = trimmed + ","
+				if isFuncLiteralClose(lines, i) {
+					lines[i] = trimmed + ","
+				}
 			} else if strings.HasPrefix(nextTrimmed, ",") {
-				// }, followed by , "key": ... — add comma and remove leading comma on next line
-				lines[i] = trimmed + ","
-				indent := lines[i+1][:len(lines[i+1])-len(strings.TrimLeft(lines[i+1], " \t"))]
-				lines[i+1] = indent + strings.TrimLeft(nextTrimmed[1:], " ")
+				if isFuncLiteralClose(lines, i) {
+					lines[i] = trimmed + ","
+					indent := lines[i+1][:len(lines[i+1])-len(strings.TrimLeft(lines[i+1], " \t"))]
+					lines[i+1] = indent + strings.TrimLeft(nextTrimmed[1:], " ")
+				}
 			}
 		}
 	}
 	return strings.Join(lines, "\n")
+}
+
+// isFuncLiteralClose checks if the } at line idx closes a func literal by walking
+// backwards to find the matching { and checking if its line contains "func".
+func isFuncLiteralClose(lines []string, idx int) bool {
+	depth := 0
+	for j := idx; j >= 0; j-- {
+		trimmed := strings.TrimSpace(lines[j])
+		for k := len(trimmed) - 1; k >= 0; k-- {
+			ch := trimmed[k]
+			if ch == '}' {
+				depth++
+			} else if ch == '{' {
+				depth--
+				if depth == 0 {
+					return strings.Contains(lines[j], "func")
+				}
+			}
+		}
+	}
+	return false
 }

@@ -71,7 +71,7 @@ func (t *Transpiler) emitStatement(node *ast.Node) {
 						if t.currentRetType != "" && t.currentRetType != "any" &&
 							(goCodeProducesAny(code) ||
 								(retExprType.IsAny() && ret.Expression.Kind == ast.KindCallExpression)) {
-							t.w.writef(".(%s)", t.currentRetType)
+							t.writeTypeAssertionChecked(t.currentRetType, ret.Expression)
 						}
 					}
 					t.w.write(")")
@@ -104,12 +104,29 @@ func (t *Transpiler) emitStatement(node *ast.Node) {
 			t.w.writef("%s = ", t.tryResultVar)
 			t.emitExpr(ret.Expression)
 			if needsTryAssert {
-				t.w.writef(".(%s)", t.currentRetType)
+				t.writeTypeAssertionChecked(t.currentRetType, ret.Expression)
 			}
 			t.returnContext = ""
 			t.w.newline()
 			t.w.writeln("return")
 		} else if ret.Expression != nil {
+			// Handle return (a = b) → a = b; return a (assignment expression in return)
+			retExpr := ret.Expression
+			for retExpr.Kind == ast.KindParenthesizedExpression {
+				retExpr = retExpr.AsParenthesizedExpression().Expression
+			}
+			if retExpr.Kind == ast.KindBinaryExpression {
+				bin := retExpr.AsBinaryExpression()
+				if bin.OperatorToken.Kind == ast.KindEqualsToken {
+					t.emitExpr(retExpr)
+					t.w.newline()
+					t.w.write("return ")
+					t.emitExpr(bin.Left)
+					t.w.newline()
+					break
+				}
+			}
+
 			t.w.write("return ")
 			t.returnContext = t.currentRetType
 			// Wrap with promise.Resolve when returning non-promise where Promise is expected
@@ -117,8 +134,18 @@ func (t *Transpiler) emitStatement(node *ast.Node) {
 				retExprT := t.getGoType(ret.Expression)
 				if !retExprT.IsPromise() {
 					t.w.addImport("github.com/i2y/ramune/jsrt/promise", "")
-					t.w.write("promise.Resolve[any](")
-					t.emitExpr(ret.Expression)
+					innerType := t.currentRetType[len("*promise.Promise[") : len(t.currentRetType)-1]
+					if innerType == "" {
+						innerType = "any"
+					}
+					t.w.writef("promise.Resolve[%s](", innerType)
+					// Add type assertion if expression produces any but inner type is concrete
+					if innerType != "any" && retExprT.IsAny() {
+						t.emitExpr(ret.Expression)
+						t.writeTypeAssertionChecked(innerType, ret.Expression)
+					} else {
+						t.emitExpr(ret.Expression)
+					}
 					t.w.write(")")
 					t.returnContext = ""
 					t.w.newline()
@@ -147,11 +174,26 @@ func (t *Transpiler) emitStatement(node *ast.Node) {
 				retExprType := t.getGoType(ret.Expression)
 				declRetExprType := t.getDeclaredGoType(ret.Expression)
 				isRetExprAny := retExprType.IsAny() || declRetExprType.IsAny()
-				// Check goAnyVars for identifiers
+				// Check goVarTypes/goAnyVars for identifiers
 				if !isRetExprAny && ret.Expression.Kind == ast.KindIdentifier {
-					vn := goVarName(ret.Expression.AsIdentifier().Text)
-					if t.goAnyVars != nil && t.goAnyVars[vn] {
+					emitted := t.getEmittedGoType(ret.Expression)
+					if emitted.GoStr != "" && emitted.IsAny() {
 						isRetExprAny = true
+					} else {
+						vn := goVarName(ret.Expression.AsIdentifier().Text)
+						if t.goAnyVars != nil && t.goAnyVars[vn] {
+							isRetExprAny = true
+						}
+					}
+				}
+				// Check element access on []any arrays: arr[i] produces any
+				if !isRetExprAny && ret.Expression.Kind == ast.KindElementAccessExpression {
+					ea := ret.Expression.AsElementAccessExpression()
+					if ea.Expression.Kind == ast.KindIdentifier {
+						emitted := t.getEmittedGoType(ea.Expression)
+						if emitted.GoStr != "" && emitted.IsSlice() && emitted.ElemType == "any" {
+							isRetExprAny = true
+						}
 					}
 				}
 				needsRetAssert := isRetExprAny && t.currentRetType != "" && t.currentRetType != "any"
@@ -163,14 +205,28 @@ func (t *Transpiler) emitStatement(node *ast.Node) {
 					needsRetAssert = false
 				}
 				if needsRetAssert {
-					t.emitExpr(ret.Expression)
-					t.w.writef(".(%s)", t.currentRetType)
+					// Check if expression produces concrete type
+					if t.exprProducesConcreteGoType(ret.Expression) {
+						// Concrete type can't use type assertion (.()).
+						// Use type conversion T(expr) if return type is a type parameter.
+						if t.isTypeParam(t.currentRetType) {
+							t.w.writef("%s(", t.currentRetType)
+							t.emitExpr(ret.Expression)
+							t.w.write(")")
+						} else {
+							// Same concrete type or compatible — no conversion needed
+							t.emitExpr(ret.Expression)
+						}
+					} else {
+						t.emitExpr(ret.Expression)
+						t.writeTypeAssertionChecked(t.currentRetType, ret.Expression)
+					}
 				} else if t.currentRetType != "" && t.currentRetType != "any" {
 					// Capture and check if expression produces any at Go level
 					code := t.captureExpr(ret.Expression)
 					t.w.write(code)
-					if goCodeProducesAny(code) && !strings.HasPrefix(code, "promise.") {
-						t.w.writef(".(%s)", t.currentRetType)
+					if goCodeProducesAny(code) && !strings.HasPrefix(code, "promise.") && !codeProducesConcreteType(code) {
+						t.writeTypeAssertionChecked(t.currentRetType, ret.Expression)
 					}
 				} else {
 					// currentRetType is empty — still check if code produces any and
@@ -178,7 +234,7 @@ func (t *Transpiler) emitStatement(node *ast.Node) {
 					code := t.captureExpr(ret.Expression)
 					t.w.write(code)
 					if t.returnContext != "" && t.returnContext != "any" && goCodeProducesAny(code) {
-						t.w.writef(".(%s)", t.returnContext)
+						t.writeTypeAssertionChecked(t.returnContext, ret.Expression)
 					}
 				}
 			}
@@ -444,6 +500,8 @@ func (t *Transpiler) emitPackageLevelVarStatement(node *ast.Node) {
 				t.currentFuncName = savedFuncName
 				t.currentFuncParamTypes = savedFuncParams
 				t.w.newline()
+			} else if t.emitFuncAliasWrapper(varDecl, varName, node) {
+				// Emitted a wrapper function for type-narrowed function alias
 			} else {
 				t.w.writef("var %s = ", varName)
 				t.emitExpr(varDecl.Initializer)
@@ -464,6 +522,87 @@ func (t *Transpiler) emitPackageLevelVarStatement(node *ast.Node) {
 		}
 	}
 	t.w.newline()
+}
+
+// emitFuncAliasWrapper detects type-narrowed function aliases like:
+//
+//	export const f: (a: string, b?: string) => T = _impl as ...
+//
+// where _impl has more params than the type annotation, and emits a wrapper function.
+// Returns true if a wrapper was emitted.
+func (t *Transpiler) emitFuncAliasWrapper(varDecl *ast.VariableDeclaration, varName string, node *ast.Node) bool {
+	if varDecl.Initializer == nil || !isExported(node) || varDecl.Type == nil ||
+		varDecl.Type.Kind != ast.KindFunctionType || t.ck == nil {
+		return false
+	}
+	inner := varDecl.Initializer
+	for inner.Kind == ast.KindAsExpression {
+		inner = inner.AsAsExpression().Expression
+	}
+	if inner.Kind != ast.KindIdentifier {
+		return false
+	}
+	ftNode := varDecl.Type.AsFunctionTypeNode()
+	annotParamCount := 0
+	if ftNode.Parameters != nil {
+		annotParamCount = len(ftNode.Parameters.Nodes)
+	}
+	implType := t.ck.GetTypeAtLocation(inner)
+	implParamCount := 0
+	var implSigs []*checker.Signature
+	if implType != nil {
+		implSigs = t.ck.GetSignaturesOfType(implType, checker.SignatureKindCall)
+		if len(implSigs) > 0 {
+			implParamCount = len(implSigs[0].Parameters())
+		}
+	}
+	if annotParamCount >= implParamCount || annotParamCount == 0 {
+		return false
+	}
+	implName := goVarName(inner.AsIdentifier().Text)
+	if t.samePackageExports != nil && t.samePackageExports[inner.AsIdentifier().Text] {
+		implName = goExportedName(inner.AsIdentifier().Text)
+	}
+	retType := t.getFuncReturnType(varDecl.Type)
+	t.w.writef("func %s(", varName)
+	t.emitParameterList(varDecl.Type)
+	t.w.write(")")
+	if retType != "" {
+		t.w.writef(" %s", retType)
+	}
+	t.w.writef(" { return %s(", implName)
+	if ftNode.Parameters != nil {
+		for i, p := range ftNode.Parameters.Nodes {
+			if i > 0 {
+				t.w.write(", ")
+			}
+			pName := p.Name()
+			if pName != nil {
+				t.w.write(goVarName(pName.AsIdentifier().Text))
+			}
+		}
+	}
+	if len(implSigs) > 0 {
+		params := implSigs[0].Parameters()
+		for i := annotParamCount; i < len(params); i++ {
+			t.w.write(", ")
+			pt := t.ck.GetTypeOfSymbol(params[i])
+			goT := t.tm.goType(pt)
+			switch goT {
+			case "bool":
+				t.w.write("false")
+			case "int", "float64":
+				t.w.write("0")
+			case "string":
+				t.w.write(`""`)
+			default:
+				t.w.write("nil")
+			}
+		}
+	}
+	t.w.write(") }")
+	t.w.newline()
+	return true
 }
 
 // emitVariableStatement handles const/let/var declarations.
@@ -575,6 +714,11 @@ func (t *Transpiler) emitVariableStatement(node *ast.Node) {
 				delete(t.goAnyVars, varName)
 			}
 
+			// Detect type-narrowed function alias: export const f: NarrowType = impl as NarrowType
+			if t.emitFuncAliasWrapper(varDecl, varName, node) {
+				continue
+			}
+
 			// Detect function initializers that may reference the variable (init cycle).
 			// Use var+assign pattern for all exported function vars to avoid Go init cycle.
 			isSelfRefFunc := false
@@ -625,9 +769,10 @@ func (t *Transpiler) emitVariableStatement(node *ast.Node) {
 				t.w.write(initCode)
 				// Add type assertion only if emitted code actually produces any
 				// Only add type assertion if the expression ENDS with an any-producing pattern
-				if strings.HasSuffix(initCode, ".Unwrap()") ||
-					strings.HasSuffix(initCode, "}()") && strings.Contains(initCode, "func() any") {
-					t.w.writef(".(%s)", varTypeInfo.GoStr)
+				if !codeProducesConcreteType(initCode) &&
+					(strings.HasSuffix(initCode, ".Unwrap()") ||
+						strings.HasSuffix(initCode, "}()") && strings.Contains(initCode, "func() any")) {
+					t.writeTypeAssertion(varTypeInfo.GoStr)
 				}
 			} else {
 				t.emitExpr(varDecl.Initializer)
@@ -635,16 +780,91 @@ func (t *Transpiler) emitVariableStatement(node *ast.Node) {
 
 			t.declContext = ""
 
-			// Track variables initialized from int-producing calls (indexOf, lastIndexOf, etc.)
+			// Unified Go type tracking for variables
+			if varName != "" && varDecl.Initializer != nil {
+				emittedType := ""
+				if needsTypedDecl && varTypeInfo.GoStr != "" {
+					emittedType = varTypeInfo.GoStr
+				} else if isUint8ArrayCtor {
+					emittedType = "[]byte"
+				} else if t.exprProducesInt(varDecl.Initializer) {
+					emittedType = "int"
+				} else if varDecl.Initializer.Kind == ast.KindAwaitExpression {
+					aw := varDecl.Initializer.AsAwaitExpression()
+					if isPromiseAllCall(aw.Expression) {
+						emittedType = "[]any"
+					}
+				}
+				// Check if init expression produces any at Go level
+				if emittedType == "" {
+					initCode := t.captureExpr(varDecl.Initializer)
+					if strings.Contains(initCode, ".Then(") || goCodeProducesAny(initCode) {
+						emittedType = "any"
+					}
+				}
+				// Check this.method() return type for *string
+				if emittedType == "" && varDecl.Initializer.Kind == ast.KindCallExpression {
+					call := varDecl.Initializer.AsCallExpression()
+					if call.Expression.Kind == ast.KindPropertyAccessExpression {
+						prop := call.Expression.AsPropertyAccessExpression()
+						if prop.Expression.Kind == ast.KindThisKeyword {
+							retType := t.getGoType(varDecl.Initializer)
+							if retType.IsPointer() && retType.GoStr == "*string" {
+								emittedType = "*string"
+							}
+						}
+					}
+				}
+				// If init expression produces concrete type but checker says any,
+				// track as concrete to prevent redundant assertions later
+				if emittedType == "" && varDecl.Initializer != nil {
+					initCode := t.captureExpr(varDecl.Initializer)
+					if codeProducesConcreteType(initCode) && varTypeInfo.IsAny() {
+						// Concrete init but checker says any → track as "concrete:any"
+						// This prevents assertion on the variable later
+						emittedType = "concrete" // sentinel value — concrete but unknown type
+					}
+				}
+				if emittedType != "" {
+					t.trackGoVarType(varName, emittedType)
+				} else if needsTypedDecl && varTypeInfo.GoStr != "" && !varTypeInfo.IsAny() {
+					// Typed declaration: var x Type = ... → track the declared type
+					t.trackGoVarType(varName, varTypeInfo.GoStr)
+				} else if !needsTypedDecl && varTypeInfo.GoStr != "" && !varTypeInfo.IsAny() {
+					// := declaration: track concrete checker types
+					// For *string from checker (optional), check if Go method actually returns string
+					goStr := varTypeInfo.GoStr
+					if goStr == "*string" && varDecl.Initializer != nil {
+						initCode := t.captureExpr(varDecl.Initializer)
+						// Concrete Go methods (e.g., Headers.Get) return string, not *string
+						if !strings.Contains(initCode, "jsrt.") && !strings.Contains(initCode, ".Unwrap()") &&
+							strings.HasSuffix(initCode, ")") {
+							goStr = "string" // Override: Go method returns concrete string
+						}
+					}
+					switch {
+					case goStr == "string" || goStr == "float64" || goStr == "bool" || goStr == "int":
+						t.trackGoVarType(varName, goStr)
+					case strings.HasPrefix(goStr, "[]") || strings.HasPrefix(goStr, "map[") || strings.HasPrefix(goStr, "*"):
+						t.trackGoVarType(varName, goStr)
+					case isValidGoIdentifier(goStr) || isGenericType(goStr):
+						t.trackGoVarType(varName, goStr)
+					}
+				} else if !needsTypedDecl {
+					// := with concrete type — clear any prior any tracking
+					if t.goAnyVars != nil {
+						delete(t.goAnyVars, varName)
+					}
+				}
+			}
+
+			// Legacy tracking (to be removed after migration)
 			if varName != "" && t.exprProducesInt(varDecl.Initializer) {
 				if t.intVars == nil {
 					t.intVars = make(map[string]bool)
 				}
 				t.intVars[varName] = true
 			}
-
-			// Track local variables initialized from *string-returning method calls
-			// Only track when the call is on a method of the same class (transpiled, not native)
 			if varName != "" && varDecl.Initializer != nil &&
 				varDecl.Initializer.Kind == ast.KindCallExpression {
 				call := varDecl.Initializer.AsCallExpression()
@@ -661,30 +881,6 @@ func (t *Transpiler) emitVariableStatement(node *ast.Node) {
 					}
 				}
 			}
-
-			// When := produces a concrete type, remove any shadowed goAnyVar
-			if varName != "" && !needsTypedDecl && varDecl.Initializer != nil {
-				captured := t.captureExpr(varDecl.Initializer)
-				if !goCodeProducesAny(captured) && !strings.Contains(captured, ".Then(") {
-					if t.goAnyVars != nil {
-						delete(t.goAnyVars, varName)
-					}
-				}
-			}
-
-			// Track variables initialized from any-producing expressions at Go level
-			// Only for non-typed declarations (`:=` syntax) — typed decls keep their Go type
-			if varName != "" && varDecl.Initializer != nil && !needsTypedDecl {
-				initCode := t.captureExpr(varDecl.Initializer)
-				if strings.Contains(initCode, ".Then(") || goCodeProducesAny(initCode) {
-					if t.goAnyVars == nil {
-						t.goAnyVars = make(map[string]bool)
-					}
-					t.goAnyVars[varName] = true
-				}
-			}
-
-			// Track await Promise.all results as []any at Go level
 			if varName != "" && varDecl.Initializer != nil && varDecl.Initializer.Kind == ast.KindAwaitExpression {
 				aw := varDecl.Initializer.AsAwaitExpression()
 				if isPromiseAllCall(aw.Expression) {

@@ -8,6 +8,55 @@ import (
 	"github.com/i2y/ramune/internal/tsgo/checker"
 )
 
+// jsGlobalObjects lists JavaScript global objects whose static methods need
+// special handling (Object.keys, Array.isArray, JSON.parse, etc.).
+// These bypass type-driven dispatch and are handled by the global static method section.
+var jsGlobalObjects = map[string]bool{
+	"Object": true, "Array": true, "ArrayBuffer": true,
+	"JSON": true, "Math": true, "Promise": true, "Date": true,
+	"String": true, "Boolean": true, "Number": true,
+	"console": true, "crypto": true,
+}
+
+// DispatchTarget determines how a method call should be emitted in Go.
+// The target is determined by the Go type category of the object, not by method name matching.
+type DispatchTarget int
+
+const (
+	DispatchArrayHelper    DispatchTarget = iota // jsarray.* helpers (for []T types)
+	DispatchStringStdlib                         // strings.* stdlib or inline (for string types)
+	DispatchPromiseMethod                        // promise.Promise.Then/Await (for *promise.Promise[T])
+	DispatchMapOperation                         // Go map operations (for map[K]V types)
+	DispatchConcreteMethod                       // obj.Method() direct call (for *Struct types)
+	DispatchJSRTRuntime                          // jsrt.Obj().Get().Call() (for any/unknown types)
+)
+
+// dispatchMethodCall determines the dispatch target based purely on Go type category.
+// No method name matching — the Go compiler will catch invalid method calls.
+func (t *Transpiler) dispatchMethodCall(objType GoTypeInfo, objDeclType GoTypeInfo) DispatchTarget {
+	// Priority: checkerType (narrowed) > declaredType
+	// Check narrowed type first — it's more specific
+	for _, ty := range []GoTypeInfo{objType, objDeclType} {
+		if ty.GoStr == "" || ty.GoStr == "any" {
+			continue
+		}
+		switch {
+		case ty.IsString():
+			return DispatchStringStdlib
+		case ty.IsSlice():
+			return DispatchArrayHelper
+		case ty.IsPromise():
+			return DispatchPromiseMethod
+		case ty.IsMap():
+			return DispatchMapOperation
+		case ty.IsPointer() || isGenericType(ty.GoStr):
+			return DispatchConcreteMethod
+		}
+	}
+	// Both are any → runtime dispatch
+	return DispatchJSRTRuntime
+}
+
 // emitExpr generates Go source code for a TypeScript expression node.
 func (t *Transpiler) emitExpr(node *ast.Node) {
 	if node == nil {
@@ -96,8 +145,49 @@ func (t *Transpiler) emitExpr(node *ast.Node) {
 		t.emitAwaitExpr(node)
 
 	case ast.KindAsExpression:
-		// Type assertion — just emit the expression (type is erased)
 		as := node.AsAsExpression()
+		// If target type is a named struct/interface, emit Go type assertion or conversion
+		if as.Type != nil && t.ck != nil {
+			targetType := t.ck.GetTypeAtLocation(as.Type)
+			if targetType != nil {
+				goTarget := t.tm.goType(targetType)
+				// Only assert for named types (not primitives or any)
+				if goTarget != "" && goTarget != "any" && goTarget != "string" && goTarget != "float64" &&
+					goTarget != "bool" && goTarget != "int" && !strings.HasPrefix(goTarget, "func(") {
+					// Check if expression produces concrete type → use conversion instead of assertion
+					if t.exprProducesConcreteGoType(as.Expression) {
+						if t.isTypeParam(goTarget) {
+							// Concrete → type parameter: type conversion T(expr)
+							t.w.writef("%s(", goTarget)
+							t.emitExpr(as.Expression)
+							t.w.write(")")
+						} else if targetType.Flags()&checker.TypeFlagsIntersection != 0 {
+							// Primitive → intersection struct: wrap in struct with Value field
+							// Use the TS alias name, not the resolved underlying type
+							structName := goTarget
+							if as.Type.Kind == ast.KindTypeReference {
+								ref := as.Type.AsTypeReference()
+								if ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier {
+									structName = goExportedName(ref.TypeName.AsIdentifier().Text)
+								}
+							}
+							t.w.writef("%s{Value: ", structName)
+							t.emitExpr(as.Expression)
+							t.w.write("}")
+						} else {
+							// Concrete → concrete: just emit (Go compiler handles compatibility)
+							t.emitExpr(as.Expression)
+						}
+					} else {
+						// Interface → concrete: type assertion .(T)
+						t.emitExpr(as.Expression)
+						t.writeTypeAssertion(goTarget)
+					}
+					break
+				}
+			}
+		}
+		// Default: erase type assertion
 		t.emitExpr(as.Expression)
 
 	case ast.KindTypeAssertionExpression:
@@ -227,6 +317,52 @@ func (t *Transpiler) emitBinaryExpr(node *ast.Node) {
 					retType = goType
 				}
 			}
+		}
+		// Non-nilable left side (e.g., Headers.Get() returns string):
+		// use zero-value comparison instead of nil check.
+		// The checker may report *string (string|null) but the Go method returns string.
+		// Detect by checking if the captured code is a concrete method call (no jsrt/Unwrap).
+		leftGoType := t.getGoType(bin.Left)
+		// Detect concrete types from captured code (struct field access, etc.)
+		leftIsConcrete := codeProducesConcreteType(left)
+		goLevelString := leftGoType.GoStr == "string" && !leftGoType.IsPointer()
+		if !goLevelString && leftGoType.GoStr == "*string" &&
+			!strings.Contains(left, "jsrt.") && !strings.Contains(left, ".Unwrap()") &&
+			strings.HasSuffix(left, ")") {
+			goLevelString = true
+		}
+		// Non-nilable bool: use false comparison instead of nil
+		if leftIsConcrete || leftGoType.GoStr == "bool" {
+			zeroVal := "false"
+			if leftGoType.GoStr == "string" || goLevelString {
+				zeroVal = `""`
+			} else if leftGoType.GoStr == "float64" || leftGoType.GoStr == "int" {
+				zeroVal = "0"
+			}
+			goLevelRetType := retType
+			if goLevelRetType == "" || goLevelRetType == "any" {
+				goLevelRetType = leftGoType.GoStr
+			}
+			if goLevelRetType == "" {
+				goLevelRetType = "any"
+			}
+			t.w.writef("func() %s { __v := %s; if __v != %s { return __v }; return ", goLevelRetType, left, zeroVal)
+			t.emitExpr(bin.Right)
+			t.w.write(" }()")
+			return
+		}
+		if goLevelString {
+			if retType == "*string" {
+				t.w.addImport("github.com/i2y/ramune/jsrt", "")
+				t.w.writef("func() *string { __v := %s; if __v != \"\" { return jsrt.Ptr(__v) }; return ", left)
+				t.emitExpr(bin.Right)
+				t.w.write(" }()")
+			} else {
+				t.w.writef("func() string { __v := %s; if __v != \"\" { return __v }; return ", left)
+				t.emitExpr(bin.Right)
+				t.w.write(" }()")
+			}
+			return
 		}
 		// Strip trailing type assertion from jsrt.Obj().Get().Unwrap().(Type) chains
 		// since ?? needs a nil-checkable (any) value, not a concrete type
@@ -403,7 +539,14 @@ func (t *Transpiler) emitBinaryExpr(node *ast.Node) {
 				if strings.HasSuffix(left, assertSuffix) {
 					left = strings.TrimSuffix(left, assertSuffix)
 				}
-				t.w.writef("func() %s { __v := %s; if jsrt.ToBool(__v) { return __v.(%s) }; return ", retType, left, retType)
+				// Check if left expression produces a concrete type (e.g., struct field access)
+				// In that case, __v already has the right type — no assertion needed
+				leftIsConcrete := codeProducesConcreteType(left)
+				if leftIsConcrete {
+					t.w.writef("func() %s { __v := %s; if jsrt.ToBool(__v) { return __v }; return ", retType, left)
+				} else {
+					t.w.writef("func() %s { __v := %s; if jsrt.ToBool(__v) { return __v.(%s) }; return ", retType, left, retType)
+				}
 				t.emitExpr(bin.Right)
 				t.w.write(" }()")
 				return
@@ -611,7 +754,7 @@ func (t *Transpiler) emitBinaryExpr(node *ast.Node) {
 			if !leftInfo.IsAny() && leftInfo.GoStr != "" && rightIsGoAny {
 				code := t.captureExpr(bin.Right)
 				t.w.write(code)
-				t.w.writef(".(%s)", leftInfo.GoStr)
+				t.writeTypeAssertion(leftInfo.GoStr)
 				return
 			}
 			// *T = T wrapping (e.g., *string = string from function call)
@@ -930,6 +1073,37 @@ func (t *Transpiler) emitCallExpr(node *ast.Node) {
 			}
 		}
 
+		// .then() on Promise or any: force any types in callback
+		{
+			methodName := nodeText(prop.Name())
+			if methodName == "then" || methodName == "Then" {
+				objType := t.getGoType(prop.Expression)
+				isPromise := objType.IsPromise() || strings.Contains(objType.GoStr, "Promise")
+				if isPromise || objType.IsAny() {
+					objCode := t.captureExpr(prop.Expression)
+					declType := t.getDeclaredGoType(prop.Expression)
+					needsAssert := objType.IsAny() || declType.IsAny() || goCodeProducesAny(objCode)
+					// Don't assert if code already returns a *promise.Promise[...] type
+					if needsAssert && (strings.HasPrefix(objCode, "promise.") || strings.Contains(objCode, "*promise.Promise[")) {
+						needsAssert = false
+					}
+					if needsAssert {
+						t.w.addImport("github.com/i2y/ramune/jsrt/promise", "")
+						t.w.writef("%s.(*promise.Promise[any]).Then(", objCode)
+					} else {
+						t.emitExpr(prop.Expression)
+						t.w.write(".Then(")
+					}
+					saved := t.inThenCallback
+					t.inThenCallback = true
+					t.emitCallArgs(call.Arguments)
+					t.inThenCallback = saved
+					t.w.write(")")
+					return
+				}
+			}
+		}
+
 		isOptional := call.QuestionDotToken != nil || prop.QuestionDotToken != nil
 
 		// 2a. Optional chaining call — type-driven
@@ -938,13 +1112,18 @@ func (t *Transpiler) emitCallExpr(node *ast.Node) {
 			methodName := nodeText(prop.Name())
 
 			// If object is a concrete type (e.g., string), dispatch to proper method handler
-			if objType.IsString() && t.isStringMethodName(methodName) {
+			if objType.IsString() {
 				// Check if the object is actually *string at Go level (tracked param)
 				isPtrString := false
 				if prop.Expression.Kind == ast.KindIdentifier {
-					vn := goVarName(prop.Expression.AsIdentifier().Text)
-					if t.goPtrStringVars != nil && t.goPtrStringVars[vn] {
+					emitted := t.getEmittedGoType(prop.Expression)
+					if emitted.GoStr == "*string" {
 						isPtrString = true
+					} else {
+						vn := goVarName(prop.Expression.AsIdentifier().Text)
+						if t.goPtrStringVars != nil && t.goPtrStringVars[vn] {
+							isPtrString = true
+						}
 					}
 				}
 				if isPtrString {
@@ -960,7 +1139,7 @@ func (t *Transpiler) emitCallExpr(node *ast.Node) {
 				}
 				return
 			}
-			if objType.IsSlice() && t.isArrayMethodName(methodName) {
+			if objType.IsSlice() {
 				t.emitArrayMethodCall(call)
 				return
 			}
@@ -985,6 +1164,11 @@ func (t *Transpiler) emitCallExpr(node *ast.Node) {
 		// 2b. TYPE-DRIVEN method dispatch
 		objType := t.getGoType(prop.Expression)
 		objDeclType := t.getDeclaredGoType(prop.Expression)
+		// Override with emitted Go type for more accurate dispatch
+		emittedObjType := t.getEmittedGoType(prop.Expression)
+		if emittedObjType.GoStr != "" {
+			objDeclType = emittedObjType
+		}
 		methodName := nodeText(prop.Name())
 
 		// Regex methods (check first — regex type maps to "any" so must come before any-dispatch)
@@ -1014,38 +1198,76 @@ func (t *Transpiler) emitCallExpr(node *ast.Node) {
 			return
 		}
 
-		switch {
-		// String methods
-		case objType.IsString() || objDeclType.IsString():
-			if t.isStringMethodName(methodName) {
+		// Skip type-driven dispatch for JS global static calls (Object, Array, JSON, etc.)
+		// These are handled in the global static method section below.
+		isJSGlobal := false
+		if prop.Expression.Kind == ast.KindIdentifier {
+			isJSGlobal = jsGlobalObjects[prop.Expression.AsIdentifier().Text]
+		}
+		if t.isPackageRef(prop.Expression) || isJSGlobal {
+			// Fall through to global static method section
+		} else {
+			// Type-driven dispatch: determine strategy from Go type category, not method name
+			dispatch := t.dispatchMethodCall(objType, objDeclType)
+			if prop.Expression.Kind == ast.KindThisKeyword {
+				dispatch = DispatchConcreteMethod
+			}
+			// Override: emitted type may provide better info
+			emittedType := t.getEmittedGoType(prop.Expression)
+			if emittedType.GoStr != "" {
+				dispatch = t.dispatchMethodCall(emittedType, objDeclType)
+			}
+
+			switch dispatch {
+			case DispatchStringStdlib:
 				t.emitStringMethodCall(call)
 				return
-			}
 
-		// Array/slice methods
-		case objType.IsSlice() || objDeclType.IsSlice():
-			if t.isArrayMethodName(methodName) {
+			case DispatchArrayHelper:
 				t.emitArrayMethodCall(call)
 				return
-			}
 
-		// Any/union → use checker's narrowed type or JSObject
-		case (objDeclType.IsAny() || objType.IsAny() || t.isGoAnyExpression(prop.Expression)) && !t.isPackageRef(prop.Expression) && prop.Expression.Kind != ast.KindThisKeyword:
-			goMethodName := goExportedName(methodName)
-			if !objType.IsAny() {
-				// Checker narrowed to concrete → type assertion + method call
+			case DispatchConcreteMethod:
+				// Direct method call: obj.Method(args)
 				obj := t.captureExpr(prop.Expression)
 				args := t.captureCallArgs(call)
-				t.w.writef("%s.(%s).%s(%s)", obj, objType.GoStr, goMethodName, args)
-			} else {
-				// No narrowing → JSObject
+				goMethodName := goExportedName(methodName)
+				t.w.writef("%s.%s(%s)", obj, goMethodName, args)
+				return
+
+			case DispatchPromiseMethod:
+				// Promise methods handled by concrete method path
 				obj := t.captureExpr(prop.Expression)
-				t.w.addImport("github.com/i2y/ramune/jsrt", "")
 				args := t.captureCallArgs(call)
-				t.w.writef("jsrt.Obj(%s).Get(%q).Call(%s).Unwrap()", obj, goMethodName, args)
+				goMethodName := goExportedName(methodName)
+				t.w.writef("%s.%s(%s)", obj, goMethodName, args)
+				return
+
+			case DispatchMapOperation:
+				// Map methods: direct Go map operations
+				obj := t.captureExpr(prop.Expression)
+				args := t.captureCallArgs(call)
+				goMethodName := goExportedName(methodName)
+				t.w.writef("%s.%s(%s)", obj, goMethodName, args)
+				return
+
+			case DispatchJSRTRuntime:
+				// Any/unknown type → runtime dispatch via jsrt.Obj
+				goMethodName := goExportedName(methodName)
+				if !objType.IsAny() && !objDeclType.IsAny() {
+					// Checker narrowed to concrete → type assertion + method call
+					obj := t.captureExpr(prop.Expression)
+					args := t.captureCallArgs(call)
+					t.w.writef("%s.(%s).%s(%s)", obj, objType.GoStr, goMethodName, args)
+				} else {
+					obj := t.captureExpr(prop.Expression)
+					t.w.addImport("github.com/i2y/ramune/jsrt", "")
+					args := t.captureCallArgs(call)
+					t.w.writef("jsrt.Obj(%s).Get(%q).Call(%s).Unwrap()", obj, goMethodName, args)
+				}
+				return
 			}
-			return
-		}
+		} // end of non-packageRef dispatch block
 
 	}
 
@@ -1087,7 +1309,16 @@ func (t *Transpiler) emitCallExpr(node *ast.Node) {
 					return
 				case "keys":
 					t.w.write("func(m map[string]any) []string { var r []string; for k := range m { r = append(r, k) }; return r }(")
-					t.emitCallArgs(call.Arguments)
+					if call.Arguments != nil && len(call.Arguments.Nodes) == 1 {
+						argCode := t.captureExpr(call.Arguments.Nodes[0])
+						if goCodeProducesAny(argCode) || t.getGoType(call.Arguments.Nodes[0]).IsAny() {
+							t.w.writef("%s.(map[string]any)", argCode)
+						} else {
+							t.w.write(argCode)
+						}
+					} else {
+						t.emitCallArgs(call.Arguments)
+					}
 					t.w.write(")")
 					return
 				}
@@ -1144,7 +1375,15 @@ func (t *Transpiler) emitCallExpr(node *ast.Node) {
 				case "parse":
 					t.w.addImport("encoding/json", "")
 					t.w.write("func(s string) any { var v any; json.Unmarshal([]byte(s), &v); return v }(")
-					t.emitCallArgs(call.Arguments)
+					if call.Arguments != nil && len(call.Arguments.Nodes) > 0 {
+						arg := call.Arguments.Nodes[0]
+						code := t.captureExpr(arg)
+						if t.isGoAnyVar(arg) || t.getDeclaredGoType(arg).IsAny() || goCodeProducesAny(code) {
+							t.w.writef("%s.(string)", code)
+						} else {
+							t.w.write(code)
+						}
+					}
 					t.w.write(")")
 					return
 				}
@@ -1222,25 +1461,6 @@ func (t *Transpiler) emitCallExpr(node *ast.Node) {
 		return
 	}
 
-	// .then() on Promise: force any types in callback for Go generics compatibility
-	if call.Expression.Kind == ast.KindPropertyAccessExpression {
-		prop := call.Expression.AsPropertyAccessExpression()
-		methodName := nodeText(prop.Name())
-		if methodName == "then" || methodName == "Then" {
-			objType := t.getGoType(prop.Expression)
-			if objType.IsPromise() || strings.Contains(objType.GoStr, "Promise") {
-				t.emitExpr(call.Expression)
-				t.w.write("(")
-				saved := t.inThenCallback
-				t.inThenCallback = true
-				t.emitCallArgs(call.Arguments)
-				t.inThenCallback = saved
-				t.w.write(")")
-				return
-			}
-		}
-	}
-
 	// setTimeout/setInterval: emit as plain call without coercion (inline function)
 	if call.Expression.Kind == ast.KindIdentifier {
 		name := call.Expression.AsIdentifier().Text
@@ -1248,6 +1468,94 @@ func (t *Transpiler) emitCallExpr(node *ast.Node) {
 			t.emitExpr(call.Expression)
 			t.w.write("(")
 			t.emitCallArgs(call.Arguments)
+			t.w.write(")")
+			return
+		}
+	}
+
+	// Dynamic method call: obj[key](args) on struct/pointer → jsrt.CallMethod(obj, key, args...)
+	if call.Expression.Kind == ast.KindElementAccessExpression {
+		ea := call.Expression.AsElementAccessExpression()
+		exprCode := t.captureExpr(ea.Expression)
+		exprType := t.getGoType(ea.Expression)
+		// Also check if expression is a known class instance (generic classes may resolve to any)
+		useCallMethod := false
+		if !exprType.IsAny() && !exprType.IsMap() && !exprType.IsSlice() &&
+			(exprType.IsPointer() || (exprType.GoStr != "" && !strings.HasPrefix(exprType.GoStr, "any"))) {
+			useCallMethod = true
+		}
+		// For identifiers with any type, check if the captured code names a known class instance
+		if !useCallMethod && exprType.IsAny() && ea.Expression.Kind == ast.KindIdentifier {
+			// Check if the expression has a class type via checker symbol
+			if t.ck != nil {
+				sym := t.ck.GetSymbolAtLocation(ea.Expression)
+				if sym != nil {
+					symType := t.ck.GetTypeOfSymbol(sym)
+					if symType != nil {
+						symTypeName := symType.Symbol().Name
+						if t.classNames != nil && t.classNames[goExportedName(symTypeName)] {
+							useCallMethod = true
+						}
+					}
+				}
+			}
+		}
+		if useCallMethod {
+			key := t.captureExpr(ea.ArgumentExpression)
+
+			// Try Union → Switch expansion: if the key's type is a union of string literals,
+			// generate a compile-time switch instead of reflect-based CallMethod.
+			if t.ck != nil {
+				keyType := t.ck.GetTypeAtLocation(ea.ArgumentExpression)
+				if keyType != nil && keyType.Flags()&checker.TypeFlagsUnion != 0 {
+					members := keyType.Types()
+					var literals []string
+					for _, m := range members {
+						if m.IsStringLiteral() {
+							if v, ok := m.AsLiteralType().Value().(string); ok {
+								literals = append(literals, v)
+							}
+						}
+					}
+					if len(literals) > 0 && len(literals) == len(members) {
+						// All union members are string literals → emit switch
+						t.w.writef("func() any { switch %s {", key)
+						t.w.newline()
+						for _, lit := range literals {
+							goMethod := goExportedName(lit)
+							t.w.writef("case %q:", lit)
+							t.w.newline()
+							t.w.writef("return %s.%s(", exprCode, goMethod)
+							if call.Arguments != nil {
+								for ai, arg := range call.Arguments.Nodes {
+									if ai > 0 {
+										t.w.write(", ")
+									}
+									t.emitExpr(arg)
+								}
+							}
+							t.w.write(")")
+							t.w.newline()
+						}
+						t.w.write("default:")
+						t.w.newline()
+						t.w.write("return nil")
+						t.w.newline()
+						t.w.write("} }()")
+						return
+					}
+				}
+			}
+
+			// Fallback: reflect-based dynamic method call
+			t.w.addImport("github.com/i2y/ramune/jsrt", "")
+			t.w.writef("jsrt.CallMethod(%s, jsrt.GoExportedName(%s)", exprCode, key)
+			if call.Arguments != nil && len(call.Arguments.Nodes) > 0 {
+				for _, arg := range call.Arguments.Nodes {
+					t.w.write(", ")
+					t.emitExpr(arg)
+				}
+			}
 			t.w.write(")")
 			return
 		}
@@ -1368,7 +1676,8 @@ func (t *Transpiler) emitPropertyAccess(node *ast.Node) {
 		varName := prop.Expression.AsIdentifier().Text
 		if concreteType, ok := t.narrowedTypes[varName]; ok {
 			t.emitExpr(prop.Expression)
-			t.w.writef(".(%s).%s", concreteType, goExportedName(propName))
+			t.writeTypeAssertion(concreteType)
+			t.w.writef(".%s", goExportedName(propName))
 			return
 		}
 	}
@@ -1376,6 +1685,11 @@ func (t *Transpiler) emitPropertyAccess(node *ast.Node) {
 	// --- 5. TYPE-DRIVEN DISPATCH ---
 	exprType := t.getGoType(prop.Expression)         // narrowed type from checker
 	declType := t.getDeclaredGoType(prop.Expression) // declared type for Go static type
+	// Override with emitted Go type when available (more accurate than checker)
+	emittedType := t.getEmittedGoType(prop.Expression)
+	if emittedType.GoStr != "" {
+		declType = emittedType
+	}
 
 	goField := goExportedName(propName)
 	if isPrivateProp {
@@ -1393,7 +1707,11 @@ func (t *Transpiler) emitPropertyAccess(node *ast.Node) {
 		if !exprType.IsAny() {
 			// Checker narrowed to concrete type → type assertion + field
 			obj := t.captureExpr(prop.Expression)
-			t.w.writef("%s.(%s).%s", obj, exprType.GoStr, goField)
+			if codeProducesConcreteType(obj) {
+				t.w.writef("%s.%s", obj, goField)
+			} else {
+				t.w.writef("%s.(%s).%s", obj, exprType.GoStr, goField)
+			}
 		} else {
 			// No narrowing → JSObject chain
 			t.w.addImport("github.com/i2y/ramune/jsrt", "")
@@ -1712,7 +2030,7 @@ func (t *Transpiler) emitConditionalBranch(node *ast.Node, retType string) {
 	// any → concrete assertion
 	if retType != "any" && retType != "" && t.rightSideProducesGoAny(node) {
 		t.emitExpr(node)
-		t.w.writef(".(%s)", retType)
+		t.writeTypeAssertionChecked(retType, node)
 		return
 	}
 	// int → float64 conversion
@@ -1751,6 +2069,23 @@ func (t *Transpiler) emitConditionalBranch(node *ast.Node, retType string) {
 			t.w.write("jsrt.Ptr(")
 			t.emitExpr(node)
 			t.w.write(")")
+			return
+		}
+	}
+	// *T → T dereference: branch produces pointer but return type is non-pointer
+	if !strings.HasPrefix(retType, "*") && retType != "any" && retType != "" {
+		if node.Kind == ast.KindIdentifier {
+			varName := goVarName(node.AsIdentifier().Text)
+			if t.goPtrStringVars != nil && t.goPtrStringVars[varName] && retType == "string" {
+				t.w.write("*")
+				t.emitExpr(node)
+				return
+			}
+		}
+		branchType := t.getGoType(node)
+		if branchType.GoStr == "*"+retType {
+			t.w.write("*")
+			t.emitExpr(node)
 			return
 		}
 	}
@@ -1809,13 +2144,60 @@ func (t *Transpiler) emitArrowFunction(node *ast.Node) {
 	savedPtrStringVars := t.goPtrStringVars
 	t.goPtrStringVars = nil
 
+	// Check if any param uses destructuring (ArrayBindingPattern/ObjectBindingPattern)
+	var destructuringParams []int // indices of params that need destructuring
+	params := node.Parameters()
+	if params != nil {
+		for pi, p := range params {
+			if p.Name() != nil && (p.Name().Kind == ast.KindArrayBindingPattern || p.Name().Kind == ast.KindObjectBindingPattern) {
+				destructuringParams = append(destructuringParams, pi)
+			}
+		}
+	}
+
 	if t.pendingFuncName != "" {
 		t.w.writef("func %s(", t.pendingFuncName)
 		t.pendingFuncName = ""
 	} else {
 		t.w.write("func(")
 	}
-	t.emitParameterList(node)
+
+	if len(destructuringParams) > 0 {
+		// Emit with placeholder names for destructuring params
+		for pi, p := range params {
+			if pi > 0 {
+				t.w.write(", ")
+			}
+			hasDestructuring := false
+			for _, di := range destructuringParams {
+				if di == pi {
+					hasDestructuring = true
+					break
+				}
+			}
+			if hasDestructuring {
+				t.w.writef("__p%d", pi)
+			} else if p.Name() != nil && p.Name().Kind == ast.KindIdentifier {
+				t.w.write(goParamName(p.Name().AsIdentifier().Text))
+			} else {
+				t.w.writef("p%d", pi)
+			}
+			// Param type
+			goType := "any"
+			if t.ck != nil {
+				pt := t.ck.GetTypeAtLocation(p)
+				if pt != nil {
+					goType = t.tm.goType(pt)
+				}
+			}
+			if goType == "" {
+				goType = "any"
+			}
+			t.w.writef(" %s", goType)
+		}
+	} else {
+		t.emitParameterList(node)
+	}
 	t.w.write(")")
 
 	// Return type
@@ -1875,10 +2257,20 @@ func (t *Transpiler) emitArrowFunction(node *ast.Node) {
 		}
 		t.inAsyncBody = savedAsync
 		t.w.writeln(")")
-		t.w.closeBlock()
+		if t.inCallArg {
+			t.w.closeBlockInline()
+		} else {
+			t.w.closeBlock()
+		}
 	} else if body.Kind == ast.KindBlock {
 		block := body.AsBlock()
 		t.w.openBlock()
+		// Emit destructuring for params with ArrayBindingPattern/ObjectBindingPattern
+		for _, di := range destructuringParams {
+			if di < len(params) && params[di].Name() != nil {
+				t.emitDestructureFromParam(params[di].Name(), fmt.Sprintf("__p%d", di))
+			}
+		}
 		t.emitParamDestructuring(node)
 		if block.Statements != nil {
 			// Hoist function declarations
@@ -1914,10 +2306,24 @@ func (t *Transpiler) emitArrowFunction(node *ast.Node) {
 				}
 			}
 		}
-		t.w.closeBlock()
+		if t.inCallArg {
+			t.w.closeBlockInline()
+		} else {
+			t.w.closeBlock()
+		}
 	} else {
 		// Expression body: (x) => x + 1 → func(x float64) float64 { return x + 1 }
-		t.w.write(" { return ")
+		if len(destructuringParams) > 0 {
+			t.w.write(" { ")
+			for _, di := range destructuringParams {
+				if di < len(params) && params[di].Name() != nil {
+					t.emitDestructureFromParam(params[di].Name(), fmt.Sprintf("__p%d", di))
+				}
+			}
+			t.w.write("return ")
+		} else {
+			t.w.write(" { return ")
+		}
 		if retType != "" && retType != "any" {
 			code := t.captureExpr(body)
 			t.w.write(code)
@@ -1926,7 +2332,7 @@ func (t *Transpiler) emitArrowFunction(node *ast.Node) {
 			if strings.HasPrefix(code, "jsrt.Index(") ||
 				strings.HasSuffix(code, ".Unwrap()") ||
 				(strings.Contains(code, ".(func(") && strings.HasSuffix(code, ")")) {
-				t.w.writef(".(%s)", retType)
+				t.writeTypeAssertion(retType)
 			}
 		} else {
 			t.emitExpr(body)
@@ -2498,7 +2904,14 @@ func (t *Transpiler) emitParameterList(node *ast.Node) {
 			t.w.writef(" %s", goType)
 		}
 
-		// Track *string parameters
+		// Track parameter Go types in unified tracker
+		if !isRest && name != nil && name.Kind == ast.KindIdentifier {
+			pn := goVarName(name.AsIdentifier().Text)
+			if pn != "_" {
+				t.trackGoVarType(pn, goType)
+			}
+		}
+		// Legacy: Track *string parameters
 		if goType == "*string" && !isRest && name != nil && name.Kind == ast.KindIdentifier {
 			pn := goVarName(name.AsIdentifier().Text)
 			if t.goPtrStringVars == nil {
@@ -2506,7 +2919,7 @@ func (t *Transpiler) emitParameterList(node *ast.Node) {
 			}
 			t.goPtrStringVars[pn] = true
 		}
-		// Track any-typed parameters in goAnyVars (only when actually emitted as any)
+		// Legacy: Track any-typed parameters in goAnyVars
 		if goType == "any" && !isRest && name != nil && name.Kind == ast.KindIdentifier {
 			pn := goVarName(name.AsIdentifier().Text)
 			if pn != "_" {
@@ -2617,30 +3030,7 @@ func isAssignment(kind ast.Kind) bool {
 	return ast.IsAssignmentOperator(kind)
 }
 
-// isArrayMethodName checks if a method name is a known JS array method.
-func (t *Transpiler) isArrayMethodName(method string) bool {
-	switch method {
-	case "push", "pop", "shift", "unshift", "map", "filter", "forEach",
-		"reduce", "find", "findIndex", "some", "every", "includes",
-		"indexOf", "lastIndexOf", "reverse", "slice", "splice",
-		"concat", "join", "flat", "flatMap", "fill", "sort":
-		return true
-	}
-	return false
-}
-
-// isStringMethodName checks if a method name is a known JS string method.
-func (t *Transpiler) isStringMethodName(method string) bool {
-	switch method {
-	case "split", "includes", "startsWith", "endsWith", "indexOf", "lastIndexOf",
-		"trim", "trimStart", "trimEnd", "toUpperCase", "toLowerCase",
-		"replace", "replaceAll", "repeat", "slice", "substring", "padStart", "padEnd",
-		"charAt", "charCodeAt", "match", "matchAll", "search", "normalize", "at",
-		"toString":
-		return true
-	}
-	return false
-}
+// Method name lists removed — dispatch is purely type-driven via dispatchMethodCall.
 
 // emitArrayMethodCall generates Go code for array method calls.
 func (t *Transpiler) emitArrayMethodCall(call *ast.CallExpression) {
@@ -2680,7 +3070,8 @@ func (t *Transpiler) emitArrayMethodCall(call *ast.CallExpression) {
 	if (arrayElemGoType == "" || arrayElemGoType == "any") && !arrayIsGoAny {
 		if t.ck != nil {
 			arrType := t.ck.GetTypeAtLocation(prop.Expression)
-			if arrType != nil {
+			if arrType != nil && arrType.Flags()&checker.TypeFlagsObject != 0 &&
+				arrType.ObjectFlags()&checker.ObjectFlagsReference != 0 {
 				typeArgs := t.ck.GetTypeArguments(arrType)
 				if len(typeArgs) > 0 {
 					elemGoType := t.tm.goType(typeArgs[0])
@@ -2818,20 +3209,45 @@ func (t *Transpiler) emitArrayMethodCall(call *ast.CallExpression) {
 		t.emitExpr(prop.Expression)
 		t.w.write(", ")
 		// ForEach callback must not return a value — emit void wrapper
-		if args != nil && len(args.Nodes) > 0 && arrayElemGoType == "any" {
+		hasDestructuringParam := false
+		if args != nil && len(args.Nodes) > 0 {
 			cb := args.Nodes[0]
 			if cb.Kind == ast.KindArrowFunction || cb.Kind == ast.KindFunctionExpression {
 				params := cb.Parameters()
-				paramName := "v"
-				if params != nil && len(params) > 0 && params[0].Name() != nil {
-					paramName = goVarName(params[0].Name().AsIdentifier().Text)
+				if params != nil && len(params) > 0 && params[0].Name() != nil &&
+					(params[0].Name().Kind == ast.KindArrayBindingPattern || params[0].Name().Kind == ast.KindObjectBindingPattern) {
+					hasDestructuringParam = true
 				}
-				t.w.writef("func(%s any, _ int) { ", paramName)
+			}
+		}
+		if args != nil && len(args.Nodes) > 0 && (arrayElemGoType == "any" || hasDestructuringParam) {
+			cb := args.Nodes[0]
+			if cb.Kind == ast.KindArrowFunction || cb.Kind == ast.KindFunctionExpression {
+				params := cb.Parameters()
+				paramName := "__v"
+				hasDestructuring := false
+				if params != nil && len(params) > 0 && params[0].Name() != nil {
+					pn := params[0].Name()
+					if pn.Kind == ast.KindIdentifier {
+						paramName = goVarName(pn.AsIdentifier().Text)
+					} else if pn.Kind == ast.KindArrayBindingPattern || pn.Kind == ast.KindObjectBindingPattern {
+						hasDestructuring = true
+					}
+				}
+				elemType := arrayElemGoType
+				if elemType == "" {
+					elemType = "any"
+				}
+				t.w.writef("func(%s %s, _ int) { ", paramName, elemType)
 				// Track callback param as Go-level any
 				if t.goAnyVars == nil {
 					t.goAnyVars = make(map[string]bool)
 				}
 				t.goAnyVars[paramName] = true
+				// Emit destructuring from param if needed
+				if hasDestructuring && params[0].Name() != nil {
+					t.emitDestructureFromParam(params[0].Name(), paramName)
+				}
 				// Emit body — for arrow functions with expression body, just emit the expression
 				var body *ast.Node
 				if cb.Kind == ast.KindArrowFunction {
@@ -2843,7 +3259,13 @@ func (t *Transpiler) emitArrayMethodCall(call *ast.CallExpression) {
 					// Expression body — emit as statement (discard return value)
 					t.emitExpr(body)
 				} else if body != nil {
-					t.emitBlock(body)
+					// Block body — emit statements only (wrapper already provides braces)
+					block := body.AsBlock()
+					if block.Statements != nil {
+						for _, s := range block.Statements.Nodes {
+							t.emitStatement(s)
+						}
+					}
 				}
 				t.w.write(" }")
 			} else {
@@ -2912,6 +3334,12 @@ func (t *Transpiler) emitArrayMethodCall(call *ast.CallExpression) {
 
 	case "reverse":
 		t.w.write("jsarray.Reverse(")
+		t.emitExpr(prop.Expression)
+		t.w.write(")")
+
+	case "flat":
+		t.w.addImport("github.com/i2y/ramune/jsrt", "")
+		t.w.write("jsrt.Flat(")
 		t.emitExpr(prop.Expression)
 		t.w.write(")")
 
@@ -3261,9 +3689,47 @@ func (t *Transpiler) emitArrayCallback(args *ast.NodeList, expectedParams int, e
 	if args == nil || len(args.Nodes) == 0 {
 		return
 	}
+	// Set inCallArg so function literals use closeBlockInline
+	savedInCallArg := t.inCallArg
+	t.inCallArg = true
+	defer func() { t.inCallArg = savedInCallArg }()
 	cb := args.Nodes[0]
 	if cb.Kind == ast.KindArrowFunction || cb.Kind == ast.KindFunctionExpression {
 		params := cb.Parameters()
+		// Handle destructuring params: ([[, route]]) => route
+		if params != nil && len(params) > 0 && params[0].Name() != nil &&
+			params[0].Name().Kind == ast.KindArrayBindingPattern {
+			retType := t.getFuncReturnType(cb)
+			if retType == "" {
+				retType = "any"
+			}
+			t.w.writef("func(__item %s, _ int) %s { ", elemGoType, retType)
+			// Emit destructuring from __item
+			t.emitDestructureFromParam(params[0].Name(), "__item")
+			// Emit body
+			var body *ast.Node
+			if cb.Kind == ast.KindArrowFunction {
+				body = cb.AsArrowFunction().Body
+			} else {
+				body = cb.AsFunctionExpression().Body
+			}
+			savedRetType := t.currentRetType
+			t.currentRetType = retType
+			if body != nil && body.Kind != ast.KindBlock {
+				t.w.write("return ")
+				t.emitExpr(body)
+			} else if body != nil {
+				block := body.AsBlock()
+				if block.Statements != nil {
+					for _, stmt := range block.Statements.Nodes {
+						t.emitStatement(stmt)
+					}
+				}
+			}
+			t.currentRetType = savedRetType
+			t.w.write(" }")
+			return
+		}
 		if params != nil && len(params) < expectedParams {
 			saved := t.arrayCallbackElemType
 			t.arrayCallbackElemType = elemGoType
@@ -3347,7 +3813,7 @@ func (t *Transpiler) emitCallbackWithExtraParams(node *ast.Node, extraCount int)
 				code := t.captureExpr(body)
 				t.w.write(code)
 				if goCodeProducesAny(code) {
-					t.w.writef(".(%s)", retType)
+					t.writeTypeAssertion(retType)
 				}
 			} else {
 				t.emitExpr(body)
@@ -3502,6 +3968,11 @@ func (t *Transpiler) emitCallArgsWithCoercion(call *ast.CallExpression) {
 		}
 	}
 
+	// Set inCallArg so function literals use closeBlockInline (no trailing newline)
+	savedInCallArg := t.inCallArg
+	t.inCallArg = true
+	defer func() { t.inCallArg = savedInCallArg }()
+
 	for i, arg := range call.Arguments.Nodes {
 		if i > 0 {
 			t.w.write(", ")
@@ -3606,7 +4077,7 @@ func (t *Transpiler) emitCallArgsWithCoercion(call *ast.CallExpression) {
 			t.w.write(")")
 		} else if needsTypeAssert {
 			t.emitExpr(arg)
-			t.w.writef(".(%s)", assertType)
+			t.writeTypeAssertionChecked(assertType, arg)
 		} else if needsSliceConvert {
 			t.w.addImport("github.com/i2y/ramune/jsrt", "")
 			t.w.write("jsrt.ToAnySlice(")
@@ -3637,7 +4108,26 @@ func (t *Transpiler) emitCallArgsWithCoercion(call *ast.CallExpression) {
 				(t.samePackageExports != nil && t.samePackageExports[pkgName])
 		}
 	}
-	if (call.Expression.Kind == ast.KindIdentifier || isPackageCall) && !hasSpreadArg {
+	// Also pad for concrete method calls on same-package types (not external types like FormData)
+	isConcreteMethodCall := false
+	if !isPackageCall && call.Expression.Kind == ast.KindPropertyAccessExpression {
+		prop := call.Expression.AsPropertyAccessExpression()
+		objType := t.getGoType(prop.Expression)
+		if !objType.IsAny() && (objType.IsPointer() || isGenericType(objType.GoStr)) {
+			// Only pad for types declared in the same package (classNames)
+			typeName := objType.Name
+			if typeName == "" && isGenericType(objType.GoStr) {
+				bracketIdx := strings.Index(objType.GoStr, "[")
+				if bracketIdx > 0 {
+					typeName = objType.GoStr[:bracketIdx]
+				}
+			}
+			if t.classNames != nil && t.classNames[typeName] {
+				isConcreteMethodCall = true
+			}
+		}
+	}
+	if (call.Expression.Kind == ast.KindIdentifier || isPackageCall || isConcreteMethodCall) && !hasSpreadArg {
 		nArgs := 0
 		if call.Arguments != nil {
 			nArgs = len(call.Arguments.Nodes)
@@ -3646,7 +4136,24 @@ func (t *Transpiler) emitCallArgsWithCoercion(call *ast.CallExpression) {
 			if i > 0 {
 				t.w.write(", ")
 			}
-			t.w.write("nil")
+			// For same-package method calls, missing args are optional params
+			// which become *T in Go → use nil
+			if isConcreteMethodCall {
+				t.w.write("nil")
+			} else {
+				switch paramTypes[i] {
+				case "bool":
+					t.w.write("false")
+				case "int":
+					t.w.write("0")
+				case "float64":
+					t.w.write("0")
+				case "string":
+					t.w.write(`""`)
+				default:
+					t.w.write("nil")
+				}
+			}
 		}
 	}
 }
@@ -3773,7 +4280,8 @@ func (t *Transpiler) emitExprDeref(node *ast.Node) {
 
 // emitExprDerefUnlessNil emits with deref, but skips deref when comparing pointer with nil.
 func (t *Transpiler) emitExprDerefUnlessNil(node *ast.Node, otherSide *ast.Node) {
-	isNilComparison := otherSide.Kind == ast.KindNullKeyword || otherSide.Kind == ast.KindUndefinedKeyword
+	isNilComparison := otherSide.Kind == ast.KindNullKeyword || otherSide.Kind == ast.KindUndefinedKeyword ||
+		(otherSide.Kind == ast.KindIdentifier && otherSide.AsIdentifier().Text == "undefined")
 	if isNilComparison {
 		t.emitExpr(node)
 	} else {
@@ -3821,6 +4329,9 @@ func (t *Transpiler) emitCallArgs(args *ast.NodeList) {
 	if args == nil {
 		return
 	}
+	savedInCallArg := t.inCallArg
+	t.inCallArg = true
+	defer func() { t.inCallArg = savedInCallArg }()
 	for i, arg := range args.Nodes {
 		if i > 0 {
 			t.w.write(", ")
@@ -4165,13 +4676,95 @@ func (t *Transpiler) emitTypeCheckMulti(operand string, goTypes []string, negate
 
 // goCodeProducesAny returns true if the generated Go code produces an any-typed value,
 // e.g., jsrt.Index() calls or JSObject .Unwrap() chains or func() any IIFEs.
+// emitDestructureFromParam emits variable bindings from an ArrayBindingPattern,
+// extracting values from a source variable via indexing.
+// e.g., [[, route]] from __item → route := jsrt.Index(jsrt.Index(__item, 0), 1)
+func (t *Transpiler) emitDestructureFromParam(pattern *ast.Node, source string) {
+	if pattern.Kind != ast.KindArrayBindingPattern {
+		return
+	}
+	bp := pattern.AsBindingPattern()
+	if bp.Elements == nil {
+		return
+	}
+	t.w.addImport("github.com/i2y/ramune/jsrt", "")
+	for i, elem := range bp.Elements.Nodes {
+		if elem.Kind == ast.KindOmittedExpression {
+			continue
+		}
+		be := elem.AsBindingElement()
+		name := be.Name()
+		if name == nil {
+			continue
+		}
+		idx := fmt.Sprintf("jsrt.Index(%s, %d)", source, i)
+		if name.Kind == ast.KindArrayBindingPattern {
+			// Nested destructuring — recurse
+			t.emitDestructureFromParam(name, idx)
+		} else if name.Kind == ast.KindIdentifier {
+			varName := goVarName(name.AsIdentifier().Text)
+			// Try to get concrete type from checker for typed destructuring
+			goType := ""
+			if t.ck != nil {
+				typ := t.ck.GetTypeAtLocation(name)
+				if typ != nil {
+					goType = t.tm.goType(typ)
+				}
+			}
+			if goType != "" && goType != "any" {
+				t.w.writef("%s := %s.(%s)", varName, idx, goType)
+			} else {
+				t.w.writef("%s := %s", varName, idx)
+				if t.goAnyVars == nil {
+					t.goAnyVars = make(map[string]bool)
+				}
+				t.goAnyVars[varName] = true
+			}
+			t.w.newline()
+		}
+	}
+}
+
+// isGoAnyVar checks if an AST node is an identifier tracked in goAnyVars.
+func (t *Transpiler) isGoAnyVar(node *ast.Node) bool {
+	if node.Kind == ast.KindIdentifier && t.goAnyVars != nil {
+		return t.goAnyVars[goVarName(node.AsIdentifier().Text)]
+	}
+	return false
+}
+
 func goCodeProducesAny(code string) bool {
 	return strings.HasSuffix(code, ".Unwrap()") ||
 		strings.HasPrefix(code, "jsrt.Index(") ||
 		strings.HasPrefix(code, "jsrt.GetField(") ||
 		strings.Contains(code, ".(func(") || // any-func-call pattern: (x.(func(...) any))(...)
 		strings.HasSuffix(code, ").Await()") || // *promise.Promise[any].Await() in nested context
-		(strings.HasSuffix(code, "}()") && strings.Contains(code, "func() any"))
+		(strings.HasSuffix(code, "}()") && strings.Contains(code, "func() any")) ||
+		isMapAnyAccess(code)
+}
+
+// isMapAnyAccess checks if code is a map[string]any access like "bodyCache[key]"
+// where the key is a string variable (not a numeric index like buf[0]).
+func isMapAnyAccess(code string) bool {
+	// Strip outer parentheses
+	for strings.HasPrefix(code, "(") && strings.HasSuffix(code, ")") {
+		code = code[1 : len(code)-1]
+	}
+	idx := strings.Index(code, "[")
+	if idx <= 0 || !strings.HasSuffix(code, "]") {
+		return false
+	}
+	prefix := code[:idx]
+	key := code[idx+1 : len(code)-1]
+	// Must be a simple identifier (no dots, no parens, no jsrt.)
+	if strings.Contains(prefix, ".") || strings.Contains(prefix, "(") || strings.Contains(prefix, "jsrt") {
+		return false
+	}
+	// Key must not be a numeric literal (that would be slice access, not map access)
+	if len(key) > 0 && key[0] >= '0' && key[0] <= '9' {
+		return false
+	}
+	return true
 }
 
 // emitIntConversion emits int(expr), handling any-typed expressions with .(float64) assertion.

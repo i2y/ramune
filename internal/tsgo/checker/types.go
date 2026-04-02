@@ -545,6 +545,10 @@ func (t *Type) Id() TypeId {
 	return t.id
 }
 
+func (t *Type) Alias() *TypeAlias {
+	return t.alias
+}
+
 func (t *Type) Flags() TypeFlags {
 	return t.flags
 }

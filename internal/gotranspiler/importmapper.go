@@ -156,9 +156,6 @@ func (t *Transpiler) emitPackageImport(importDecl *ast.ImportDeclaration, goImpo
 			if named.Elements != nil {
 				for _, spec := range named.Elements.Nodes {
 					is := spec.AsImportSpecifier()
-					if is.IsTypeOnly {
-						continue
-					}
 					localName := spec.Name().AsIdentifier().Text
 
 					// Track original export name for renamed imports
@@ -232,11 +229,27 @@ func (t *Transpiler) emitRelativeImport(importDecl *ast.ImportDeclaration, modul
 		}
 	}
 	if goPkgDir == currentPkgDir {
-		// Same package — no import needed, but track names for resolution
+		// Same package — no import needed, but track exported names for correct casing.
+		// In Go, exported names from the same package use PascalCase (goExportedName).
 		if importDecl.ImportClause != nil {
 			clause := importDecl.ImportClause.AsImportClause()
 			if clause.NamedBindings != nil && clause.NamedBindings.Kind == ast.KindNamedImports {
-				// Names are already in scope within the same Go package
+				for _, spec := range clause.NamedBindings.AsNamedImports().Elements.Nodes {
+					is := spec.AsImportSpecifier()
+					localName := nodeText(is.Name())
+					if t.samePackageExports == nil {
+						t.samePackageExports = make(map[string]bool)
+					}
+					t.samePackageExports[localName] = true
+				}
+			}
+			// Default import from same package
+			if clause.Name() != nil {
+				localName := clause.Name().AsIdentifier().Text
+				if t.samePackageExports == nil {
+					t.samePackageExports = make(map[string]bool)
+				}
+				t.samePackageExports[localName] = true
 			}
 		}
 		return
@@ -256,6 +269,7 @@ func (t *Transpiler) emitRelativeImport(importDecl *ast.ImportDeclaration, modul
 }
 
 // trackImportedName records that a TS identifier was imported from a Go package.
+// This enables qualifyTypeName() to add package prefixes like "types.Env".
 func (t *Transpiler) trackImportedName(tsName string, goPkg string) {
 	if t.importedNames == nil {
 		t.importedNames = make(map[string]string)
