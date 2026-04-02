@@ -94,6 +94,13 @@ func hashPkgs(pkgs []string, nodeCompat bool) string {
 	return hex.EncodeToString(h.Sum(nil))[:16]
 }
 
+// InstallNpmPackages downloads npm packages to destDir/node_modules/.
+// Packages are specified as "name" or "name@version" (e.g., "preact", "lodash@4").
+// Packages are fetched directly from the npm registry — no npm or bun required.
+func InstallNpmPackages(specs []string, destDir string) error {
+	return installPackages(destDir, specs)
+}
+
 // sanitizeVarName converts a package name to a valid JS identifier for globalThis.
 func sanitizeVarName(pkg string) string {
 	name := strings.TrimPrefix(pkg, "@")
