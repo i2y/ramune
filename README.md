@@ -431,6 +431,16 @@ rt, _ := ramune.New(
 val, _ := rt.Eval(`lodash.chunk([1,2,3,4,5,6], 2)`)
 ```
 
+Subpath imports are supported (e.g., `"react-dom/server"`). Use `PreloadJS` to inject polyfills that bundled packages may require:
+
+```go
+rt, _ := ramune.New(
+    ramune.NodeCompat(),
+    ramune.PreloadJS(`globalThis.MessageChannel = class { constructor() { this.port1 = {}; this.port2 = {}; } };`),
+    ramune.Dependencies("react@18", "react-dom@18", "react-dom/server"),
+)
+```
+
 ### Async / Promises
 
 ```go

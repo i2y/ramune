@@ -88,7 +88,7 @@ Two backends, same API:
 ## Node.js Compatibility
 
 - [NodeCompat (nodecompat.go)](https://github.com/i2y/ramune/blob/main/nodecompat.go): fs (90%, async + sync + watch), path (100%), crypto (85% + crypto.subtle), child_process (80%), stream (70%), zlib (75%, gzip/deflate/brotli), os (85%), events (85%), http/https (70%), net/tls (60%), Buffer (60%), url (80%), assert (80%), util (80%, types/promisify/format), readline (70%), dns (basic), worker_threads (70%), vm (70%), querystring (80%), timers/promises (70%), perf_hooks (basic), process (85%, signals/exit/env via EventEmitter)
-- [npm Bundling (bundle.go)](https://github.com/i2y/ramune/blob/main/bundle.go): Dependencies() fetches from npm registry and bundles via esbuild (no npm/bun CLI required)
+- [npm Bundling (bundle.go)](https://github.com/i2y/ramune/blob/main/bundle.go): Dependencies() fetches from npm registry and bundles via esbuild (no npm/bun CLI required). Subpath imports supported (e.g., "react-dom/server"). PreloadJS() injects polyfills before bundles
 - [Package Registry (internal/registry/)](https://github.com/i2y/ramune/blob/main/internal/registry/): npm registry client, semver resolution, lockfile (ramune.lock)
 - [VM Module (vm_jsc.go)](https://github.com/i2y/ramune/blob/main/vm_jsc.go): vm.createContext, runInContext, runInNewContext, Script — isolated JSC contexts
 

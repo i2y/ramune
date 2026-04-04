@@ -185,7 +185,8 @@ rt, err := ramune.New(opts ...Option)
 // Options
 ramune.NodeCompat()              // Node.js polyfills
 ramune.WithFetch()               // globalThis.fetch
-ramune.Dependencies("lodash@4")  // npm packages
+ramune.Dependencies("lodash@4")  // npm packages (subpath imports supported: "react-dom/server")
+ramune.PreloadJS(code)           // JS to run before dependency bundles (polyfills)
 ramune.WithGC(ramune.GCConfig{}) // GC tuning
 ramune.WithPermissions(perms)    // sandbox
 ramune.WithModule(module)        // custom require() module
