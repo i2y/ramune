@@ -48,6 +48,7 @@ func DefaultGCConfig() GCConfig {
 type config struct {
 	libraryPath  string
 	dependencies []string // npm packages for Dependencies()
+	preloadJS    string   // JS to execute before loading dependency bundles
 	nodeCompat   bool     // install Node.js compatibility layer
 	withFetch    bool     // install fetch polyfill
 	gc           *GCConfig

@@ -428,6 +428,15 @@ func (r *Runtime) jscLoop(cfg config, initErr chan<- error) {
 		}
 	}
 
+	// Execute preload JS (polyfills, etc.) before loading dependency bundles.
+	if cfg.preloadJS != "" {
+		if err := r.execLocked(cfg.preloadJS); err != nil {
+			releaseCtx()
+			initErr <- fmt.Errorf("ramune: failed to execute preload JS: %w", err)
+			return
+		}
+	}
+
 	// If Dependencies were specified, bundle and evaluate them.
 	if len(cfg.dependencies) > 0 {
 		bundle, err := ensureBundle(cfg.dependencies, cfg.nodeCompat)

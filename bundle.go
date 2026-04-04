@@ -16,11 +16,22 @@ import (
 // Dependencies declares npm package dependencies that are automatically
 // installed, bundled with esbuild, and evaluated in the JSC context.
 // Packages are specified as "name" or "name@version" (e.g., "lodash@4").
+// Subpath imports are also supported (e.g., "react-dom/server"); the base
+// package is installed and the subpath is imported separately in the bundle.
 // The bundle is cached in ~/.cache/ramune/jsbundles/<hash>/.
 // Packages are fetched directly from the npm registry — no npm or bun required.
 func Dependencies(pkgs ...string) Option {
 	return func(c *config) {
 		c.dependencies = pkgs
+	}
+}
+
+// PreloadJS sets JavaScript code that will be executed before loading
+// dependency bundles. This is useful for providing polyfills required by
+// bundled packages (e.g., MessageChannel for React).
+func PreloadJS(code string) Option {
+	return func(c *config) {
+		c.preloadJS = code
 	}
 }
 
@@ -109,17 +120,56 @@ func sanitizeVarName(pkg string) string {
 	return name
 }
 
+// basePackageName strips subpath from a package spec, returning only the
+// installable npm package name. For example:
+//
+//	"react-dom/server" → "react-dom"
+//	"@scope/pkg/sub"   → "@scope/pkg"
+//	"react"            → "react"
+//	"react@18"         → "react@18"
+func basePackageName(spec string) string {
+	name, version := registry.ParsePackageSpec(spec)
+	var base string
+	if strings.HasPrefix(name, "@") {
+		// Scoped: @scope/pkg or @scope/pkg/sub
+		parts := strings.SplitN(name, "/", 3)
+		if len(parts) >= 2 {
+			base = parts[0] + "/" + parts[1]
+		} else {
+			base = name
+		}
+	} else {
+		// Unscoped: pkg or pkg/sub
+		base, _, _ = strings.Cut(name, "/")
+	}
+	if version != "*" {
+		return base + "@" + version
+	}
+	return base
+}
+
 // installPackages resolves and downloads packages from the npm registry.
+// Subpath specs (e.g., "react-dom/server") are reduced to the base package
+// name for installation; the subpath is only used at bundle time.
 func installPackages(dir string, pkgs []string) error {
 	nodeModulesDir := filepath.Join(dir, "node_modules")
 
-	// Write package.json for esbuild compatibility.
+	// Deduplicate base package names (e.g., "react-dom" and "react-dom/server"
+	// both install "react-dom").
+	basePkgs := make([]string, 0, len(pkgs))
+	seen := make(map[string]bool, len(pkgs))
 	deps := make(map[string]string, len(pkgs))
 	for _, pkg := range pkgs {
-		name, version := registry.ParsePackageSpec(pkg)
-		deps[name] = version
+		base := basePackageName(pkg)
+		name, version := registry.ParsePackageSpec(base)
+		if !seen[name] {
+			seen[name] = true
+			basePkgs = append(basePkgs, base)
+			deps[name] = version
+		}
 	}
 
+	// Write package.json for esbuild compatibility.
 	var buf strings.Builder
 	buf.WriteString(`{"dependencies":{`)
 	first := true
@@ -142,8 +192,8 @@ func installPackages(dir string, pkgs []string) error {
 		return fmt.Errorf("ramune: failed to write package.json: %w", err)
 	}
 
-	// Resolve and download from npm registry.
-	_, err := registry.ResolveAndInstall(pkgs, nodeModulesDir)
+	// Resolve and download from npm registry (using base package names only).
+	_, err := registry.ResolveAndInstall(basePkgs, nodeModulesDir)
 	return err
 }
 
