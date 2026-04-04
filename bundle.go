@@ -120,51 +120,37 @@ func sanitizeVarName(pkg string) string {
 	return name
 }
 
-// basePackageName strips subpath from a package spec, returning only the
-// installable npm package name. For example:
-//
-//	"react-dom/server" → "react-dom"
-//	"@scope/pkg/sub"   → "@scope/pkg"
-//	"react"            → "react"
-//	"react@18"         → "react@18"
-func basePackageName(spec string) string {
-	name, version := registry.ParsePackageSpec(spec)
-	var base string
+// stripSubpath returns the base package name without subpath segments.
+// "@scope/pkg/sub" → "@scope/pkg", "pkg/sub" → "pkg", "pkg" → "pkg"
+func stripSubpath(name string) string {
 	if strings.HasPrefix(name, "@") {
-		// Scoped: @scope/pkg or @scope/pkg/sub
 		parts := strings.SplitN(name, "/", 3)
 		if len(parts) >= 2 {
-			base = parts[0] + "/" + parts[1]
-		} else {
-			base = name
+			return parts[0] + "/" + parts[1]
 		}
-	} else {
-		// Unscoped: pkg or pkg/sub
-		base, _, _ = strings.Cut(name, "/")
+		return name
 	}
-	if version != "*" {
-		return base + "@" + version
-	}
+	base, _, _ := strings.Cut(name, "/")
 	return base
 }
 
 // installPackages resolves and downloads packages from the npm registry.
-// Subpath specs (e.g., "react-dom/server") are reduced to the base package
-// name for installation; the subpath is only used at bundle time.
 func installPackages(dir string, pkgs []string) error {
 	nodeModulesDir := filepath.Join(dir, "node_modules")
 
-	// Deduplicate base package names (e.g., "react-dom" and "react-dom/server"
-	// both install "react-dom").
 	basePkgs := make([]string, 0, len(pkgs))
 	seen := make(map[string]bool, len(pkgs))
 	deps := make(map[string]string, len(pkgs))
 	for _, pkg := range pkgs {
-		base := basePackageName(pkg)
-		name, version := registry.ParsePackageSpec(base)
+		fullName, version := registry.ParsePackageSpec(pkg)
+		name := stripSubpath(fullName)
 		if !seen[name] {
 			seen[name] = true
-			basePkgs = append(basePkgs, base)
+			spec := name
+			if version != "*" {
+				spec = name + "@" + version
+			}
+			basePkgs = append(basePkgs, spec)
 			deps[name] = version
 		}
 	}
