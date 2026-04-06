@@ -1049,16 +1049,18 @@ func (b *IRBuilder) buildJSONCall(method string, args []GoExpr, resultType GoTyp
 	switch method {
 	case "stringify":
 		b.addImport("encoding/json", "")
-		return &IRRawExpr{
-			exprBase: exprBase{Typ: GoTypeInfo{Category: GoTypePrimitive, GoStr: "string"}},
+		fn := &IRRawExpr{
+			exprBase: exprBase{Typ: GoTypeInfo{Category: GoTypeFunc, GoStr: "func"}},
 			Code:     "func(v any) string { b, _ := json.Marshal(v); return string(b) }",
 		}
+		return &IRCall{exprBase: exprBase{Typ: GoTypeInfo{Category: GoTypePrimitive, GoStr: "string"}}, Func: fn, Args: args}
 	case "parse":
 		b.addImport("encoding/json", "")
-		return &IRRawExpr{
-			exprBase: exprBase{Typ: GoTypeInfo{Category: GoTypeJSObject, GoStr: "any"}},
+		fn := &IRRawExpr{
+			exprBase: exprBase{Typ: GoTypeInfo{Category: GoTypeFunc, GoStr: "func"}},
 			Code:     "func(s string) any { var v any; json.Unmarshal([]byte(s), &v); return v }",
 		}
+		return &IRCall{exprBase: exprBase{Typ: GoTypeInfo{Category: GoTypeJSObject, GoStr: "any"}}, Func: fn, Args: args}
 	}
 	return &IRRawExpr{exprBase: exprBase{Typ: resultType}, Code: fmt.Sprintf("/* JSON.%s */", method)}
 }
@@ -1584,14 +1586,57 @@ func (b *IRBuilder) buildArrayLiteral(node *ast.Node) GoExpr {
 	}
 
 	if hasSpread {
-		// Generate IIFE with append for spread elements
-		// Represented as IRRawExpr for now since spread merging is structurally complex
-		// The emitter will handle this pattern
-		return &IRCompositeLit{
-			exprBase: exprBase{Typ: GoTypeInfo{Category: GoTypeSlice, GoStr: "[]" + elemType, ElemType: elemType}},
-			TypeStr:  "[]" + elemType,
-			Elements: b.buildArrayElements(arr.Elements),
+		// [...a, b, ...c] → append(append(a, b), c...)
+		// Build a chain of append calls
+		sliceType := GoTypeInfo{Category: GoTypeSlice, GoStr: "[]" + elemType, ElemType: elemType}
+		var result GoExpr
+		var pending []GoExpr // non-spread elements to batch
+		flush := func() {
+			if len(pending) == 0 {
+				return
+			}
+			if result == nil {
+				result = &IRCompositeLit{
+					exprBase: exprBase{Typ: sliceType},
+					TypeStr:  "[]" + elemType,
+					Elements: make([]IRKeyValue, len(pending)),
+				}
+				for i, p := range pending {
+					result.(*IRCompositeLit).Elements[i] = IRKeyValue{Value: p}
+				}
+			} else {
+				args := []GoExpr{result}
+				args = append(args, pending...)
+				result = &IRCall{
+					exprBase: exprBase{Typ: sliceType},
+					Func:     &IRIdent{Name: "append"},
+					Args:     args,
+				}
+			}
+			pending = nil
 		}
+		for _, elem := range arr.Elements.Nodes {
+			if elem.Kind == ast.KindSpreadElement {
+				flush()
+				spread := b.BuildExpr(elem.AsSpreadElement().Expression)
+				if result == nil {
+					result = spread
+				} else {
+					result = &IRCall{
+						exprBase: exprBase{Typ: sliceType},
+						Func:     &IRIdent{Name: "append"},
+						Args:     []GoExpr{result, &IRUnaryOp{exprBase: exprBase{Typ: sliceType}, Op: "...", Operand: spread, Postfix: true}},
+					}
+				}
+			} else {
+				pending = append(pending, b.BuildExpr(elem))
+			}
+		}
+		flush()
+		if result == nil {
+			result = &IRCompositeLit{exprBase: exprBase{Typ: sliceType}, TypeStr: "[]" + elemType}
+		}
+		return result
 	}
 
 	return &IRCompositeLit{
@@ -1846,10 +1891,17 @@ func (b *IRBuilder) buildRegExpLiteral(node *ast.Node) GoExpr {
 		lastSlash := strings.LastIndex(text[1:], "/") + 1
 		if lastSlash > 0 {
 			pattern := text[1:lastSlash]
+			// Use quoted string if pattern contains backtick (can't use raw string)
+			var patternLit string
+			if strings.Contains(pattern, "`") {
+				patternLit = fmt.Sprintf("%q", pattern)
+			} else {
+				patternLit = fmt.Sprintf("`%s`", pattern)
+			}
 			return &IRStdlibCall{
 				exprBase: exprBase{Typ: GoTypeInfo{Category: GoTypePointer, GoStr: "*regexp.Regexp"}},
 				Package:  "regexp", Func: "MustCompile",
-				Args: []GoExpr{irString(fmt.Sprintf("`%s`", pattern))},
+				Args: []GoExpr{irString(patternLit)},
 			}
 		}
 	}
@@ -1978,9 +2030,18 @@ func (b *IRBuilder) buildIfStmt(node *ast.Node) GoStmt {
 func (b *IRBuilder) buildForStmt(node *ast.Node) GoStmt {
 	forStmt := node.AsForStatement()
 	var init GoStmt
+	var preStmts []GoStmt // declarations hoisted before the for loop
 	if forStmt.Initializer != nil {
 		if forStmt.Initializer.Kind == ast.KindVariableDeclarationList {
-			init = b.buildVarDeclList(forStmt.Initializer)
+			initStmt := b.buildVarDeclList(forStmt.Initializer)
+			// Go for-init supports only one simple statement.
+			// Hoist extra declarations from comma-separated initializers.
+			if blk, ok := initStmt.(*IRBlock); ok && len(blk.Stmts) > 1 {
+				init = blk.Stmts[0]
+				preStmts = blk.Stmts[1:]
+			} else {
+				init = initStmt
+			}
 		} else {
 			init = &IRExprStmt{Expr: b.BuildExpr(forStmt.Initializer)}
 		}
@@ -1994,7 +2055,11 @@ func (b *IRBuilder) buildForStmt(node *ast.Node) GoStmt {
 		post = &IRExprStmt{Expr: b.BuildExpr(forStmt.Incrementor)}
 	}
 	body := b.buildStmtList(forStmt.Statement)
-	return &IRFor{Init: init, Cond: cond, Post: post, Body: body}
+	forStmtIR := &IRFor{Init: init, Cond: cond, Post: post, Body: body}
+	if len(preStmts) > 0 {
+		return &IRBlock{Stmts: append(preStmts, forStmtIR)}
+	}
+	return forStmtIR
 }
 
 func (b *IRBuilder) buildForInOfStmt(node *ast.Node) GoStmt {

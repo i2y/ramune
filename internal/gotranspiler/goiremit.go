@@ -831,7 +831,13 @@ func (e *IREmitter) EmitStmt(stmt GoStmt) {
 	case *IRTryCatch:
 		e.emitTryCatch(node)
 	case *IRRawStmt:
-		e.w.writeln(node.Code)
+		if strings.Contains(node.Code, "\n") {
+			for _, line := range strings.Split(node.Code, "\n") {
+				e.w.writeln(line)
+			}
+		} else {
+			e.w.writeln(node.Code)
+		}
 	case *IRIncDec:
 		e.EmitExpr(node.Expr)
 		e.w.write(node.Op)
@@ -992,6 +998,13 @@ func (e *IREmitter) emitForInit(stmt GoStmt) {
 				e.w.write(", ")
 			}
 			e.EmitExpr(v)
+		}
+	case *IRBlock:
+		for i, inner := range s.Stmts {
+			if i > 0 {
+				e.w.write("; ")
+			}
+			e.emitForInit(inner)
 		}
 	default:
 		e.EmitStmt(stmt)
