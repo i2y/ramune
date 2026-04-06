@@ -194,8 +194,8 @@ type Runtime struct {
 	// if not explicitly closed. No Go finalizers are used to avoid SIGTRAP
 	// from concurrent GC touching JSC internals.
 	unprotectMu    sync.Mutex
-	unprotectQueue []uintptr // legacy: drained at safe points
-	protectedPtrs  []uintptr // all protected ptrs, cleaned on Close()
+	unprotectQueue []uintptr       // legacy: drained at safe points
+	protectedPtrs  map[uintptr]int // ref-counted protected ptrs, cleaned on Close()
 
 	closeOnce sync.Once
 	closed    atomic.Bool
@@ -498,8 +498,10 @@ func (r *Runtime) Close() error {
 			ptrs := r.protectedPtrs
 			r.protectedPtrs = nil
 			r.unprotectMu.Unlock()
-			for _, ptr := range ptrs {
-				r.jsValueUnprotect(r.ctx, ptr)
+			for ptr, count := range ptrs {
+				for i := 0; i < count; i++ {
+					r.jsValueUnprotect(r.ctx, ptr)
+				}
 			}
 			// Unprotect cached JSC references not tracked in protectedPtrs.
 			if r.jsonStringifyFn != 0 {

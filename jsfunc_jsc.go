@@ -21,7 +21,10 @@ type JSFunc struct {
 func (r *Runtime) newJSFunc(ptr uintptr) *JSFunc {
 	r.jsValueProtect(r.ctx, ptr)
 	r.unprotectMu.Lock()
-	r.protectedPtrs = append(r.protectedPtrs, ptr)
+	if r.protectedPtrs == nil {
+		r.protectedPtrs = make(map[uintptr]int)
+	}
+	r.protectedPtrs[ptr]++
 	r.unprotectMu.Unlock()
 	return &JSFunc{rt: r, ptr: ptr}
 }
@@ -80,6 +83,12 @@ func (f *JSFunc) Close() error {
 	}
 	f.rt.unprotectMu.Lock()
 	f.rt.unprotectQueue = append(f.rt.unprotectQueue, f.ptr)
+	if f.rt.protectedPtrs != nil {
+		f.rt.protectedPtrs[f.ptr]--
+		if f.rt.protectedPtrs[f.ptr] <= 0 {
+			delete(f.rt.protectedPtrs, f.ptr)
+		}
+	}
 	f.rt.unprotectMu.Unlock()
 	f.ptr = 0
 	return nil

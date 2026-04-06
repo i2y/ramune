@@ -32,7 +32,10 @@ func (r *Runtime) newValue(ptr uintptr) *Value {
 	v := &Value{ptr: ptr, rt: r}
 	// Track for cleanup on Runtime.Close() if not explicitly closed.
 	r.unprotectMu.Lock()
-	r.protectedPtrs = append(r.protectedPtrs, ptr)
+	if r.protectedPtrs == nil {
+		r.protectedPtrs = make(map[uintptr]int)
+	}
+	r.protectedPtrs[ptr]++
 	r.unprotectMu.Unlock()
 	return v
 }
@@ -53,6 +56,12 @@ func (v *Value) Close() error {
 	// This avoids deadlock if Close() is called from within a callback.
 	v.rt.unprotectMu.Lock()
 	v.rt.unprotectQueue = append(v.rt.unprotectQueue, v.ptr)
+	if v.rt.protectedPtrs != nil {
+		v.rt.protectedPtrs[v.ptr]--
+		if v.rt.protectedPtrs[v.ptr] <= 0 {
+			delete(v.rt.protectedPtrs, v.ptr)
+		}
+	}
 	v.rt.unprotectMu.Unlock()
 	v.ptr = 0
 	return nil
