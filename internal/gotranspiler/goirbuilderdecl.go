@@ -12,11 +12,11 @@ import (
 // Common helpers for declaration building
 // --------------------------------------------------------------------
 
-// buildTypeParams extracts type parameters from a class/interface/function node.
-func (b *IRBuilder) buildTypeParams(node *ast.Node) []IRTypeParam {
+// buildTypeParamsAndSuffix extracts type parameters and the receiver suffix in a single pass.
+func (b *IRBuilder) buildTypeParamsAndSuffix(node *ast.Node) ([]IRTypeParam, string) {
 	typeParams := node.TypeParameterList()
 	if typeParams == nil || len(typeParams.Nodes) == 0 {
-		return nil
+		return nil, ""
 	}
 
 	if b.tm.typeParams == nil {
@@ -24,42 +24,29 @@ func (b *IRBuilder) buildTypeParams(node *ast.Node) []IRTypeParam {
 	}
 
 	var result []IRTypeParam
+	var suffixParts []string
 	for _, tp := range typeParams.Nodes {
 		tpDecl := tp.AsTypeParameter()
 		tpName := tp.Name().AsIdentifier().Text
 		b.tm.typeParams[tpName] = true
+
+		goName := goExportedName(tpName)
+		suffixParts = append(suffixParts, goName)
 
 		constraint := "any"
 		if tpDecl.Constraint != nil {
 			constraint = b.mapConstraintIR(tpDecl.Constraint)
 		}
 		result = append(result, IRTypeParam{
-			Name:       goExportedName(tpName),
+			Name:       goName,
 			Constraint: constraint,
 		})
 	}
-	return result
-}
-
-// buildTypeParamSuffix returns the type parameter suffix for receiver types (e.g., "[T, U]").
-func (b *IRBuilder) buildTypeParamSuffix(node *ast.Node) string {
-	typeParams := node.TypeParameterList()
-	if typeParams == nil || len(typeParams.Nodes) == 0 {
-		return ""
-	}
-	var parts []string
-	for _, tp := range typeParams.Nodes {
-		parts = append(parts, goExportedName(tp.Name().AsIdentifier().Text))
-	}
-	return "[" + strings.Join(parts, ", ") + "]"
-}
-
-// receiverVarName returns the receiver variable name for a class (first letter lowercase).
-func receiverVarName(className string) string {
-	return toCamelCase(string([]rune(className)[0:1]))
+	return result, "[" + strings.Join(suffixParts, ", ") + "]"
 }
 
 // mapConstraintIR maps a TypeScript type constraint to a Go constraint string.
+// Mirrors decl.go's mapConstraint but operates on *IRBuilder instead of *Transpiler.
 func (b *IRBuilder) mapConstraintIR(constraint *ast.Node) string {
 	if constraint == nil {
 		return "any"
@@ -89,27 +76,84 @@ func (b *IRBuilder) mapConstraintIR(constraint *ast.Node) string {
 	return "any"
 }
 
-// resolveFieldType returns the Go type string for a class/interface field node.
-func (b *IRBuilder) resolveFieldType(node *ast.Node) string {
-	if b.ck == nil {
+// resolveFieldGoType returns the Go type string for an AST node via the type checker.
+func (b *IRBuilder) resolveFieldGoType(node *ast.Node) string {
+	ti := b.getGoType(node)
+	if ti.GoStr == "" {
 		return "any"
 	}
-	fieldType := b.ck.GetTypeAtLocation(node)
-	if fieldType == nil {
-		return "any"
+	return ti.GoStr
+}
+
+// buildAsyncRetType wraps a return type in Promise if async.
+func (b *IRBuilder) buildAsyncRetType(retType string, isAsync bool) GoTypeInfo {
+	if !isAsync {
+		return goTypeInfoFromString(retType)
 	}
-	goType := b.tm.goType(fieldType)
-	if goType == "" {
-		return "any"
+	b.addImport("github.com/i2y/ramune/jsrt/promise", "")
+	if retType == "" {
+		retType = "any"
 	}
-	return goType
+	return goTypeInfoFromString("*promise.Promise[" + retType + "]")
+}
+
+// makeReceiver creates an IRReceiver for a class method.
+func makeReceiver(recVar, className, typeParamSuffix string) *IRReceiver {
+	return &IRReceiver{
+		Name: recVar,
+		Type: "*" + className + typeParamSuffix,
+	}
+}
+
+// withMethodContext saves/restores thisReceiver, currentRetType, inAsyncBody around fn.
+func (b *IRBuilder) withMethodContext(recVar string, retType string, isAsync bool, fn func()) {
+	savedReceiver := b.thisReceiver
+	savedRetType := b.currentRetType
+	savedAsync := b.inAsyncBody
+	b.thisReceiver = recVar
+	b.currentRetType = retType
+	b.inAsyncBody = isAsync
+	fn()
+	b.thisReceiver = savedReceiver
+	b.currentRetType = savedRetType
+	b.inAsyncBody = savedAsync
+}
+
+// receiverVarName returns the receiver variable name for a class (first letter lowercase).
+func receiverVarName(className string) string {
+	return toCamelCase(string([]rune(className)[0:1]))
+}
+
+// buildCallableFuncType builds a func type string from call signatures.
+func (b *IRBuilder) buildCallableFuncType(sigs []*checker.Signature) string {
+	var paramParts []string
+	for _, p := range sigs[0].Parameters() {
+		pt := b.ck.GetTypeOfSymbol(p)
+		pType := "any"
+		if pt != nil {
+			pType = b.tm.goType(pt)
+			pType = replaceCrossPackageTypes(pType)
+		}
+		paramParts = append(paramParts, goVarName(p.Name)+" "+pType)
+	}
+
+	funcStr := "func(" + strings.Join(paramParts, ", ") + ")"
+
+	retType := b.ck.GetReturnTypeOfSignature(sigs[0])
+	if retType != nil {
+		goRet := b.tm.goType(retType)
+		if goRet != "" {
+			goRet = replaceCrossPackageTypes(goRet)
+			funcStr += " " + goRet
+		}
+	}
+	return funcStr
 }
 
 // --------------------------------------------------------------------
 // Enum declaration
 // --------------------------------------------------------------------
 
-// buildEnumDecl builds an enum declaration as IREnumDecl.
 func (b *IRBuilder) buildEnumDecl(node *ast.Node) []GoDecl {
 	enumDecl := node.AsEnumDeclaration()
 	name := node.Name()
@@ -118,7 +162,7 @@ func (b *IRBuilder) buildEnumDecl(node *ast.Node) []GoDecl {
 	}
 	goName := goTypeName(nodeText(name))
 
-	// Determine string vs numeric enum
+	// Single-pass: detect string enum and build members simultaneously
 	isStringEnum := false
 	if enumDecl.Members != nil {
 		for _, member := range enumDecl.Members.Nodes {
@@ -152,15 +196,12 @@ func (b *IRBuilder) buildEnumDecl(node *ast.Node) []GoDecl {
 				} else {
 					value = irString(fmt.Sprintf("%q", memberName.AsIdentifier().Text))
 				}
-			} else {
-				if em.Initializer != nil && em.Initializer.Kind == ast.KindNumericLiteral {
-					value = irFloat64(em.Initializer.AsNumericLiteral().Text)
-				} else if i == 0 {
-					value = nil // iota
-				} else {
-					value = nil
-				}
+			} else if em.Initializer != nil && em.Initializer.Kind == ast.KindNumericLiteral {
+				value = irFloat64(em.Initializer.AsNumericLiteral().Text)
+			} else if i > 0 {
+				// subsequent iota members
 			}
+			// value == nil means iota (first) or continuation
 
 			members = append(members, IREnumMember{
 				Name:  goMember,
@@ -181,7 +222,6 @@ func (b *IRBuilder) buildEnumDecl(node *ast.Node) []GoDecl {
 // Interface declaration
 // --------------------------------------------------------------------
 
-// buildInterfaceDecl builds an interface declaration as Go interface, struct, or func type.
 func (b *IRBuilder) buildInterfaceDecl(node *ast.Node) []GoDecl {
 	iface := node.AsInterfaceDeclaration()
 	name := node.Name()
@@ -190,7 +230,7 @@ func (b *IRBuilder) buildInterfaceDecl(node *ast.Node) []GoDecl {
 	}
 	goName := goTypeName(nodeText(name))
 
-	// Classify members
+	// Classify members in single pass
 	hasProps := false
 	hasMethods := false
 	hasCallSig := false
@@ -207,38 +247,27 @@ func (b *IRBuilder) buildInterfaceDecl(node *ast.Node) []GoDecl {
 		}
 	}
 
-	// Callable interface with no props/methods → func type alias
 	if !hasProps && !hasMethods && hasCallSig {
 		return b.buildCallableInterface(node, goName)
 	}
-
-	// Empty interface with no call sig → skip
 	if !hasProps && !hasMethods {
 		return nil
 	}
 
-	typeParams := b.buildTypeParams(node)
-
 	if hasProps {
-		return b.buildPropertyInterface(node, goName, typeParams, hasMethods)
+		return b.buildPropertyInterface(node, goName, hasMethods)
 	}
-
-	// Pure method interface → Go interface
-	return b.buildMethodInterface(node, goName, typeParams)
+	return b.buildMethodInterface(node, goName)
 }
 
-// buildCallableInterface builds a callable interface as a func type alias.
 func (b *IRBuilder) buildCallableInterface(node *ast.Node, goName string) []GoDecl {
-	// Skip if same-name function exists
 	tsName := nodeText(node.Name())
 	if b.samePackageExports != nil && (b.samePackageExports[tsName] || b.samePackageExports[toCamelCase(tsName)]) {
 		return nil
 	}
-
 	if b.ck == nil {
 		return nil
 	}
-
 	ifaceType := b.ck.GetTypeAtLocation(node)
 	if ifaceType == nil {
 		return nil
@@ -248,101 +277,72 @@ func (b *IRBuilder) buildCallableInterface(node *ast.Node, goName string) []GoDe
 		return nil
 	}
 
-	// Build func type string
-	var paramParts []string
-	for _, p := range sigs[0].Parameters() {
-		pt := b.ck.GetTypeOfSymbol(p)
-		pType := "any"
-		if pt != nil {
-			pType = b.tm.goType(pt)
-			pType = replaceCrossPackageTypes(pType)
-		}
-		paramParts = append(paramParts, goVarName(p.Name)+" "+pType)
-	}
-
-	funcStr := "func(" + strings.Join(paramParts, ", ") + ")"
-
-	retType := b.ck.GetReturnTypeOfSignature(sigs[0])
-	if retType != nil {
-		goRet := b.tm.goType(retType)
-		if goRet != "" {
-			goRet = replaceCrossPackageTypes(goRet)
-			funcStr += " " + goRet
-		}
-	}
-
 	return []GoDecl{&IRTypeAlias{
 		Name:       goName,
-		Underlying: funcStr,
+		Underlying: b.buildCallableFuncType(sigs),
 		IsExported: isExported(node),
 	}}
 }
 
-// buildPropertyInterface builds an interface with properties as a Go struct.
-func (b *IRBuilder) buildPropertyInterface(node *ast.Node, goName string, typeParams []IRTypeParam, hasMethods bool) []GoDecl {
+// buildPropertyInterface builds an interface with properties as a Go struct,
+// collecting fields and method stubs in a single pass over members.
+func (b *IRBuilder) buildPropertyInterface(node *ast.Node, goName string, hasMethods bool) []GoDecl {
 	iface := node.AsInterfaceDeclaration()
+	typeParams, typeParamSuffix := b.buildTypeParamsAndSuffix(node)
+	recVar := receiverVarName(goName)
 
 	var fields []IRStructField
+	var decls []GoDecl
+
+	// Single pass: collect fields and method stubs
 	if iface.Members != nil {
 		for _, member := range iface.Members.Nodes {
-			if member.Kind == ast.KindPropertySignature {
+			switch member.Kind {
+			case ast.KindPropertySignature:
 				propName := nodeText(member.Name())
-				goType := b.resolveFieldType(member)
-
+				goType := b.resolveFieldGoType(member)
 				fields = append(fields, IRStructField{
 					Name:       goExportedName(propName),
 					Typ:        goTypeInfoFromString(goType),
 					Tag:        fmt.Sprintf(`json:"%s"`, propName),
 					IsExported: true,
 				})
+			case ast.KindMethodSignature:
+				if !hasMethods {
+					continue
+				}
+				methodName := goExportedName(nodeText(member.Name()))
+				params := b.buildParamList(member)
+				retType := b.resolveReturnType(member)
+				decls = append(decls, &IRFuncDecl{
+					Name:    methodName,
+					Params:  params,
+					RetType: goTypeInfoFromString(retType),
+					Body: []GoStmt{&IRExprStmt{Expr: &IRStdlibCall{
+						exprBase: exprBase{},
+						Package:  "", Func: "panic",
+						Args: []GoExpr{irString(`"not implemented"`)},
+					}}},
+					Receiver:   makeReceiver(recVar, goName, typeParamSuffix),
+					IsExported: true,
+				})
 			}
 		}
 	}
 
-	var decls []GoDecl
-	decls = append(decls, &IRStructDecl{
+	// Prepend struct declaration before method stubs
+	structDecl := &IRStructDecl{
 		Name:       goName,
 		TypeParams: typeParams,
 		Fields:     fields,
 		IsExported: isExported(node),
-	})
-
-	// If also has methods, emit method stubs on the struct
-	if hasMethods && iface.Members != nil {
-		typeParamSuffix := b.buildTypeParamSuffix(node)
-		recVar := receiverVarName(goName)
-		for _, member := range iface.Members.Nodes {
-			if member.Kind != ast.KindMethodSignature {
-				continue
-			}
-			methodName := goExportedName(nodeText(member.Name()))
-			params := b.buildMethodSigParams(member)
-			retType := b.resolveReturnType(member)
-
-			decls = append(decls, &IRFuncDecl{
-				Name:    methodName,
-				Params:  params,
-				RetType: goTypeInfoFromString(retType),
-				Body: []GoStmt{&IRExprStmt{Expr: &IRStdlibCall{
-					exprBase: exprBase{},
-					Package:  "", Func: "panic",
-					Args: []GoExpr{irString(`"not implemented"`)},
-				}}},
-				Receiver: &IRReceiver{
-					Name: recVar,
-					Type: "*" + goName + typeParamSuffix,
-				},
-				IsExported: true,
-			})
-		}
 	}
-
-	return decls
+	return append([]GoDecl{structDecl}, decls...)
 }
 
-// buildMethodInterface builds a pure-method interface as a Go interface.
-func (b *IRBuilder) buildMethodInterface(node *ast.Node, goName string, typeParams []IRTypeParam) []GoDecl {
+func (b *IRBuilder) buildMethodInterface(node *ast.Node, goName string) []GoDecl {
 	iface := node.AsInterfaceDeclaration()
+	typeParams, _ := b.buildTypeParamsAndSuffix(node)
 
 	var methods []IRMethodSig
 	if iface.Members != nil {
@@ -350,14 +350,10 @@ func (b *IRBuilder) buildMethodInterface(node *ast.Node, goName string, typePara
 			if member.Kind != ast.KindMethodSignature {
 				continue
 			}
-			methodName := goExportedName(nodeText(member.Name()))
-			params := b.buildMethodSigParams(member)
-			retType := b.resolveReturnType(member)
-
 			methods = append(methods, IRMethodSig{
-				Name:       methodName,
-				Params:     params,
-				RetType:    goTypeInfoFromString(retType),
+				Name:       goExportedName(nodeText(member.Name())),
+				Params:     b.buildParamList(member),
+				RetType:    goTypeInfoFromString(b.resolveReturnType(member)),
 				IsExported: true,
 			})
 		}
@@ -371,29 +367,10 @@ func (b *IRBuilder) buildMethodInterface(node *ast.Node, goName string, typePara
 	}}
 }
 
-// buildMethodSigParams builds parameter list from a method signature node.
-func (b *IRBuilder) buildMethodSigParams(node *ast.Node) []IRParam {
-	params := node.Parameters()
-	if params == nil {
-		return nil
-	}
-	var result []IRParam
-	for _, param := range params {
-		pName := nodeText(param.Name())
-		goType := b.resolveFieldType(param)
-		result = append(result, IRParam{
-			Name: goParamName(pName),
-			Typ:  goTypeInfoFromString(goType),
-		})
-	}
-	return result
-}
-
 // --------------------------------------------------------------------
 // Type alias declaration
 // --------------------------------------------------------------------
 
-// buildTypeAliasDecl builds a type alias declaration.
 func (b *IRBuilder) buildTypeAliasDecl(node *ast.Node) []GoDecl {
 	ta := node.AsTypeAliasDeclaration()
 	name := node.Name()
@@ -412,33 +389,13 @@ func (b *IRBuilder) buildTypeAliasDecl(node *ast.Node) []GoDecl {
 
 	aliasType := b.ck.GetTypeAtLocation(ta.Type)
 
-	// Check for callable type (function type alias)
+	// Callable type (function type alias)
 	if aliasType != nil {
 		sigs := b.ck.GetSignaturesOfType(aliasType, checker.SignatureKindCall)
 		if len(sigs) > 0 && aliasType.Flags()&checker.TypeFlagsObject != 0 {
-			// Build func type
-			var paramParts []string
-			for _, p := range sigs[0].Parameters() {
-				pt := b.ck.GetTypeOfSymbol(p)
-				pType := "any"
-				if pt != nil {
-					pType = b.tm.goType(pt)
-					pType = replaceCrossPackageTypes(pType)
-				}
-				paramParts = append(paramParts, goVarName(p.Name)+" "+pType)
-			}
-			funcStr := "func(" + strings.Join(paramParts, ", ") + ")"
-			retType := b.ck.GetReturnTypeOfSignature(sigs[0])
-			if retType != nil {
-				goRet := b.tm.goType(retType)
-				if goRet != "" {
-					goRet = replaceCrossPackageTypes(goRet)
-					funcStr += " " + goRet
-				}
-			}
 			return []GoDecl{&IRTypeAlias{
 				Name:       goName,
-				Underlying: funcStr,
+				Underlying: b.buildCallableFuncType(sigs),
 				IsExported: isExported(node),
 			}}
 		}
@@ -464,7 +421,6 @@ func (b *IRBuilder) buildTypeAliasDecl(node *ast.Node) []GoDecl {
 // Class declaration
 // --------------------------------------------------------------------
 
-// buildClassDecl builds a class declaration as struct + constructor + methods.
 func (b *IRBuilder) buildClassDecl(node *ast.Node) []GoDecl {
 	classDecl := node.AsClassDeclaration()
 	name := node.Name()
@@ -474,17 +430,11 @@ func (b *IRBuilder) buildClassDecl(node *ast.Node) []GoDecl {
 	className := goTypeName(nodeText(name))
 	b.classNames[className] = true
 
-	// Categorize members
-	var fields []*ast.Node
-	var methods []*ast.Node
-	var staticFields []*ast.Node
-	var staticMethods []*ast.Node
-	var getters []*ast.Node
-	var setters []*ast.Node
+	var fields, methods, staticFields, staticMethods, getters, setters []*ast.Node
 	var constructor *ast.Node
 	var baseClassName string
 
-	// Check for extends clause
+	// Extends clause
 	if classDecl.HeritageClauses != nil {
 		for _, clause := range classDecl.HeritageClauses.Nodes {
 			hc := clause.AsHeritageClause()
@@ -499,25 +449,8 @@ func (b *IRBuilder) buildClassDecl(node *ast.Node) []GoDecl {
 		}
 	}
 
-	// Track overloaded methods
+	// Single pass: classify members and count method names for overload detection
 	methodNameCount := map[string]int{}
-	overloadedMethods := map[string]bool{}
-	if classDecl.Members != nil {
-		for _, member := range classDecl.Members.Nodes {
-			if member.Kind == ast.KindMethodDeclaration {
-				if n := member.Name(); n != nil {
-					methodNameCount[nodeText(n)]++
-				}
-			}
-		}
-		for name, count := range methodNameCount {
-			if count > 1 {
-				overloadedMethods[name] = true
-			}
-		}
-	}
-
-	// Classify members
 	if classDecl.Members != nil {
 		for _, member := range classDecl.Members.Nodes {
 			isStatic := ast.HasSyntacticModifier(member, ast.ModifierFlagsStatic)
@@ -533,6 +466,9 @@ func (b *IRBuilder) buildClassDecl(node *ast.Node) []GoDecl {
 					staticMethods = append(staticMethods, member)
 				} else {
 					methods = append(methods, member)
+					if n := member.Name(); n != nil {
+						methodNameCount[nodeText(n)]++
+					}
 				}
 			case ast.KindGetAccessor:
 				getters = append(getters, member)
@@ -541,6 +477,13 @@ func (b *IRBuilder) buildClassDecl(node *ast.Node) []GoDecl {
 			case ast.KindConstructor:
 				constructor = member
 			}
+		}
+	}
+
+	overloadedMethods := make(map[string]bool, len(methodNameCount))
+	for n, count := range methodNameCount {
+		if count > 1 {
+			overloadedMethods[n] = true
 		}
 	}
 
@@ -563,60 +506,56 @@ func (b *IRBuilder) buildClassDecl(node *ast.Node) []GoDecl {
 		}
 	}
 
-	typeParams := b.buildTypeParams(node)
-	typeParamSuffix := b.buildTypeParamSuffix(node)
+	typeParams, typeParamSuffix := b.buildTypeParamsAndSuffix(node)
 
 	var decls []GoDecl
 
-	// 1. Build struct
-	structDecl := b.buildClassStruct(className, typeParams, baseClassName, fields)
-	arrowFieldMethods := structDecl.arrowFields
-	decls = append(decls, structDecl.decl)
+	// 1. Struct
+	structResult := b.buildClassStruct(className, typeParams, baseClassName, fields)
+	arrowFieldMethods := structResult.arrowFields
+	decls = append(decls, structResult.decl)
 
-	// 2. Build constructor
-	ctorDecl := b.buildConstructorDecl(constructor, className, baseClassName, node, typeParams)
-	if ctorDecl != nil {
-		decls = append(decls, ctorDecl.funcDecl)
-		// Arrow fields collected from constructor body
-		arrowFieldMethods = append(arrowFieldMethods, ctorDecl.arrowFields...)
-	}
+	// 2. Constructor
+	ctorResult := b.buildConstructorDecl(constructor, className, baseClassName, typeParamSuffix, typeParams)
+	decls = append(decls, ctorResult.funcDecl)
+	arrowFieldMethods = append(arrowFieldMethods, ctorResult.arrowFields...)
 
-	// 3. Build instance methods
+	// 3. Instance methods
 	for _, method := range methods {
 		if md := b.buildMethodDecl(method, className, typeParamSuffix, overloadedMethods); md != nil {
 			decls = append(decls, md)
 		}
 	}
 
-	// 4. Build arrow field methods (from class body)
+	// 4. Arrow field methods
 	for _, af := range arrowFieldMethods {
 		if md := b.buildArrowFieldAsMethodDecl(af, className, typeParamSuffix); md != nil {
 			decls = append(decls, md)
 		}
 	}
 
-	// 5. Build getters
+	// 5. Getters
 	for _, getter := range getters {
 		if gd := b.buildGetterDecl(getter, className, typeParamSuffix); gd != nil {
 			decls = append(decls, gd)
 		}
 	}
 
-	// 6. Build setters
+	// 6. Setters
 	for _, setter := range setters {
 		if sd := b.buildSetterDecl(setter, className, typeParamSuffix); sd != nil {
 			decls = append(decls, sd)
 		}
 	}
 
-	// 7. Build static fields
+	// 7. Static fields
 	for _, field := range staticFields {
 		if sf := b.buildStaticFieldDecl(field, className); sf != nil {
 			decls = append(decls, sf)
 		}
 	}
 
-	// 8. Build static methods
+	// 8. Static methods
 	for _, method := range staticMethods {
 		if sm := b.buildStaticMethodDecl(method, className); sm != nil {
 			decls = append(decls, sm)
@@ -627,13 +566,11 @@ func (b *IRBuilder) buildClassDecl(node *ast.Node) []GoDecl {
 	return decls
 }
 
-// classStructResult holds the struct declaration and any arrow function fields to defer.
 type classStructResult struct {
 	decl        *IRStructDecl
 	arrowFields []*ast.Node
 }
 
-// buildClassStruct builds the struct declaration for a class.
 func (b *IRBuilder) buildClassStruct(className string, typeParams []IRTypeParam, baseClassName string, fields []*ast.Node) classStructResult {
 	var embedded []string
 	if baseClassName != "" {
@@ -650,7 +587,6 @@ func (b *IRBuilder) buildClassStruct(className string, typeParams []IRTypeParam,
 
 	for _, field := range fields {
 		pd := field.AsPropertyDeclaration()
-		// Arrow function fields → deferred as methods
 		if pd.Initializer != nil &&
 			(pd.Initializer.Kind == ast.KindArrowFunction || pd.Initializer.Kind == ast.KindFunctionExpression) {
 			arrowFields = append(arrowFields, field)
@@ -669,16 +605,15 @@ func (b *IRBuilder) buildClassStruct(className string, typeParams []IRTypeParam,
 		}
 
 		goFieldName := goExportedName(propName)
-		if isPrivateOrProtected(field) || ast.IsPrivateIdentifier(fname) {
+		isPrivate := isPrivateOrProtected(field) || ast.IsPrivateIdentifier(fname)
+		if isPrivate {
 			goFieldName = goVarName(toCamelCase(propName))
 		}
 
-		goType := b.resolveFieldType(field)
-
 		structFields = append(structFields, IRStructField{
 			Name:       goFieldName,
-			Typ:        goTypeInfoFromString(goType),
-			IsExported: !isPrivateOrProtected(field) && !ast.IsPrivateIdentifier(fname),
+			Typ:        goTypeInfoFromString(b.resolveFieldGoType(field)),
+			IsExported: !isPrivate,
 		})
 	}
 
@@ -694,23 +629,17 @@ func (b *IRBuilder) buildClassStruct(className string, typeParams []IRTypeParam,
 	}
 }
 
-// constructorResult holds the constructor function and any deferred arrow fields.
 type constructorResult struct {
 	funcDecl    *IRFuncDecl
 	arrowFields []*ast.Node
 }
 
-// buildConstructorDecl builds the NewClassName factory function.
-func (b *IRBuilder) buildConstructorDecl(ctorNode *ast.Node, className string, baseClassName string, classNode *ast.Node, typeParams []IRTypeParam) *constructorResult {
-	// Build type param suffix for return type
-	typeParamSuffix := b.buildTypeParamSuffix(classNode)
-
+func (b *IRBuilder) buildConstructorDecl(ctorNode *ast.Node, className string, baseClassName string, typeParamSuffix string, typeParams []IRTypeParam) *constructorResult {
 	var params []IRParam
 	if ctorNode != nil {
 		params = b.buildParamList(ctorNode)
 	}
 
-	// Build constructor body
 	var body []GoStmt
 	var arrowFields []*ast.Node
 
@@ -722,7 +651,6 @@ func (b *IRBuilder) buildConstructorDecl(ctorNode *ast.Node, className string, b
 		UseShort: true,
 	})
 
-	// Process constructor body statements
 	savedReceiver := b.thisReceiver
 	b.thisReceiver = "s"
 
@@ -732,7 +660,7 @@ func (b *IRBuilder) buildConstructorDecl(ctorNode *ast.Node, className string, b
 			block := ctorBody.AsBlock()
 			if block.Statements != nil {
 				for _, stmt := range block.Statements.Nodes {
-					result := b.buildConstructorStmt(stmt, "s", className, baseClassName)
+					result := b.buildConstructorStmt(stmt, "s", baseClassName)
 					body = append(body, result.stmts...)
 					arrowFields = append(arrowFields, result.arrowFields...)
 				}
@@ -742,17 +670,14 @@ func (b *IRBuilder) buildConstructorDecl(ctorNode *ast.Node, className string, b
 
 	b.thisReceiver = savedReceiver
 
-	// return s
 	body = append(body, &IRReturn{Values: []GoExpr{&IRIdent{exprBase: exprBase{}, Name: "s"}}})
-
-	retType := "*" + className + typeParamSuffix
 
 	return &constructorResult{
 		funcDecl: &IRFuncDecl{
 			Name:       "New" + className,
 			TypeParams: typeParams,
 			Params:     params,
-			RetType:    goTypeInfoFromString(retType),
+			RetType:    goTypeInfoFromString("*" + className + typeParamSuffix),
 			Body:       body,
 			IsExported: true,
 		},
@@ -760,119 +685,114 @@ func (b *IRBuilder) buildConstructorDecl(ctorNode *ast.Node, className string, b
 	}
 }
 
-// constructorStmtResult holds statements and deferred arrow fields from a constructor statement.
 type constructorStmtResult struct {
 	stmts       []GoStmt
 	arrowFields []*ast.Node
 }
 
-// buildConstructorStmt processes a single constructor statement, handling this.x = expr and super() patterns.
-func (b *IRBuilder) buildConstructorStmt(node *ast.Node, receiverVar string, className string, baseClassName string) constructorStmtResult {
-	if node.Kind == ast.KindExpressionStatement {
-		exprStmt := node.AsExpressionStatement()
+func (b *IRBuilder) buildConstructorStmt(node *ast.Node, receiverVar string, baseClassName string) constructorStmtResult {
+	if node.Kind != ast.KindExpressionStatement {
+		stmt := b.BuildStmt(node)
+		if stmt == nil {
+			return constructorStmtResult{}
+		}
+		return constructorStmtResult{stmts: []GoStmt{stmt}}
+	}
 
-		// this.field = value
-		if exprStmt.Expression.Kind == ast.KindBinaryExpression {
-			bin := exprStmt.Expression.AsBinaryExpression()
-			if bin.OperatorToken.Kind == ast.KindEqualsToken && bin.Left.Kind == ast.KindPropertyAccessExpression {
-				prop := bin.Left.AsPropertyAccessExpression()
-				if prop.Expression.Kind == ast.KindThisKeyword {
-					propName := nodeText(prop.Name())
-					goName := goExportedName(propName)
-					if pf, ok := b.privateFields[propName]; ok {
-						goName = pf
-					}
+	exprStmt := node.AsExpressionStatement()
 
-					// Arrow function → deferred as method
-					if bin.Right.Kind == ast.KindArrowFunction || bin.Right.Kind == ast.KindFunctionExpression {
-						return constructorStmtResult{
-							arrowFields: []*ast.Node{node},
-						}
-					}
-
-					// this.field = expr → s.Field = expr
-					target := &IRFieldAccess{
-						exprBase: exprBase{},
-						Object:   &IRIdent{exprBase: exprBase{}, Name: receiverVar},
-						Field:    goName,
-					}
-					return constructorStmtResult{
-						stmts: []GoStmt{&IRAssign{
-							Targets: []GoExpr{target},
-							Op:      "=",
-							Values:  []GoExpr{b.BuildExpr(bin.Right)},
-						}},
-					}
+	if exprStmt.Expression.Kind == ast.KindBinaryExpression {
+		bin := exprStmt.Expression.AsBinaryExpression()
+		if bin.OperatorToken.Kind == ast.KindEqualsToken && bin.Left.Kind == ast.KindPropertyAccessExpression {
+			prop := bin.Left.AsPropertyAccessExpression()
+			if prop.Expression.Kind == ast.KindThisKeyword {
+				propName := nodeText(prop.Name())
+				goName := goExportedName(propName)
+				if pf, ok := b.privateFields[propName]; ok {
+					goName = pf
 				}
-			}
 
-			// this[dynamic] = expr → skip
-			if bin.OperatorToken.Kind == ast.KindEqualsToken && bin.Left.Kind == ast.KindElementAccessExpression {
-				ea := bin.Left.AsElementAccessExpression()
-				if ea.Expression.Kind == ast.KindThisKeyword {
-					return constructorStmtResult{}
+				// Arrow function → deferred as method
+				if bin.Right.Kind == ast.KindArrowFunction || bin.Right.Kind == ast.KindFunctionExpression {
+					return constructorStmtResult{arrowFields: []*ast.Node{node}}
+				}
+
+				target := &IRFieldAccess{
+					exprBase: exprBase{},
+					Object:   &IRIdent{exprBase: exprBase{}, Name: receiverVar},
+					Field:    goName,
+				}
+				return constructorStmtResult{
+					stmts: []GoStmt{&IRAssign{
+						Targets: []GoExpr{target},
+						Op:      "=",
+						Values:  []GoExpr{b.BuildExpr(bin.Right)},
+					}},
 				}
 			}
 		}
 
-		// super(args...) → s.Base = *NewBase(args...)
-		if exprStmt.Expression.Kind == ast.KindCallExpression {
-			call := exprStmt.Expression.AsCallExpression()
-			if call.Expression.Kind == ast.KindSuperKeyword && baseClassName != "" {
-				args := b.buildArgList(call.Arguments)
-				if baseClassName == "Error" {
-					// s.Message = arg
-					var value GoExpr
-					if len(args) > 0 {
-						value = args[0]
-					} else {
-						value = irString(`""`)
-					}
-					return constructorStmtResult{
-						stmts: []GoStmt{&IRAssign{
-							Targets: []GoExpr{&IRFieldAccess{
-								exprBase: exprBase{},
-								Object:   &IRIdent{exprBase: exprBase{}, Name: receiverVar},
-								Field:    "Message",
-							}},
-							Op:     "=",
-							Values: []GoExpr{value},
-						}},
-					}
+		if bin.OperatorToken.Kind == ast.KindEqualsToken && bin.Left.Kind == ast.KindElementAccessExpression {
+			ea := bin.Left.AsElementAccessExpression()
+			if ea.Expression.Kind == ast.KindThisKeyword {
+				return constructorStmtResult{}
+			}
+		}
+	}
+
+	if exprStmt.Expression.Kind == ast.KindCallExpression {
+		call := exprStmt.Expression.AsCallExpression()
+		if call.Expression.Kind == ast.KindSuperKeyword && baseClassName != "" {
+			args := b.buildArgList(call.Arguments)
+			if baseClassName == "Error" {
+				var value GoExpr
+				if len(args) > 0 {
+					value = args[0]
+				} else {
+					value = irString(`""`)
 				}
-				// s.Base = *NewBase(args...)
 				return constructorStmtResult{
 					stmts: []GoStmt{&IRAssign{
 						Targets: []GoExpr{&IRFieldAccess{
 							exprBase: exprBase{},
 							Object:   &IRIdent{exprBase: exprBase{}, Name: receiverVar},
-							Field:    baseClassName,
+							Field:    "Message",
 						}},
-						Op: "=",
-						Values: []GoExpr{&IRDeref{
-							exprBase: exprBase{},
-							Expr: &IRCall{
-								exprBase: exprBase{},
-								Func:     &IRIdent{exprBase: exprBase{}, Name: "New" + baseClassName},
-								Args:     args,
-							},
-						}},
+						Op:     "=",
+						Values: []GoExpr{value},
 					}},
 				}
 			}
+			return constructorStmtResult{
+				stmts: []GoStmt{&IRAssign{
+					Targets: []GoExpr{&IRFieldAccess{
+						exprBase: exprBase{},
+						Object:   &IRIdent{exprBase: exprBase{}, Name: receiverVar},
+						Field:    baseClassName,
+					}},
+					Op: "=",
+					Values: []GoExpr{&IRDeref{
+						exprBase: exprBase{},
+						Expr: &IRCall{
+							exprBase: exprBase{},
+							Func:     &IRIdent{exprBase: exprBase{}, Name: "New" + baseClassName},
+							Args:     args,
+						},
+					}},
+				}},
+			}
+		}
 
-			// Object.assign(this, obj) → skip
-			if call.Expression.Kind == ast.KindPropertyAccessExpression {
-				prop := call.Expression.AsPropertyAccessExpression()
-				if prop.Expression.Kind == ast.KindIdentifier && prop.Expression.AsIdentifier().Text == "Object" &&
-					nodeText(prop.Name()) == "assign" {
-					return constructorStmtResult{}
-				}
+		// Object.assign(this, obj) → skip
+		if call.Expression.Kind == ast.KindPropertyAccessExpression {
+			prop := call.Expression.AsPropertyAccessExpression()
+			if prop.Expression.Kind == ast.KindIdentifier && prop.Expression.AsIdentifier().Text == "Object" &&
+				nodeText(prop.Name()) == "assign" {
+				return constructorStmtResult{}
 			}
 		}
 	}
 
-	// Fallback: regular statement
 	stmt := b.BuildStmt(node)
 	if stmt == nil {
 		return constructorStmtResult{}
@@ -880,14 +800,12 @@ func (b *IRBuilder) buildConstructorStmt(node *ast.Node, receiverVar string, cla
 	return constructorStmtResult{stmts: []GoStmt{stmt}}
 }
 
-// buildMethodDecl builds a class instance method.
 func (b *IRBuilder) buildMethodDecl(node *ast.Node, className string, typeParamSuffix string, overloadedMethods map[string]bool) *IRFuncDecl {
 	name := node.Name()
 	if name == nil {
 		return nil
 	}
 
-	// Skip overload signatures (declarations without body)
 	body := node.Body()
 	if body == nil && !ast.HasSyntacticModifier(node, ast.ModifierFlagsAbstract) {
 		return nil
@@ -895,7 +813,8 @@ func (b *IRBuilder) buildMethodDecl(node *ast.Node, className string, typeParamS
 
 	rawName := nodeText(name)
 	methodName := goExportedName(rawName)
-	if isPrivateOrProtected(node) || ast.IsPrivateIdentifier(name) {
+	isPrivate := isPrivateOrProtected(node) || ast.IsPrivateIdentifier(name)
+	if isPrivate {
 		methodName = goVarName(toCamelCase(rawName))
 	}
 	recVar := receiverVarName(className)
@@ -904,7 +823,7 @@ func (b *IRBuilder) buildMethodDecl(node *ast.Node, className string, typeParamS
 	savedTypeParams := b.tm.typeParams
 	methodTypeParams := node.TypeParameterList()
 	if methodTypeParams != nil && len(methodTypeParams.Nodes) > 0 {
-		newParams := make(map[string]bool)
+		newParams := make(map[string]bool, len(savedTypeParams))
 		for k, v := range savedTypeParams {
 			newParams[k] = v
 		}
@@ -916,8 +835,6 @@ func (b *IRBuilder) buildMethodDecl(node *ast.Node, className string, typeParamS
 
 	params := b.buildParamList(node)
 	retType := b.resolveReturnType(node)
-
-	// Overloaded methods → any return type
 	if overloadedMethods[rawName] {
 		retType = "any"
 	}
@@ -932,60 +849,38 @@ func (b *IRBuilder) buildMethodDecl(node *ast.Node, className string, typeParamS
 
 	isAsync := ast.HasSyntacticModifier(node, ast.ModifierFlagsAsync)
 
-	savedReceiver := b.thisReceiver
-	savedRetType := b.currentRetType
-	savedAsync := b.inAsyncBody
-	b.thisReceiver = recVar
-	b.currentRetType = retType
-	b.inAsyncBody = isAsync
-
 	var bodyStmts []GoStmt
-	if body != nil {
-		bodyStmts = b.buildStmtList(body)
-	} else if ast.HasSyntacticModifier(node, ast.ModifierFlagsAbstract) {
-		bodyStmts = []GoStmt{&IRExprStmt{Expr: &IRStdlibCall{
-			exprBase: exprBase{},
-			Package:  "", Func: "panic",
-			Args: []GoExpr{irString(`"abstract method not implemented"`)},
-		}}}
-	}
+	b.withMethodContext(recVar, retType, isAsync, func() {
+		if body != nil {
+			bodyStmts = b.buildStmtList(body)
+		} else if ast.HasSyntacticModifier(node, ast.ModifierFlagsAbstract) {
+			bodyStmts = []GoStmt{&IRExprStmt{Expr: &IRStdlibCall{
+				exprBase: exprBase{},
+				Package:  "", Func: "panic",
+				Args: []GoExpr{irString(`"abstract method not implemented"`)},
+			}}}
+		}
+	})
 
-	b.thisReceiver = savedReceiver
-	b.currentRetType = savedRetType
-	b.inAsyncBody = savedAsync
 	b.tm.typeParams = savedTypeParams
 
-	retTypeInfo := goTypeInfoFromString(retType)
-	if isAsync {
-		b.addImport("github.com/i2y/ramune/jsrt/promise", "")
-		innerType := retType
-		if innerType == "" {
-			innerType = "any"
-		}
-		retTypeInfo = goTypeInfoFromString("*promise.Promise[" + innerType + "]")
-	}
-
 	return &IRFuncDecl{
-		Name:    methodName,
-		Params:  params,
-		RetType: retTypeInfo,
-		Body:    bodyStmts,
-		Receiver: &IRReceiver{
-			Name: recVar,
-			Type: "*" + className + typeParamSuffix,
-		},
+		Name:       methodName,
+		Params:     params,
+		RetType:    b.buildAsyncRetType(retType, isAsync),
+		Body:       bodyStmts,
+		Receiver:   makeReceiver(recVar, className, typeParamSuffix),
 		IsAsync:    isAsync,
-		IsExported: !isPrivateOrProtected(node) && !ast.IsPrivateIdentifier(name),
+		IsExported: !isPrivate,
 	}
 }
 
-// buildArrowFieldAsMethodDecl converts a class field with arrow function to a method.
 func (b *IRBuilder) buildArrowFieldAsMethodDecl(node *ast.Node, className string, typeParamSuffix string) *IRFuncDecl {
-	// Handle both class body arrow fields and constructor arrow fields
 	var propName string
 	var initNode *ast.Node
 
-	if node.Kind == ast.KindPropertyDeclaration {
+	switch node.Kind {
+	case ast.KindPropertyDeclaration:
 		pd := node.AsPropertyDeclaration()
 		fname := node.Name()
 		if fname == nil || pd.Initializer == nil {
@@ -997,8 +892,7 @@ func (b *IRBuilder) buildArrowFieldAsMethodDecl(node *ast.Node, className string
 			propName = nodeText(fname)
 		}
 		initNode = pd.Initializer
-	} else if node.Kind == ast.KindExpressionStatement {
-		// Constructor arrow field: this.field = () => { ... }
+	case ast.KindExpressionStatement:
 		exprStmt := node.AsExpressionStatement()
 		if exprStmt.Expression.Kind != ast.KindBinaryExpression {
 			return nil
@@ -1007,15 +901,14 @@ func (b *IRBuilder) buildArrowFieldAsMethodDecl(node *ast.Node, className string
 		if bin.Left.Kind != ast.KindPropertyAccessExpression {
 			return nil
 		}
-		prop := bin.Left.AsPropertyAccessExpression()
-		propName = nodeText(prop.Name())
+		propName = nodeText(bin.Left.AsPropertyAccessExpression().Name())
 		initNode = bin.Right
-	} else {
+	default:
 		return nil
 	}
 
 	methodName := goExportedName(propName)
-	if isPrivateOrProtected(node) || (node.Name() != nil && ast.IsPrivateIdentifier(node.Name())) {
+	if node.Name() != nil && (isPrivateOrProtected(node) || ast.IsPrivateIdentifier(node.Name())) {
 		methodName = goVarName(toCamelCase(propName))
 	}
 
@@ -1024,54 +917,30 @@ func (b *IRBuilder) buildArrowFieldAsMethodDecl(node *ast.Node, className string
 	retType := b.resolveReturnType(initNode)
 	isAsync := ast.HasSyntacticModifier(initNode, ast.ModifierFlagsAsync)
 
-	savedReceiver := b.thisReceiver
-	savedRetType := b.currentRetType
-	savedAsync := b.inAsyncBody
-	b.thisReceiver = recVar
-	b.currentRetType = retType
-	b.inAsyncBody = isAsync
-
 	var bodyStmts []GoStmt
-	body := initNode.Body()
-	if initNode.Kind == ast.KindArrowFunction {
-		body = initNode.AsArrowFunction().Body
-	}
-	if body != nil && body.Kind == ast.KindBlock {
-		bodyStmts = b.buildStmtList(body)
-	} else if body != nil {
-		// Expression body → return expr
-		bodyStmts = []GoStmt{&IRReturn{Values: []GoExpr{b.BuildExpr(body)}}}
-	}
-
-	b.thisReceiver = savedReceiver
-	b.currentRetType = savedRetType
-	b.inAsyncBody = savedAsync
-
-	retTypeInfo := goTypeInfoFromString(retType)
-	if isAsync {
-		b.addImport("github.com/i2y/ramune/jsrt/promise", "")
-		innerType := retType
-		if innerType == "" {
-			innerType = "any"
+	b.withMethodContext(recVar, retType, isAsync, func() {
+		body := initNode.Body()
+		if initNode.Kind == ast.KindArrowFunction {
+			body = initNode.AsArrowFunction().Body
 		}
-		retTypeInfo = goTypeInfoFromString("*promise.Promise[" + innerType + "]")
-	}
+		if body != nil && body.Kind == ast.KindBlock {
+			bodyStmts = b.buildStmtList(body)
+		} else if body != nil {
+			bodyStmts = []GoStmt{&IRReturn{Values: []GoExpr{b.BuildExpr(body)}}}
+		}
+	})
 
 	return &IRFuncDecl{
-		Name:    methodName,
-		Params:  params,
-		RetType: retTypeInfo,
-		Body:    bodyStmts,
-		Receiver: &IRReceiver{
-			Name: recVar,
-			Type: "*" + className + typeParamSuffix,
-		},
+		Name:       methodName,
+		Params:     params,
+		RetType:    b.buildAsyncRetType(retType, isAsync),
+		Body:       bodyStmts,
+		Receiver:   makeReceiver(recVar, className, typeParamSuffix),
 		IsAsync:    isAsync,
 		IsExported: true,
 	}
 }
 
-// buildGetterDecl builds a getter method: get foo() → func (r *Class) Foo() RetType.
 func (b *IRBuilder) buildGetterDecl(node *ast.Node, className string, typeParamSuffix string) *IRFuncDecl {
 	name := node.Name()
 	if name == nil {
@@ -1081,7 +950,6 @@ func (b *IRBuilder) buildGetterDecl(node *ast.Node, className string, typeParamS
 	if rawName == "" {
 		return nil
 	}
-	methodName := goExportedName(rawName)
 	recVar := receiverVarName(className)
 
 	retType := b.resolveReturnType(node)
@@ -1092,33 +960,22 @@ func (b *IRBuilder) buildGetterDecl(node *ast.Node, className string, typeParamS
 		}
 	}
 
-	savedReceiver := b.thisReceiver
-	savedRetType := b.currentRetType
-	b.thisReceiver = recVar
-	b.currentRetType = retType
-
 	var bodyStmts []GoStmt
-	body := node.Body()
-	if body != nil {
-		bodyStmts = b.buildStmtList(body)
-	}
-
-	b.thisReceiver = savedReceiver
-	b.currentRetType = savedRetType
+	b.withMethodContext(recVar, retType, false, func() {
+		if body := node.Body(); body != nil {
+			bodyStmts = b.buildStmtList(body)
+		}
+	})
 
 	return &IRFuncDecl{
-		Name:    methodName,
-		RetType: goTypeInfoFromString(retType),
-		Body:    bodyStmts,
-		Receiver: &IRReceiver{
-			Name: recVar,
-			Type: "*" + className + typeParamSuffix,
-		},
+		Name:       goExportedName(rawName),
+		RetType:    goTypeInfoFromString(retType),
+		Body:       bodyStmts,
+		Receiver:   makeReceiver(recVar, className, typeParamSuffix),
 		IsExported: true,
 	}
 }
 
-// buildSetterDecl builds a setter method: set foo(v) → func (r *Class) SetFoo(v ParamType).
 func (b *IRBuilder) buildSetterDecl(node *ast.Node, className string, typeParamSuffix string) *IRFuncDecl {
 	name := node.Name()
 	if name == nil {
@@ -1128,44 +985,30 @@ func (b *IRBuilder) buildSetterDecl(node *ast.Node, className string, typeParamS
 	if rawName == "" {
 		return nil
 	}
-	methodName := "Set" + goExportedName(rawName)
 	recVar := receiverVarName(className)
-	params := b.buildParamList(node)
-
-	savedReceiver := b.thisReceiver
-	b.thisReceiver = recVar
 
 	var bodyStmts []GoStmt
-	body := node.Body()
-	if body != nil {
-		bodyStmts = b.buildStmtList(body)
-	}
-
-	b.thisReceiver = savedReceiver
+	b.withMethodContext(recVar, "", false, func() {
+		if body := node.Body(); body != nil {
+			bodyStmts = b.buildStmtList(body)
+		}
+	})
 
 	return &IRFuncDecl{
-		Name:   methodName,
-		Params: params,
-		Body:   bodyStmts,
-		Receiver: &IRReceiver{
-			Name: recVar,
-			Type: "*" + className + typeParamSuffix,
-		},
+		Name:       "Set" + goExportedName(rawName),
+		Params:     b.buildParamList(node),
+		Body:       bodyStmts,
+		Receiver:   makeReceiver(recVar, className, typeParamSuffix),
 		IsExported: true,
 	}
 }
 
-// buildStaticFieldDecl builds a static field as a package-level variable.
 func (b *IRBuilder) buildStaticFieldDecl(node *ast.Node, className string) GoDecl {
 	name := node.Name()
 	if name == nil {
 		return nil
 	}
 	propName := nodeText(name)
-	goFieldName := goExportedName(propName)
-	goType := b.resolveFieldType(node)
-
-	varName := className + "_" + goFieldName
 
 	pd := node.AsPropertyDeclaration()
 	var init GoExpr
@@ -1174,57 +1017,33 @@ func (b *IRBuilder) buildStaticFieldDecl(node *ast.Node, className string) GoDec
 	}
 
 	return &IRStmtDecl{Stmt: &IRVarDecl{
-		Name:    varName,
-		Typ:     goTypeInfoFromString(goType),
-		Init:    init,
-		IsConst: false,
+		Name: className + "_" + goExportedName(propName),
+		Typ:  goTypeInfoFromString(b.resolveFieldGoType(node)),
+		Init: init,
 	}}
 }
 
-// buildStaticMethodDecl builds a static method as a package-level function.
 func (b *IRBuilder) buildStaticMethodDecl(node *ast.Node, className string) *IRFuncDecl {
 	name := node.Name()
 	if name == nil {
 		return nil
 	}
-	rawName := nodeText(name)
-	methodName := className + "_" + goExportedName(rawName)
 
 	params := b.buildParamList(node)
 	retType := b.resolveReturnType(node)
 	isAsync := ast.HasSyntacticModifier(node, ast.ModifierFlagsAsync)
 
-	savedReceiver := b.thisReceiver
-	savedRetType := b.currentRetType
-	savedAsync := b.inAsyncBody
-	b.thisReceiver = ""
-	b.currentRetType = retType
-	b.inAsyncBody = isAsync
-
 	var bodyStmts []GoStmt
-	body := node.Body()
-	if body != nil {
-		bodyStmts = b.buildStmtList(body)
-	}
-
-	b.thisReceiver = savedReceiver
-	b.currentRetType = savedRetType
-	b.inAsyncBody = savedAsync
-
-	retTypeInfo := goTypeInfoFromString(retType)
-	if isAsync {
-		b.addImport("github.com/i2y/ramune/jsrt/promise", "")
-		innerType := retType
-		if innerType == "" {
-			innerType = "any"
+	b.withMethodContext("", retType, isAsync, func() {
+		if body := node.Body(); body != nil {
+			bodyStmts = b.buildStmtList(body)
 		}
-		retTypeInfo = goTypeInfoFromString("*promise.Promise[" + innerType + "]")
-	}
+	})
 
 	return &IRFuncDecl{
-		Name:       methodName,
+		Name:       className + "_" + goExportedName(nodeText(name)),
 		Params:     params,
-		RetType:    retTypeInfo,
+		RetType:    b.buildAsyncRetType(retType, isAsync),
 		Body:       bodyStmts,
 		IsAsync:    isAsync,
 		IsExported: true,
@@ -1235,66 +1054,47 @@ func (b *IRBuilder) buildStaticMethodDecl(node *ast.Node, className string) *IRF
 // Export declarations
 // --------------------------------------------------------------------
 
-// buildExportDecl builds an export declaration.
-func (b *IRBuilder) buildExportDecl(node *ast.Node) []GoDecl {
-	// Named exports without module specifier (export { X }) are handled by modifier flags
-	// Re-exports (export { X } from './mod') are complex — emit as raw for now
+// buildExportDecl handles export declarations.
+// Named exports (export { X }) are handled by modifier flags on the declaration itself.
+// Re-exports (export { X } from './mod') are not yet supported.
+func (b *IRBuilder) buildExportDecl(_ *ast.Node) []GoDecl {
 	return nil
 }
 
-// buildExportAssignment builds an export default declaration.
 func (b *IRBuilder) buildExportAssignment(node *ast.Node) []GoDecl {
 	ea := node.AsExportAssignment()
 	if ea.Expression == nil {
 		return nil
 	}
 
-	// export default function/class → named "Default"
 	if ea.Expression.Kind == ast.KindFunctionExpression || ea.Expression.Kind == ast.KindArrowFunction {
 		params := b.buildParamList(ea.Expression)
 		retType := b.resolveReturnType(ea.Expression)
 		isAsync := ast.HasSyntacticModifier(ea.Expression, ast.ModifierFlagsAsync)
 
-		savedAsync := b.inAsyncBody
-		savedRetType := b.currentRetType
-		b.inAsyncBody = isAsync
-		b.currentRetType = retType
-
 		var bodyStmts []GoStmt
-		body := ea.Expression.Body()
-		if ea.Expression.Kind == ast.KindArrowFunction {
-			body = ea.Expression.AsArrowFunction().Body
-		}
-		if body != nil && body.Kind == ast.KindBlock {
-			bodyStmts = b.buildStmtList(body)
-		} else if body != nil {
-			bodyStmts = []GoStmt{&IRReturn{Values: []GoExpr{b.BuildExpr(body)}}}
-		}
-
-		b.inAsyncBody = savedAsync
-		b.currentRetType = savedRetType
-
-		retTypeInfo := goTypeInfoFromString(retType)
-		if isAsync {
-			b.addImport("github.com/i2y/ramune/jsrt/promise", "")
-			innerType := retType
-			if innerType == "" {
-				innerType = "any"
+		b.withMethodContext("", retType, isAsync, func() {
+			body := ea.Expression.Body()
+			if ea.Expression.Kind == ast.KindArrowFunction {
+				body = ea.Expression.AsArrowFunction().Body
 			}
-			retTypeInfo = goTypeInfoFromString("*promise.Promise[" + innerType + "]")
-		}
+			if body != nil && body.Kind == ast.KindBlock {
+				bodyStmts = b.buildStmtList(body)
+			} else if body != nil {
+				bodyStmts = []GoStmt{&IRReturn{Values: []GoExpr{b.BuildExpr(body)}}}
+			}
+		})
 
 		return []GoDecl{&IRFuncDecl{
 			Name:       "Default",
 			Params:     params,
-			RetType:    retTypeInfo,
+			RetType:    b.buildAsyncRetType(retType, isAsync),
 			Body:       bodyStmts,
 			IsAsync:    isAsync,
 			IsExported: true,
 		}}
 	}
 
-	// export default expr → var Default = expr
 	return []GoDecl{&IRStmtDecl{Stmt: &IRVarDecl{
 		Name: "Default",
 		Typ:  goTypeInfoFromString("any"),
