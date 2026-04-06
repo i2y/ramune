@@ -565,3 +565,174 @@ http.ListenAndServe(":8080", null)
 		t.Errorf("expected http.ListenAndServe call")
 	}
 }
+
+func TestIRImportNodeBuiltin(t *testing.T) {
+	path := writeTempTS(t, `
+import * as fs from "fs"
+const data = fs.readFileSync("test.txt")
+`)
+	result, err := TranspileFileIR(path, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("IR output:\n%s", result.GoSource)
+	if !strings.Contains(result.GoSource, "jsrt/node/fs") {
+		t.Errorf("expected jsrt/node/fs import, got:\n%s", result.GoSource)
+	}
+}
+
+func TestIRImportNodePrefixed(t *testing.T) {
+	path := writeTempTS(t, `
+import * as path from "node:path"
+const p = path.join("a", "b")
+`)
+	result, err := TranspileFileIR(path, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("IR output:\n%s", result.GoSource)
+	if !strings.Contains(result.GoSource, "jsrt/node/path") {
+		t.Errorf("expected jsrt/node/path import, got:\n%s", result.GoSource)
+	}
+}
+
+func TestIRImportGoPrefix(t *testing.T) {
+	path := writeTempTS(t, `
+import { Println } from "go:fmt"
+Println("hello")
+`)
+	result, err := TranspileFileIR(path, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("IR output:\n%s", result.GoSource)
+	if !strings.Contains(result.GoSource, `"fmt"`) {
+		t.Errorf("expected fmt import path, got:\n%s", result.GoSource)
+	}
+}
+
+// --- Discriminated union ---
+
+func TestIRDiscriminatedUnion(t *testing.T) {
+	path := writeTempTS(t, `
+interface Circle {
+  kind: "circle"
+  radius: number
+}
+interface Square {
+  kind: "square"
+  size: number
+}
+type Shape = Circle | Square
+
+function getKind(s: Shape): string {
+  return s.kind
+}
+`)
+	result, err := TranspileFileIR(path, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("IR output:\n%s", result.GoSource)
+	if !strings.Contains(result.GoSource, "type Shape interface") {
+		t.Errorf("expected Shape interface declaration")
+	}
+	if !strings.Contains(result.GoSource, "isShape()") {
+		t.Errorf("expected isShape() marker method")
+	}
+	if !strings.Contains(result.GoSource, "GetKind()") {
+		t.Errorf("expected GetKind() getter method")
+	}
+	if !strings.Contains(result.GoSource, "func (c Circle) isShape()") {
+		t.Errorf("expected Circle marker method impl")
+	}
+	if !strings.Contains(result.GoSource, "func (s Square) isShape()") {
+		t.Errorf("expected Square marker method impl")
+	}
+}
+
+func TestIRNonDiscriminatedUnionFallback(t *testing.T) {
+	path := writeTempTS(t, `
+type StringOrNumber = string | number
+`)
+	result, err := TranspileFileIR(path, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("IR output:\n%s", result.GoSource)
+	// Non-discriminated union should fall back to a simple type alias
+	if strings.Contains(result.GoSource, "interface") {
+		t.Errorf("non-discriminated union should not generate interface")
+	}
+}
+
+// --- Array method callback typing ---
+
+func TestIRArrayMapTypedCallback(t *testing.T) {
+	path := writeTempTS(t, `
+const nums: number[] = [1, 2, 3]
+const doubled = nums.map(x => x * 2)
+`)
+	result, err := TranspileFileIR(path, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("IR output:\n%s", result.GoSource)
+	if !strings.Contains(result.GoSource, "jsarray.Map") {
+		t.Errorf("expected jsarray.Map call")
+	}
+	if strings.Contains(result.GoSource, "func(x any") {
+		t.Errorf("callback param should NOT be any, should be float64")
+	}
+	if !strings.Contains(result.GoSource, "float64") {
+		t.Errorf("expected float64 typed callback param")
+	}
+}
+
+func TestIRArrayFilterCallback(t *testing.T) {
+	path := writeTempTS(t, `
+const items: string[] = ["a", "b", "c"]
+const result = items.filter(x => x !== "a")
+`)
+	result, err := TranspileFileIR(path, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("IR output:\n%s", result.GoSource)
+	if !strings.Contains(result.GoSource, "jsarray.Filter") {
+		t.Errorf("expected jsarray.Filter call")
+	}
+	if !strings.Contains(result.GoSource, "string") {
+		t.Errorf("expected string typed callback param")
+	}
+}
+
+func TestIRArrayForEachCallback(t *testing.T) {
+	path := writeTempTS(t, `
+const nums: number[] = [1, 2, 3]
+nums.forEach(x => console.log(x))
+`)
+	result, err := TranspileFileIR(path, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("IR output:\n%s", result.GoSource)
+	if !strings.Contains(result.GoSource, "jsarray.ForEach") {
+		t.Errorf("expected jsarray.ForEach call")
+	}
+}
+
+func TestIRArrayReduceCallback(t *testing.T) {
+	path := writeTempTS(t, `
+const nums: number[] = [1, 2, 3]
+const sum = nums.reduce((acc, x) => acc + x, 0)
+`)
+	result, err := TranspileFileIR(path, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("IR output:\n%s", result.GoSource)
+	if !strings.Contains(result.GoSource, "jsarray.Reduce") {
+		t.Errorf("expected jsarray.Reduce call")
+	}
+}

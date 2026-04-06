@@ -389,6 +389,14 @@ func (b *IRBuilder) buildTypeAliasDecl(node *ast.Node) []GoDecl {
 
 	aliasType := b.ck.GetTypeAtLocation(ta.Type)
 
+	// Discriminated union: type Shape = Circle | Square
+	if aliasType != nil && aliasType.Flags()&checker.TypeFlagsUnion != 0 {
+		variants := b.getDiscriminatedUnionVariants(aliasType.AsUnionType())
+		if len(variants) > 0 {
+			return b.buildDiscriminatedUnion(goName, variants, isExported(node))
+		}
+	}
+
 	// Callable type (function type alias)
 	if aliasType != nil {
 		sigs := b.ck.GetSignaturesOfType(aliasType, checker.SignatureKindCall)
@@ -1100,4 +1108,187 @@ func (b *IRBuilder) buildExportAssignment(node *ast.Node) []GoDecl {
 		Typ:  goTypeInfoFromString("any"),
 		Init: b.BuildExpr(ea.Expression),
 	}}}
+}
+
+// --------------------------------------------------------------------
+// Discriminated union
+// --------------------------------------------------------------------
+
+// getDiscriminatedUnionVariants checks if a union is a discriminated union
+// (all members are named object types with a common discriminant field).
+func (b *IRBuilder) getDiscriminatedUnionVariants(union *checker.UnionType) []discriminatedVariant {
+	types := union.Types()
+	if len(types) < 2 {
+		return nil
+	}
+
+	var variants []discriminatedVariant
+	for _, ut := range types {
+		if ut.Flags()&checker.TypeFlagsNullable != 0 {
+			continue
+		}
+		if ut.Flags()&checker.TypeFlagsObject == 0 {
+			return nil
+		}
+		sym := ut.Symbol()
+		if sym == nil || sym.Name == "" || strings.HasPrefix(sym.Name, "__") {
+			return nil
+		}
+		variants = append(variants, discriminatedVariant{
+			Name: goTypeName(sym.Name),
+			Type: ut,
+		})
+	}
+
+	if len(variants) < 2 {
+		return nil
+	}
+
+	// Check that all variants share a common discriminant field
+	for _, fieldName := range discriminantFieldNames {
+		allHave := true
+		for _, v := range variants {
+			found := false
+			for _, p := range b.ck.GetPropertiesOfType(v.Type) {
+				if p.Name == fieldName {
+					found = true
+					break
+				}
+			}
+			if !found {
+				allHave = false
+				break
+			}
+		}
+		if allHave {
+			return variants
+		}
+	}
+
+	return nil
+}
+
+// commonFieldInfo holds a shared field across union variants.
+type commonFieldInfo struct {
+	name   string // TS field name
+	goType string // unified Go type
+}
+
+// buildDiscriminatedUnion generates an IRInterfaceDecl with marker + getters,
+// plus IRFuncDecl methods on each variant struct.
+func (b *IRBuilder) buildDiscriminatedUnion(name string, variants []discriminatedVariant, exported bool) []GoDecl {
+	markerMethod := "is" + name
+
+	// Find common fields across all variants
+	var commonFields []commonFieldInfo
+	if len(variants) > 0 {
+		firstProps := b.ck.GetPropertiesOfType(variants[0].Type)
+		for _, p := range firstProps {
+			allHave := true
+			for _, v := range variants[1:] {
+				found := false
+				for _, vp := range b.ck.GetPropertiesOfType(v.Type) {
+					if vp.Name == p.Name {
+						found = true
+						break
+					}
+				}
+				if !found {
+					allHave = false
+					break
+				}
+			}
+			if allHave {
+				commonFields = append(commonFields, commonFieldInfo{name: p.Name})
+			}
+		}
+	}
+
+	// Determine unified type for each common field
+	for i, field := range commonFields {
+		fieldType := ""
+		for _, v := range variants {
+			vType := "any"
+			for _, p := range b.ck.GetPropertiesOfType(v.Type) {
+				if p.Name == field.name {
+					pt := b.ck.GetTypeOfSymbol(p)
+					if pt != nil {
+						vType = b.tm.goType(pt)
+					}
+					break
+				}
+			}
+			if fieldType == "" {
+				fieldType = vType
+			} else if fieldType != vType {
+				fieldType = "any"
+				break
+			}
+		}
+		if fieldType == "" {
+			fieldType = "any"
+		}
+		commonFields[i].goType = fieldType
+	}
+
+	// Build interface: marker + getter methods
+	methods := []IRMethodSig{{Name: markerMethod}}
+	for _, field := range commonFields {
+		methods = append(methods, IRMethodSig{
+			Name:    "Get" + goExportedName(field.name),
+			RetType: goTypeInfoFromString(field.goType),
+		})
+	}
+
+	var decls []GoDecl
+	decls = append(decls, &IRInterfaceDecl{
+		Name:       name,
+		Methods:    methods,
+		IsExported: exported,
+	})
+
+	// Generate marker + getter methods on each variant
+	for _, v := range variants {
+		recVar := receiverVarName(v.Name)
+
+		// Marker method
+		decls = append(decls, &IRFuncDecl{
+			Name:     markerMethod,
+			Receiver: &IRReceiver{Name: recVar, Type: v.Name},
+		})
+
+		// Getter methods for common fields
+		for _, field := range commonFields {
+			goField := goExportedName(field.name)
+			varFieldType := field.goType
+			for _, p := range b.ck.GetPropertiesOfType(v.Type) {
+				if p.Name == field.name {
+					pt := b.ck.GetTypeOfSymbol(p)
+					if pt != nil {
+						varFieldType = b.tm.goType(pt)
+					}
+					break
+				}
+			}
+			if varFieldType == "" {
+				varFieldType = "any"
+			}
+			decls = append(decls, &IRFuncDecl{
+				Name:    "Get" + goField,
+				RetType: goTypeInfoFromString(varFieldType),
+				Body: []GoStmt{
+					&IRReturn{Values: []GoExpr{
+						&IRFieldAccess{
+							exprBase: exprBase{Typ: goTypeInfoFromString(varFieldType)},
+							Object:   &IRIdent{Name: recVar},
+							Field:    goField,
+						},
+					}},
+				},
+				Receiver: &IRReceiver{Name: recVar, Type: v.Name},
+			})
+		}
+	}
+
+	return decls
 }

@@ -60,6 +60,15 @@ func (b *IRBuilder) addImport(path, alias string) {
 	b.imports[path] = alias
 }
 
+// resolvePendingImport moves a pending import (by alias) into the active imports map.
+func (b *IRBuilder) resolvePendingImport(alias string) {
+	if path, ok := b.pendingImports[alias]; ok {
+		b.imports[path] = alias
+		delete(b.pendingImports, alias)
+	}
+}
+
+
 // getGoType returns the Go type for an AST node using the checker's flow-narrowed type.
 func (b *IRBuilder) getGoType(node *ast.Node) GoTypeInfo {
 	if b.ck == nil || node == nil {
@@ -385,11 +394,13 @@ func (b *IRBuilder) buildIdentifier(node *ast.Node) GoExpr {
 
 	// Package reference
 	if pkg, ok := b.packageRefs[name]; ok {
+		b.resolvePendingImport(pkg)
 		return &IRIdent{exprBase: exprBase{Typ: typ}, Name: pkg}
 	}
 
 	// Imported name
 	if pkg, ok := b.importedNames[name]; ok {
+		b.resolvePendingImport(pkg)
 		exportName := name
 		if orig, ok := b.importedOriginalNames[name]; ok {
 			exportName = orig
@@ -882,16 +893,45 @@ func (b *IRBuilder) buildConsoleCall(call *ast.CallExpression) GoExpr {
 	}
 }
 
+// arrayCallbackMethods is the set of array methods that take a callback as their first argument.
+var arrayCallbackMethods = map[string]bool{
+	"map": true, "filter": true, "forEach": true,
+	"find": true, "findIndex": true, "some": true,
+	"every": true, "reduce": true, "flatMap": true,
+}
+
 func (b *IRBuilder) buildMethodCallExpr(call *ast.CallExpression, resultType GoTypeInfo) GoExpr {
 	prop := call.Expression.AsPropertyAccessExpression()
 	methodName := nodeText(prop.Name())
+
+	// Determine dispatch strategy early (before building args) to intercept array callback methods.
+	objType := b.getGoType(prop.Expression)
+	declType := objType
+	if prop.Expression.Kind == ast.KindIdentifier {
+		goName := goVarName(prop.Expression.AsIdentifier().Text)
+		if tracked, ok := b.varTypes[goName]; ok {
+			declType = tracked
+		}
+	}
+
+	// Array callback methods: build IRArrayMethodCall with typed callback
+	if prop.QuestionDotToken == nil &&
+		!(prop.Expression.Kind == ast.KindIdentifier && jsGlobalObjects[prop.Expression.AsIdentifier().Text]) &&
+		prop.Expression.Kind != ast.KindThisKeyword &&
+		arrayCallbackMethods[methodName] {
+		dispatch := b.dispatchMethod(objType, declType)
+		if dispatch == DispatchArrayHelper {
+			return b.buildArrayMethodCall(call, objType, methodName, resultType)
+		}
+	}
+
 	args := b.buildArgList(call.Arguments)
 
 	// Optional chaining call: obj?.method() → nil check
 	if prop.QuestionDotToken != nil {
 		obj := b.BuildExpr(prop.Expression)
-		objType := b.getGoType(prop.Expression)
-		if objType.IsAny() {
+		optObjType := b.getGoType(prop.Expression)
+		if optObjType.IsAny() {
 			// any-typed: fall through to normal dispatch which uses jsrt.Obj (nil-safe)
 			b.addImport("github.com/i2y/ramune/jsrt", "")
 		} else {
@@ -917,16 +957,6 @@ func (b *IRBuilder) buildMethodCallExpr(call *ast.CallExpression, resultType GoT
 		objName := prop.Expression.AsIdentifier().Text
 		if jsGlobalObjects[objName] {
 			return b.buildGlobalStaticCall(objName, methodName, args, resultType)
-		}
-	}
-
-	// Determine dispatch strategy
-	objType := b.getGoType(prop.Expression)
-	declType := objType
-	if prop.Expression.Kind == ast.KindIdentifier {
-		goName := goVarName(prop.Expression.AsIdentifier().Text)
-		if tracked, ok := b.varTypes[goName]; ok {
-			declType = tracked
 		}
 	}
 
@@ -2480,4 +2510,195 @@ func tsOpToGoOp(op ast.Kind) string {
 
 func escapeFormatString(s string) string {
 	return strings.ReplaceAll(s, "%", "%%")
+}
+
+// --------------------------------------------------------------------
+// Array method callback typing
+// --------------------------------------------------------------------
+
+// buildArrayMethodCall builds an IRArrayMethodCall with properly typed callback parameters.
+func (b *IRBuilder) buildArrayMethodCall(call *ast.CallExpression, objType GoTypeInfo, method string, resultType GoTypeInfo) GoExpr {
+	prop := call.Expression.AsPropertyAccessExpression()
+	arrayExpr := b.BuildExpr(prop.Expression)
+	elemType := objType.ElemType
+	if elemType == "" {
+		elemType = "any"
+	}
+
+	cbParamTypes, cbRetType := b.arrayMethodSignature(method, elemType, call)
+
+	var callback GoExpr
+	var extraArgs []GoExpr
+
+	args := call.Arguments
+	if args != nil && len(args.Nodes) > 0 {
+		cbNode := args.Nodes[0]
+		if cbNode.Kind == ast.KindArrowFunction || cbNode.Kind == ast.KindFunctionExpression {
+			callback = b.buildTypedCallbackFunc(cbNode, cbParamTypes, cbRetType)
+		} else {
+			callback = b.BuildExpr(cbNode)
+		}
+		// Extra args (e.g., initial value for reduce)
+		for i := 1; i < len(args.Nodes); i++ {
+			extraArgs = append(extraArgs, b.BuildExpr(args.Nodes[i]))
+		}
+	}
+
+	return &IRArrayMethodCall{
+		exprBase:   exprBase{Typ: resultType},
+		HelperFunc: goExportedName(method),
+		Array:      arrayExpr,
+		Callback:   callback,
+		ExtraArgs:  extraArgs,
+		ElemType:   elemType,
+	}
+}
+
+// arrayMethodSignature returns callback parameter types and return type for an array method.
+func (b *IRBuilder) arrayMethodSignature(method, elemType string, call *ast.CallExpression) (cbParams []GoTypeInfo, cbRetType GoTypeInfo) {
+	elem := goTypeInfoFromString(elemType)
+	intType := goTypeInfoFromString("int")
+
+	switch method {
+	case "map":
+		retElemType := b.inferCallResultElemType(call)
+		cbParams = []GoTypeInfo{elem, intType}
+		cbRetType = goTypeInfoFromString(retElemType)
+	case "flatMap":
+		retElemType := b.inferCallResultElemType(call)
+		cbParams = []GoTypeInfo{elem, intType}
+		cbRetType = goTypeInfoFromString("[]" + retElemType)
+	case "filter":
+		cbParams = []GoTypeInfo{elem, intType}
+		cbRetType = goTypeInfoFromString("bool")
+	case "forEach":
+		cbParams = []GoTypeInfo{elem, intType}
+		cbRetType = GoTypeInfo{}
+	case "find":
+		cbParams = []GoTypeInfo{elem, intType}
+		cbRetType = goTypeInfoFromString("bool")
+	case "findIndex":
+		cbParams = []GoTypeInfo{elem, intType}
+		cbRetType = goTypeInfoFromString("bool")
+	case "some", "every":
+		cbParams = []GoTypeInfo{elem, intType}
+		cbRetType = goTypeInfoFromString("bool")
+	case "reduce":
+		accType := b.inferCallResultType(call)
+		cbParams = []GoTypeInfo{goTypeInfoFromString(accType), elem, intType}
+		cbRetType = goTypeInfoFromString(accType)
+	default:
+		cbParams = []GoTypeInfo{elem, intType}
+		cbRetType = GoTypeInfo{}
+	}
+	return
+}
+
+// buildTypedCallbackFunc builds a function literal with overridden parameter types.
+func (b *IRBuilder) buildTypedCallbackFunc(node *ast.Node, paramTypes []GoTypeInfo, retType GoTypeInfo) GoExpr {
+	params := node.Parameters()
+	var irParams []IRParam
+
+	nUserParams := 0
+	if params != nil {
+		nUserParams = len(params)
+	}
+
+	// Build params: override types from context, limit to what the callback expects
+	maxParams := len(paramTypes)
+	if nUserParams < maxParams {
+		maxParams = nUserParams
+	}
+	for i := 0; i < maxParams; i++ {
+		p := params[i].AsParameterDeclaration()
+		name := goParamName(nodeText(p.Name()))
+		irParams = append(irParams, IRParam{Name: name, Typ: paramTypes[i]})
+	}
+	// Pad unused params (e.g., callback takes 1 param but Go expects 2)
+	for i := nUserParams; i < len(paramTypes); i++ {
+		irParams = append(irParams, IRParam{Name: "_", Typ: paramTypes[i]})
+	}
+
+	// Track callback param types for body resolution
+	savedVarTypes := make(map[string]GoTypeInfo)
+	for _, p := range irParams {
+		if p.Name != "_" {
+			if old, ok := b.varTypes[p.Name]; ok {
+				savedVarTypes[p.Name] = old
+			}
+			b.trackVar(p.Name, p.Typ)
+		}
+	}
+
+	isAsync := ast.HasSyntacticModifier(node, ast.ModifierFlagsAsync)
+	savedAsync := b.inAsyncBody
+	savedRetType := b.currentRetType
+	b.inAsyncBody = isAsync
+	b.currentRetType = retType.GoStr
+
+	var body []GoStmt
+	if node.Kind == ast.KindArrowFunction {
+		arrow := node.AsArrowFunction()
+		if arrow.Body.Kind == ast.KindBlock {
+			body = b.buildStmtList(arrow.Body)
+		} else {
+			body = []GoStmt{&IRReturn{Values: []GoExpr{b.BuildExpr(arrow.Body)}}}
+		}
+	} else {
+		body = b.buildStmtList(node.Body())
+	}
+
+	b.inAsyncBody = savedAsync
+	b.currentRetType = savedRetType
+
+	// Restore previous var types
+	for _, p := range irParams {
+		if p.Name != "_" {
+			if old, ok := savedVarTypes[p.Name]; ok {
+				b.trackVar(p.Name, old)
+			} else {
+				delete(b.varTypes, p.Name)
+			}
+		}
+	}
+
+	return &IRFuncLit{
+		exprBase: exprBase{Typ: GoTypeInfo{Category: GoTypeFunc, GoStr: "func"}},
+		Params:   irParams,
+		RetType:  retType,
+		Body:     body,
+		IsAsync:  isAsync,
+	}
+}
+
+// inferCallResultElemType infers the element type of an array-returning call expression.
+func (b *IRBuilder) inferCallResultElemType(call *ast.CallExpression) string {
+	if b.ck == nil {
+		return "any"
+	}
+	resultType := b.ck.GetTypeAtLocation(call.AsNode())
+	if resultType == nil {
+		return "any"
+	}
+	info := b.tm.goTypeInfo(resultType)
+	if info.IsSlice() && info.ElemType != "" {
+		return info.ElemType
+	}
+	return "any"
+}
+
+// inferCallResultType infers the Go type string of a call expression's result.
+func (b *IRBuilder) inferCallResultType(call *ast.CallExpression) string {
+	if b.ck == nil {
+		return "any"
+	}
+	resultType := b.ck.GetTypeAtLocation(call.AsNode())
+	if resultType == nil {
+		return "any"
+	}
+	goStr := b.tm.goType(resultType)
+	if goStr == "" {
+		return "any"
+	}
+	return goStr
 }

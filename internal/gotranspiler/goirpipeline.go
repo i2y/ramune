@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/i2y/ramune/internal/tsgo/ast"
 	"github.com/i2y/ramune/internal/tsgo/bundled"
@@ -363,11 +364,28 @@ func modulePathToGoAlias(modulePath string) string {
 
 // modulePathToGoImport converts a TS module path to a Go import path.
 func modulePathToGoImport(modulePath string) string {
-	// Relative imports don't have Go import paths (handled by same-package)
-	if modulePath[0] == '.' {
+	if modulePath == "" || modulePath[0] == '.' {
 		return ""
 	}
-	// npm packages map to Go packages (simplified)
+
+	// go: prefix → direct Go import path
+	if goPath, ok := strings.CutPrefix(modulePath, "go:"); ok {
+		return goPath
+	}
+
+	// Strip node: prefix (e.g., "node:fs" → "fs")
+	cleanPath := strings.TrimPrefix(modulePath, "node:")
+
+	// Node.js builtin → jsrt adapter
+	if goImport, ok := nodeModuleToGoImport[cleanPath]; ok {
+		return goImport
+	}
+
+	// npm package → compat adapter
+	if goImport, ok := npmToGoImport[cleanPath]; ok {
+		return goImport
+	}
+
 	return ""
 }
 
