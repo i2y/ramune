@@ -1834,10 +1834,14 @@ type discriminatedVariant struct {
 	Type *checker.Type // Checker type
 }
 
-// getDiscriminatedUnionVariants checks if a union is a discriminated union
-// (all members are named object types with a common string literal discriminant field).
-// Returns the variants, or nil if not a discriminated union.
+// getDiscriminatedUnionVariants checks if a union is a discriminated union.
 func (t *Transpiler) getDiscriminatedUnionVariants(union *checker.UnionType) []discriminatedVariant {
+	return detectDiscriminatedUnion(t.ck, union)
+}
+
+// detectDiscriminatedUnion checks if a union is a discriminated union
+// (all members are named object types with a common discriminant field).
+func detectDiscriminatedUnion(ck *checker.Checker, union *checker.UnionType) []discriminatedVariant {
 	types := union.Types()
 	if len(types) < 2 {
 		return nil
@@ -1845,11 +1849,9 @@ func (t *Transpiler) getDiscriminatedUnionVariants(union *checker.UnionType) []d
 
 	var variants []discriminatedVariant
 	for _, ut := range types {
-		// Skip null/undefined
 		if ut.Flags()&checker.TypeFlagsNullable != 0 {
 			continue
 		}
-		// Must be an object type with a symbol (named type)
 		if ut.Flags()&checker.TypeFlagsObject == 0 {
 			return nil
 		}
@@ -1867,36 +1869,20 @@ func (t *Transpiler) getDiscriminatedUnionVariants(union *checker.UnionType) []d
 		return nil
 	}
 
-	// Check that all variants have a common string-literal field (discriminant)
-	// For simplicity, check for a "kind" or "type" field
-	hasCommonField := false
 	for _, fieldName := range discriminantFieldNames {
 		allHave := true
 		for _, v := range variants {
-			props := t.ck.GetPropertiesOfType(v.Type)
-			found := false
-			for _, p := range props {
-				if p.Name == fieldName {
-					found = true
-					break
-				}
-			}
-			if !found {
+			if ck.GetPropertyOfType(v.Type, fieldName) == nil {
 				allHave = false
 				break
 			}
 		}
 		if allHave {
-			hasCommonField = true
-			break
+			return variants
 		}
 	}
 
-	if !hasCommonField {
-		return nil
-	}
-
-	return variants
+	return nil
 }
 
 // emitDiscriminatedUnion generates a Go interface with a marker method

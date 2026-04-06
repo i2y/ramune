@@ -68,7 +68,6 @@ func (b *IRBuilder) resolvePendingImport(alias string) {
 	}
 }
 
-
 // getGoType returns the Go type for an AST node using the checker's flow-narrowed type.
 func (b *IRBuilder) getGoType(node *ast.Node) GoTypeInfo {
 	if b.ck == nil || node == nil {
@@ -930,8 +929,7 @@ func (b *IRBuilder) buildMethodCallExpr(call *ast.CallExpression, resultType GoT
 	// Optional chaining call: obj?.method() → nil check
 	if prop.QuestionDotToken != nil {
 		obj := b.BuildExpr(prop.Expression)
-		optObjType := b.getGoType(prop.Expression)
-		if optObjType.IsAny() {
+		if objType.IsAny() {
 			// any-typed: fall through to normal dispatch which uses jsrt.Obj (nil-safe)
 			b.addImport("github.com/i2y/ramune/jsrt", "")
 		} else {
@@ -2558,38 +2556,19 @@ func (b *IRBuilder) buildArrayMethodCall(call *ast.CallExpression, objType GoTyp
 func (b *IRBuilder) arrayMethodSignature(method, elemType string, call *ast.CallExpression) (cbParams []GoTypeInfo, cbRetType GoTypeInfo) {
 	elem := goTypeInfoFromString(elemType)
 	intType := goTypeInfoFromString("int")
+	cbParams = []GoTypeInfo{elem, intType}
 
 	switch method {
 	case "map":
-		retElemType := b.inferCallResultElemType(call)
-		cbParams = []GoTypeInfo{elem, intType}
-		cbRetType = goTypeInfoFromString(retElemType)
+		cbRetType = goTypeInfoFromString(b.inferCallResultElemType(call))
 	case "flatMap":
-		retElemType := b.inferCallResultElemType(call)
-		cbParams = []GoTypeInfo{elem, intType}
-		cbRetType = goTypeInfoFromString("[]" + retElemType)
-	case "filter":
-		cbParams = []GoTypeInfo{elem, intType}
-		cbRetType = goTypeInfoFromString("bool")
-	case "forEach":
-		cbParams = []GoTypeInfo{elem, intType}
-		cbRetType = GoTypeInfo{}
-	case "find":
-		cbParams = []GoTypeInfo{elem, intType}
-		cbRetType = goTypeInfoFromString("bool")
-	case "findIndex":
-		cbParams = []GoTypeInfo{elem, intType}
-		cbRetType = goTypeInfoFromString("bool")
-	case "some", "every":
-		cbParams = []GoTypeInfo{elem, intType}
+		cbRetType = goTypeInfoFromString("[]" + b.inferCallResultElemType(call))
+	case "filter", "find", "findIndex", "some", "every":
 		cbRetType = goTypeInfoFromString("bool")
 	case "reduce":
 		accType := b.inferCallResultType(call)
 		cbParams = []GoTypeInfo{goTypeInfoFromString(accType), elem, intType}
 		cbRetType = goTypeInfoFromString(accType)
-	default:
-		cbParams = []GoTypeInfo{elem, intType}
-		cbRetType = GoTypeInfo{}
 	}
 	return
 }

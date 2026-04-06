@@ -1117,55 +1117,7 @@ func (b *IRBuilder) buildExportAssignment(node *ast.Node) []GoDecl {
 // getDiscriminatedUnionVariants checks if a union is a discriminated union
 // (all members are named object types with a common discriminant field).
 func (b *IRBuilder) getDiscriminatedUnionVariants(union *checker.UnionType) []discriminatedVariant {
-	types := union.Types()
-	if len(types) < 2 {
-		return nil
-	}
-
-	var variants []discriminatedVariant
-	for _, ut := range types {
-		if ut.Flags()&checker.TypeFlagsNullable != 0 {
-			continue
-		}
-		if ut.Flags()&checker.TypeFlagsObject == 0 {
-			return nil
-		}
-		sym := ut.Symbol()
-		if sym == nil || sym.Name == "" || strings.HasPrefix(sym.Name, "__") {
-			return nil
-		}
-		variants = append(variants, discriminatedVariant{
-			Name: goTypeName(sym.Name),
-			Type: ut,
-		})
-	}
-
-	if len(variants) < 2 {
-		return nil
-	}
-
-	// Check that all variants share a common discriminant field
-	for _, fieldName := range discriminantFieldNames {
-		allHave := true
-		for _, v := range variants {
-			found := false
-			for _, p := range b.ck.GetPropertiesOfType(v.Type) {
-				if p.Name == fieldName {
-					found = true
-					break
-				}
-			}
-			if !found {
-				allHave = false
-				break
-			}
-		}
-		if allHave {
-			return variants
-		}
-	}
-
-	return nil
+	return detectDiscriminatedUnion(b.ck, union)
 }
 
 // commonFieldInfo holds a shared field across union variants.
@@ -1186,14 +1138,7 @@ func (b *IRBuilder) buildDiscriminatedUnion(name string, variants []discriminate
 		for _, p := range firstProps {
 			allHave := true
 			for _, v := range variants[1:] {
-				found := false
-				for _, vp := range b.ck.GetPropertiesOfType(v.Type) {
-					if vp.Name == p.Name {
-						found = true
-						break
-					}
-				}
-				if !found {
+				if b.ck.GetPropertyOfType(v.Type, p.Name) == nil {
 					allHave = false
 					break
 				}
@@ -1209,13 +1154,9 @@ func (b *IRBuilder) buildDiscriminatedUnion(name string, variants []discriminate
 		fieldType := ""
 		for _, v := range variants {
 			vType := "any"
-			for _, p := range b.ck.GetPropertiesOfType(v.Type) {
-				if p.Name == field.name {
-					pt := b.ck.GetTypeOfSymbol(p)
-					if pt != nil {
-						vType = b.tm.goType(pt)
-					}
-					break
+			if p := b.ck.GetPropertyOfType(v.Type, field.name); p != nil {
+				if pt := b.ck.GetTypeOfSymbol(p); pt != nil {
+					vType = b.tm.goType(pt)
 				}
 			}
 			if fieldType == "" {
@@ -1261,13 +1202,9 @@ func (b *IRBuilder) buildDiscriminatedUnion(name string, variants []discriminate
 		for _, field := range commonFields {
 			goField := goExportedName(field.name)
 			varFieldType := field.goType
-			for _, p := range b.ck.GetPropertiesOfType(v.Type) {
-				if p.Name == field.name {
-					pt := b.ck.GetTypeOfSymbol(p)
-					if pt != nil {
-						varFieldType = b.tm.goType(pt)
-					}
-					break
+			if p := b.ck.GetPropertyOfType(v.Type, field.name); p != nil {
+				if pt := b.ck.GetTypeOfSymbol(p); pt != nil {
+					varFieldType = b.tm.goType(pt)
 				}
 			}
 			if varFieldType == "" {
