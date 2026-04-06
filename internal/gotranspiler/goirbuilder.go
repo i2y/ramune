@@ -892,7 +892,7 @@ func (b *IRBuilder) buildMethodCallExpr(call *ast.CallExpression, resultType GoT
 		obj := b.BuildExpr(prop.Expression)
 		objType := b.getGoType(prop.Expression)
 		if objType.IsAny() {
-			// any-typed → jsrt.Obj dispatch (already nil-safe)
+			// any-typed: fall through to normal dispatch which uses jsrt.Obj (nil-safe)
 			b.addImport("github.com/i2y/ramune/jsrt", "")
 		} else {
 			// Concrete type → nil check wrapping
@@ -2009,7 +2009,9 @@ func (b *IRBuilder) buildForInOfStmt(node *ast.Node) GoStmt {
 			UseShort: true,
 		}
 
-		body := append([]GoStmt{awaitStmt}, innerBody...)
+		body := make([]GoStmt, 0, 1+len(innerBody))
+		body = append(body, awaitStmt)
+		body = append(body, innerBody...)
 		return &IRRange{Key: "_", Value: "__p", Over: over, Body: body}
 	}
 
@@ -2304,23 +2306,15 @@ func (b *IRBuilder) buildArrayDestructuring(pattern *ast.Node, initializer *ast.
 	return stmts
 }
 
-// buildDestructuringDefault generates: if localName == zero { localName = defaultVal }
-func (b *IRBuilder) buildDestructuringDefault(localName string, defaultVal GoExpr, isAny bool) []GoStmt {
-	var zeroVal GoExpr
-	var op string
-	if isAny {
-		zeroVal = irNil()
-		op = "=="
-	} else {
-		zeroVal = irString(`""`)
-		op = "=="
-	}
+// buildDestructuringDefault generates: if localName == nil { localName = defaultVal }
+// JS defaults trigger on undefined (nil in Go), so nil check is always correct.
+func (b *IRBuilder) buildDestructuringDefault(localName string, defaultVal GoExpr, _ bool) []GoStmt {
 	return []GoStmt{&IRIf{
 		Cond: &IRBinaryOp{
 			exprBase: exprBase{Typ: GoTypeInfo{GoStr: "bool"}},
-			Op:       op,
+			Op:       "==",
 			Left:     &IRIdent{exprBase: exprBase{}, Name: localName},
-			Right:    zeroVal,
+			Right:    irNil(),
 		},
 		Body: []GoStmt{&IRAssign{
 			Targets: []GoExpr{&IRIdent{exprBase: exprBase{}, Name: localName}},
