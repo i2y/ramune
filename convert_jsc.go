@@ -3,6 +3,7 @@
 package ramune
 
 import (
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"runtime"
@@ -84,36 +85,9 @@ func (r *Runtime) goToJS(v any) (uintptr, error) {
 		}
 		return obj, nil
 	case map[string]any:
-		obj := r.jsObjectMake(r.ctx, 0, 0)
-		if obj == 0 {
-			return 0, fmt.Errorf("ramune: JSObjectMake returned NULL")
-		}
-		for key, elem := range val {
-			jsVal, err := r.goToJS(elem)
-			if err != nil {
-				return 0, fmt.Errorf("ramune: map key %q: %w", key, err)
-			}
-			jsKey := r.jsStringCreateWithUTF8CString(key)
-			r.jsObjectSetProperty(r.ctx, obj, jsKey, jsVal, 0, 0)
-			r.jsStringRelease(jsKey)
-		}
-		return obj, nil
+		return r.jsonParseToJS(val)
 	case []any:
-		jsArgs := make([]uintptr, len(val))
-		for i, elem := range val {
-			jsVal, err := r.goToJS(elem)
-			if err != nil {
-				return 0, fmt.Errorf("ramune: slice index %d: %w", i, err)
-			}
-			jsArgs[i] = jsVal
-		}
-		var exc uintptr
-		arr := r.jsObjectMakeArray(r.ctx, uint64(len(jsArgs)), jsArgs, uintptr(unsafe.Pointer(&exc)))
-		if exc != 0 {
-			msg := r.jsValueToGoString(exc)
-			return 0, fmt.Errorf("ramune: JSObjectMakeArray: %s", msg)
-		}
-		return arr, nil
+		return r.jsonParseToJS(val)
 	default:
 		rv := reflect.ValueOf(v)
 		origVal := rv
@@ -125,40 +99,12 @@ func (r *Runtime) goToJS(v any) (uintptr, error) {
 
 		// Handle arbitrary slices via reflection (e.g. []int, []string)
 		if rv.Kind() == reflect.Slice {
-			jsArgs := make([]uintptr, rv.Len())
-			for i := 0; i < rv.Len(); i++ {
-				jsVal, err := r.goToJS(rv.Index(i).Interface())
-				if err != nil {
-					return 0, fmt.Errorf("ramune: slice index %d: %w", i, err)
-				}
-				jsArgs[i] = jsVal
-			}
-			var exc uintptr
-			arr := r.jsObjectMakeArray(r.ctx, uint64(len(jsArgs)), jsArgs, uintptr(unsafe.Pointer(&exc)))
-			if exc != 0 {
-				msg := r.jsValueToGoString(exc)
-				return 0, fmt.Errorf("ramune: JSObjectMakeArray: %s", msg)
-			}
-			return arr, nil
+			return r.jsonParseToJS(val)
 		}
 
 		// Handle arbitrary maps with string keys via reflection (e.g. map[string]int)
 		if rv.Kind() == reflect.Map && rv.Type().Key().Kind() == reflect.String {
-			obj := r.jsObjectMake(r.ctx, 0, 0)
-			if obj == 0 {
-				return 0, fmt.Errorf("ramune: JSObjectMake returned NULL")
-			}
-			iter := rv.MapRange()
-			for iter.Next() {
-				jsVal, err := r.goToJS(iter.Value().Interface())
-				if err != nil {
-					return 0, fmt.Errorf("ramune: map key %q: %w", iter.Key().String(), err)
-				}
-				jsKey := r.jsStringCreateWithUTF8CString(iter.Key().String())
-				r.jsObjectSetProperty(r.ctx, obj, jsKey, jsVal, 0, 0)
-				r.jsStringRelease(jsKey)
-			}
-			return obj, nil
+			return r.jsonParseToJS(val)
 		}
 
 		if rv.Kind() == reflect.Ptr {
@@ -224,6 +170,55 @@ func (r *Runtime) promiseToJS(rv reflect.Value) (uintptr, error) {
 	}()
 
 	return jsPromise, nil
+}
+
+// ensureJSONParse caches the JSON.parse function reference.
+// Must be called on the dedicated JSC goroutine.
+func (r *Runtime) ensureJSONParse() {
+	if r.jsonParseFn != 0 {
+		return
+	}
+	global := r.jsContextGetGlobalObject(r.ctx)
+	jsonName := r.jsStringCreateWithUTF8CString("JSON")
+	defer r.jsStringRelease(jsonName)
+	jsonObj := r.jsObjectGetProperty(r.ctx, global, jsonName, 0)
+
+	parseName := r.jsStringCreateWithUTF8CString("parse")
+	defer r.jsStringRelease(parseName)
+	fn := r.jsObjectGetProperty(r.ctx, jsonObj, parseName, 0)
+
+	r.jsValueProtect(r.ctx, fn)
+	r.jsonParseFn = fn
+}
+
+// jsonParseToJS converts a Go value to a JSValueRef via JSON.parse.
+// This avoids using jsObjectMake + jsObjectSetProperty which can corrupt
+// JSC's structure table under rapid structure transitions.
+// Must be called on the dedicated JSC goroutine.
+func (r *Runtime) jsonParseToJS(v any) (uintptr, error) {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return 0, fmt.Errorf("ramune: json.Marshal: %w", err)
+	}
+	r.ensureJSONParse()
+	fnObj := r.jsValueToObject(r.ctx, r.jsonParseFn, 0)
+	if fnObj == 0 {
+		return 0, fmt.Errorf("ramune: JSON.parse not available")
+	}
+	jsStr := r.jsStringCreateWithUTF8CString(string(data))
+	jsVal := r.jsValueMakeString(r.ctx, jsStr)
+	r.jsStringRelease(jsStr)
+	args := []uintptr{jsVal}
+	var exc uintptr
+	result := r.jsObjectCallAsFunction(r.ctx, fnObj, 0, 1, args, uintptr(unsafe.Pointer(&exc)))
+	if exc != 0 {
+		msg := r.jsValueToGoString(exc)
+		return 0, fmt.Errorf("ramune: JSON.parse: %s", msg)
+	}
+	if result == 0 {
+		return r.jsValueMakeNull(r.ctx), nil
+	}
+	return result, nil
 }
 
 // structToJSObject converts a Go struct to a JS object with live getter/setter

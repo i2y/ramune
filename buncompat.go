@@ -157,11 +157,7 @@ func (s *bunServerState) start(port int) (int, error) {
 		return 0, err
 	}
 
-	// Disable Go's automatic GC while the HTTP server is running if configured.
-	// Go's concurrent GC corrupts JSC's internal property tables under load.
-	if s.rt.gcConfig.DisableAutoGC {
-		debug.SetGCPercent(-1)
-	} else if s.rt.gcConfig.GCPercent != 0 {
+	if s.rt.gcConfig.GCPercent != 0 {
 		debug.SetGCPercent(s.rt.gcConfig.GCPercent)
 	}
 
@@ -277,8 +273,9 @@ func (s *bunServerState) stop() {
 	if s.wsMgr != nil {
 		s.wsMgr.closeAll()
 	}
-	// Re-enable Go's automatic GC.
-	debug.SetGCPercent(s.rt.gcConfig.GCPercent)
+	if s.rt.gcConfig.GCPercent != 0 {
+		debug.SetGCPercent(s.rt.gcConfig.GCPercent)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.server != nil {

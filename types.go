@@ -19,28 +19,21 @@ type CallbackContext struct {
 
 // GCConfig configures garbage collection behavior for a Runtime.
 type GCConfig struct {
-	// DisableAutoGC disables Go's automatic GC while the HTTP server is
-	// running. Manual GC is triggered every GCInterval requests.
-	// Default: true (for HTTP server stability).
-	DisableAutoGC bool
-
-	// GCInterval is the number of HTTP requests between manual GC cycles.
-	// Lower values use more CPU but prevent memory growth.
-	// Default: 5000. Set to 0 to disable manual GC.
+	// GCInterval is the number of HTTP requests between manual JSC GC cycles.
+	// Lower values use more CPU but prevent JS memory growth.
+	// Default: 2000. Set to 0 to disable manual JSC GC.
 	GCInterval int
 
 	// GCPercent sets the Go GC target percentage (same as GOGC env var).
-	// Only used when DisableAutoGC is false.
-	// Default: 100 (Go's default). Set to -1 to disable GC entirely.
+	// Applied when the HTTP server starts. Default: 100 (Go's default).
 	GCPercent int
 }
 
 // DefaultGCConfig returns the default GC configuration.
 func DefaultGCConfig() GCConfig {
 	return GCConfig{
-		DisableAutoGC: true,
-		GCInterval:    2000,
-		GCPercent:     100,
+		GCInterval: 2000,
+		GCPercent:  100,
 	}
 }
 

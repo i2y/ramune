@@ -73,12 +73,11 @@ func BenchmarkEvalString(b *testing.B) {
 	}
 }
 
-// BenchmarkNewObject and BenchmarkNewArray are disabled because
-// JSC's internal property table becomes inconsistent under extreme
-// allocation pressure (>100K objects/sec). This appears to be a
-// JSC bug triggered by rapid structure transitions. The lockJSC
-// and deferred unprotect queue mitigate the issue for normal use
-// but not for sustained micro-benchmark pressure.
+// BenchmarkNewObject and BenchmarkNewArray were previously disabled because
+// JSC's internal property table became inconsistent when jsObjectMake +
+// jsObjectSetProperty were called rapidly (rapid structure transitions).
+// This was fixed by switching map/slice conversion to JSON.parse-based approach
+// in goToJS, which avoids the C API structure creation path.
 
 func BenchmarkRegisterFuncCall(b *testing.B) {
 	rt := benchRT(b)

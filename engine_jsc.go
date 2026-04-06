@@ -80,9 +80,6 @@ import (
 	"github.com/ebitengine/purego"
 )
 
-// GCConfig controls garbage collection behavior for JSC interoperability.
-// Go's concurrent GC can corrupt JSC's internal structures under high load.
-// These settings allow tuning the tradeoff between performance and stability.
 // Engine returns the name of the JS engine backend.
 func (r *Runtime) Engine() string { return "jsc" }
 
@@ -175,6 +172,7 @@ type Runtime struct {
 
 	callbacks       []uintptr           // prevent GC of purego callbacks
 	jsonStringifyFn uintptr             // cached JSON.stringify JSObjectRef
+	jsonParseFn     uintptr             // cached JSON.parse JSObjectRef
 	goFuncs         []GoFunc            // registered Go functions (ID dispatch)
 	dispatcherReady bool                // single dispatcher callback created
 	nativeMethodSeq int                 // counter for unique native method callback names
@@ -502,6 +500,10 @@ func (r *Runtime) Close() error {
 			if r.jsonStringifyFn != 0 {
 				r.jsValueUnprotect(r.ctx, r.jsonStringifyFn)
 				r.jsonStringifyFn = 0
+			}
+			if r.jsonParseFn != 0 {
+				r.jsValueUnprotect(r.ctx, r.jsonParseFn)
+				r.jsonParseFn = 0
 			}
 			if r.poolHandleFn != 0 {
 				r.jsValueUnprotect(r.ctx, r.poolHandleFn)

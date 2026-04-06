@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
-	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
@@ -36,7 +35,6 @@ func main() {
 	}
 
 	if len(os.Args) > 2 && os.Args[2] == "single" {
-		debug.SetGCPercent(-1)
 		n := maxWorkers
 		fmt.Printf("--- %d Worker(s) ---\n", n)
 		runBench(n)

@@ -132,10 +132,9 @@ func (p *RuntimePool) ListenAndServe(addr string, jsHandler string) error {
 		})
 	}
 
-	// Disable auto GC during serving.
 	for _, rt := range p.workers {
-		if rt.gcConfig.DisableAutoGC {
-			debug.SetGCPercent(-1)
+		if rt.gcConfig.GCPercent != 0 {
+			debug.SetGCPercent(rt.gcConfig.GCPercent)
 			break
 		}
 	}
@@ -237,8 +236,7 @@ func (p *RuntimePool) StopHTTP() {
 		}
 	}
 
-	// Re-enable auto GC.
-	if len(p.workers) > 0 {
+	if len(p.workers) > 0 && p.workers[0].gcConfig.GCPercent != 0 {
 		debug.SetGCPercent(p.workers[0].gcConfig.GCPercent)
 	}
 }
