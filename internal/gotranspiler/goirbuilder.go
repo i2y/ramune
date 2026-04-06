@@ -2311,7 +2311,7 @@ func (b *IRBuilder) buildVarDeclList(node *ast.Node) GoStmt {
 	if len(stmts) == 1 {
 		return stmts[0]
 	}
-	return &IRBlock{Stmts: stmts}
+	return &IRBlock{Stmts: stmts, Bare: true}
 }
 
 // --------------------------------------------------------------------
@@ -2335,6 +2335,7 @@ func (b *IRBuilder) buildObjectDestructuring(pattern *ast.Node, initializer *ast
 		Name: tmpVar, Typ: initType, Init: initExpr, UseShort: true,
 	})
 
+	var namedKeys []string // track extracted keys for rest element
 	for _, elem := range bp.Elements.Nodes {
 		be := elem.AsBindingElement()
 		elemName := elem.Name()
@@ -2347,6 +2348,24 @@ func (b *IRBuilder) buildObjectDestructuring(pattern *ast.Node, initializer *ast
 		if be.PropertyName != nil && be.PropertyName.Kind == ast.KindIdentifier {
 			propName = be.PropertyName.AsIdentifier().Text
 		}
+
+		// Rest element: const { a, ...rest } = obj
+		if be.DotDotDotToken != nil {
+			b.addImport("github.com/i2y/ramune/jsrt", "")
+			var keyArgs []GoExpr
+			keyArgs = append(keyArgs, &IRIdent{Name: tmpVar})
+			for _, k := range namedKeys {
+				keyArgs = append(keyArgs, irString(fmt.Sprintf("%q", k)))
+			}
+			stmts = append(stmts, &IRVarDecl{
+				Name: localName, Typ: GoTypeInfo{GoStr: "any"},
+				Init:     &IRStdlibCall{exprBase: exprBase{Typ: GoTypeInfo{GoStr: "any"}}, Package: "jsrt", Func: "OmitKeys", Args: keyArgs},
+				UseShort: true,
+			})
+			continue
+		}
+
+		namedKeys = append(namedKeys, goExportedName(propName))
 
 		var access GoExpr
 		if initIsAny {

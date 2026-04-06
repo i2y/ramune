@@ -381,6 +381,7 @@ type IRCase struct {
 type IRBlock struct {
 	stmtBase
 	Stmts []GoStmt
+	Bare  bool // if true, emit statements without surrounding braces
 }
 
 // IRBreak is a break statement with optional label.

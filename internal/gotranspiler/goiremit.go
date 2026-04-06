@@ -1046,6 +1046,10 @@ func (e *IREmitter) emitSwitch(node *IRSwitch) {
 }
 
 func (e *IREmitter) emitBlock(node *IRBlock) {
+	if node.Bare {
+		e.EmitStmts(node.Stmts)
+		return
+	}
 	e.w.openBlock()
 	e.EmitStmts(node.Stmts)
 	e.w.closeBlock()

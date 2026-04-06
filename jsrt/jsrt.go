@@ -119,6 +119,47 @@ func GetField(v any, name string) any {
 	return nil
 }
 
+// OmitKeys returns a shallow copy of the value with the specified keys removed.
+// Works with maps (string keys) and structs (copies to map, omitting named fields).
+func OmitKeys(v any, keys ...string) any {
+	if v == nil {
+		return nil
+	}
+	omit := make(map[string]bool, len(keys))
+	for _, k := range keys {
+		omit[k] = true
+	}
+	rv := reflect.ValueOf(v)
+	for rv.Kind() == reflect.Ptr || rv.Kind() == reflect.Interface {
+		if rv.IsNil() {
+			return nil
+		}
+		rv = rv.Elem()
+	}
+	switch rv.Kind() {
+	case reflect.Map:
+		result := make(map[string]any)
+		for _, key := range rv.MapKeys() {
+			name := key.String()
+			if !omit[name] {
+				result[name] = rv.MapIndex(key).Interface()
+			}
+		}
+		return result
+	case reflect.Struct:
+		result := make(map[string]any)
+		t := rv.Type()
+		for i := range t.NumField() {
+			name := t.Field(i).Name
+			if !omit[name] && t.Field(i).IsExported() {
+				result[name] = rv.Field(i).Interface()
+			}
+		}
+		return result
+	}
+	return v
+}
+
 // ToBool converts any value to boolean using JavaScript truthiness rules.
 // nil, 0, "", false → false; everything else → true.
 func ToBool(v any) bool {
