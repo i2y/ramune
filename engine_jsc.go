@@ -73,6 +73,7 @@ import (
 	"context"
 	"fmt"
 	"runtime"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"unsafe"
@@ -483,6 +484,10 @@ func (r *Runtime) Close() error {
 		// Send cleanup work to the dedicated JSC goroutine.
 		done := make(chan struct{})
 		r.callCh <- func() {
+			// Disable Go GC during JSC cleanup to prevent concurrent GC
+			// from corrupting JSC internals during bulk value unprotection.
+			prevGC := debug.SetGCPercent(-1)
+
 			// Release VM contexts on the JSC thread (JSC API requires same-thread access).
 			if r.vmMgr != nil {
 				r.vmMgr.closeAll(r)
@@ -518,6 +523,8 @@ func (r *Runtime) Close() error {
 			if r.group != 0 {
 				r.jsContextGroupRelease(r.group)
 			}
+
+			debug.SetGCPercent(prevGC)
 			close(done)
 		}
 		<-done
