@@ -626,8 +626,18 @@ func (e *IREmitter) emitNilCheck(node *IRNilCheck) {
 	e.EmitExpr(node.Expr)
 	e.w.write(" != nil { return ")
 	e.EmitExpr(node.Then)
-	e.w.write(" }; return ")
-	e.EmitExpr(node.Else)
+	e.w.write(" }; ")
+	// If else branch is an assignment (??= pattern), split into assignment + return
+	if assign := extractAssignExpr(node.Else); assign != nil {
+		e.EmitExpr(assign.Left)
+		e.w.write(" = ")
+		e.EmitExpr(assign.Right)
+		e.w.write("; return ")
+		e.EmitExpr(assign.Left)
+	} else {
+		e.w.write("return ")
+		e.EmitExpr(node.Else)
+	}
 	e.w.write(" }()")
 }
 
@@ -897,11 +907,24 @@ func (e *IREmitter) emitAssign(node *IRAssign) {
 func (e *IREmitter) emitReturn(node *IRReturn) {
 	if len(node.Values) == 0 {
 		e.w.writeln("return")
-	} else {
-		e.w.write("return ")
-		e.emitExprList(node.Values)
-		e.w.newline()
+		return
 	}
+	// return (x = y) → x = y; return x
+	if len(node.Values) == 1 {
+		if assign := extractAssignExpr(node.Values[0]); assign != nil {
+			e.EmitExpr(assign.Left)
+			e.w.write(" = ")
+			e.EmitExpr(assign.Right)
+			e.w.newline()
+			e.w.write("return ")
+			e.EmitExpr(assign.Left)
+			e.w.newline()
+			return
+		}
+	}
+	e.w.write("return ")
+	e.emitExprList(node.Values)
+	e.w.newline()
 }
 
 func (e *IREmitter) emitIf(node *IRIf) {
@@ -1019,7 +1042,7 @@ func (e *IREmitter) emitTryCatch(node *IRTryCatch) {
 	// Go has no try/catch — use func() with recover()
 	e.w.write("func()")
 	e.w.openBlock()
-	e.w.writeln("defer func()")
+	e.w.write("defer func()")
 	e.w.openBlock()
 	if node.CatchVar != "" {
 		e.w.writef("if %s := recover(); %s != nil", node.CatchVar, node.CatchVar)
@@ -1032,10 +1055,10 @@ func (e *IREmitter) emitTryCatch(node *IRTryCatch) {
 	if len(node.FinallyBody) > 0 {
 		e.EmitStmts(node.FinallyBody)
 	}
-	e.w.closeBlock()
+	e.w.closeBlockInline()
 	e.w.writeln("()")
 	e.EmitStmts(node.TryBody)
-	e.w.closeBlock()
+	e.w.closeBlockInline()
 	e.w.writeln("()")
 }
 
@@ -1201,6 +1224,22 @@ func (e *IREmitter) emitConstGroup(node *IRConstGroupDecl) {
 	}
 	e.w.indent--
 	e.w.writeln(")")
+}
+
+// extractAssignExpr unwraps an assignment expression, looking through parentheses.
+func extractAssignExpr(expr GoExpr) *IRBinaryOp {
+	switch e := expr.(type) {
+	case *IRBinaryOp:
+		if e.Op == "=" {
+			return e
+		}
+	case *IRUnaryOp:
+		// Parenthesized expression: IRUnaryOp{Op: "()", Operand: ...}
+		if e.Op == "()" {
+			return extractAssignExpr(e.Operand)
+		}
+	}
+	return nil
 }
 
 // --------------------------------------------------------------------

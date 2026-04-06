@@ -2049,6 +2049,32 @@ func (b *IRBuilder) buildForInOfStmt(node *ast.Node) GoStmt {
 
 func (b *IRBuilder) buildWhileStmt(node *ast.Node) GoStmt {
 	ws := node.AsWhileStatement()
+
+	// while(i--) / while(i++) — postfix decrement/increment as condition.
+	// Go's i-- is a statement, not an expression. Transform to:
+	//   for i > 0 { i--; body }  (for --)
+	//   for { i++; if i == 0 { break }; body }  (for ++)
+	if ws.Expression.Kind == ast.KindPostfixUnaryExpression {
+		postfix := ws.Expression.AsPostfixUnaryExpression()
+		if postfix.Operator == ast.KindMinusMinusToken {
+			operand := b.BuildExpr(postfix.Operand)
+			body := b.buildStmtList(ws.Statement)
+			decr := &IRExprStmt{Expr: &IRUnaryOp{
+				exprBase: exprBase{Typ: operand.ExprType()},
+				Op:       "--",
+				Operand:  operand,
+				Postfix:  true,
+			}}
+			cond := &IRBinaryOp{
+				exprBase: exprBase{Typ: GoTypeInfo{Category: GoTypePrimitive, GoStr: "bool"}},
+				Op:       ">",
+				Left:     operand,
+				Right:    irFloat64("0"),
+			}
+			return &IRFor{Cond: cond, Body: append([]GoStmt{decr}, body...)}
+		}
+	}
+
 	cond := b.BuildExpr(ws.Expression)
 	body := b.buildStmtList(ws.Statement)
 	return &IRFor{Cond: cond, Body: body}
