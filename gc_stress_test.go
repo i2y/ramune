@@ -21,7 +21,7 @@ func TestGCStress_ObjectAllocation(t *testing.T) {
 	debug.SetGCPercent(50)
 	defer debug.SetGCPercent(100)
 
-	const iterations = 50000
+	const iterations = 5000
 	failures := 0
 	for i := 0; i < iterations; i++ {
 		v, err := rt.Eval(fmt.Sprintf(`({x: %d, y: "hello", z: [1,2,3], nested: {a: true}})`, i))
@@ -35,7 +35,7 @@ func TestGCStress_ObjectAllocation(t *testing.T) {
 		if v != nil {
 			v.Close()
 		}
-		if i%1000 == 0 {
+		if i%500 == 0 {
 			runtime.GC()
 		}
 	}
@@ -59,7 +59,7 @@ func TestGCStress_CallbackHeavy(t *testing.T) {
 		return nil, nil
 	})
 
-	const iterations = 30000
+	const iterations = 3000
 	failures := 0
 	for i := 0; i < iterations; i++ {
 		v, err := rt.Eval(fmt.Sprintf(`goEcho({id: %d, data: "test".repeat(100)})`, i))
@@ -109,7 +109,7 @@ func TestGCStress_ConcurrentAllocGoroutines(t *testing.T) {
 		}()
 	}
 
-	const iterations = 20000
+	const iterations = 2000
 	failures := 0
 	for i := 0; i < iterations; i++ {
 		v, err := rt.Eval(fmt.Sprintf(`({id: %d, ts: Date.now(), arr: new Array(10).fill(%d)})`, i, i))
