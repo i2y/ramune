@@ -640,21 +640,94 @@ func (b *IRBuilder) buildTypeOfComparison(bin *ast.BinaryExpression) GoExpr {
 		return irBool("false")
 	}
 
-	// For any-typed, generate runtime typeof check
-	b.addImport("github.com/i2y/ramune/jsrt", "")
-	cmpOp := "=="
-	if isNeg {
-		cmpOp = "!="
+	// For any-typed, generate idiomatic Go type checks
+	boolType := GoTypeInfo{Category: GoTypePrimitive, GoStr: "bool"}
+
+	switch typeStr {
+	case "undefined":
+		// typeof x === "undefined" → x == nil
+		op := "=="
+		if isNeg {
+			op = "!="
+		}
+		return &IRBinaryOp{
+			exprBase: exprBase{Typ: boolType},
+			Op:       op,
+			Left:     inner,
+			Right:    irNil(),
+		}
+
+	case "string":
+		// typeof x === "string" → func() bool { _, ok := x.(string); return ok }()
+		return b.buildTypeAssertionCheck(inner, "string", isNeg)
+
+	case "number":
+		// typeof x === "number" → type switch with float64, int
+		return b.buildTypeAssertionCheckMulti(inner, []string{"float64", "int"}, isNeg)
+
+	case "boolean":
+		return b.buildTypeAssertionCheck(inner, "bool", isNeg)
+
+	case "function":
+		b.addImport("reflect", "")
+		operand := EmitExprToString(inner)
+		op := "=="
+		if isNeg {
+			op = "!="
+		}
+		code := fmt.Sprintf("reflect.TypeOf(%s).Kind() %s reflect.Func", operand, op)
+		return &IRRawExpr{
+			exprBase: exprBase{Typ: boolType},
+			Code:     code,
+		}
+
+	default:
+		// Fallback: runtime typeof check
+		b.addImport("github.com/i2y/ramune/jsrt", "")
+		cmpOp := "=="
+		if isNeg {
+			cmpOp = "!="
+		}
+		return &IRBinaryOp{
+			exprBase: exprBase{Typ: boolType},
+			Op:       cmpOp,
+			Left: &IRStdlibCall{
+				exprBase: exprBase{Typ: GoTypeInfo{Category: GoTypePrimitive, GoStr: "string"}},
+				Package:  "jsrt", Func: "TypeOf",
+				Args: []GoExpr{inner},
+			},
+			Right: irString(fmt.Sprintf("%q", typeStr)),
+		}
 	}
-	return &IRBinaryOp{
+}
+
+// buildTypeAssertionCheck generates func() bool { _, ok := x.(T); return ok }()
+func (b *IRBuilder) buildTypeAssertionCheck(inner GoExpr, goType string, negate bool) GoExpr {
+	operand := EmitExprToString(inner)
+	retExpr := "ok"
+	if negate {
+		retExpr = "!ok"
+	}
+	code := fmt.Sprintf("func() bool { _, ok := %s.(%s); return %s }()", operand, goType, retExpr)
+	return &IRRawExpr{
 		exprBase: exprBase{Typ: GoTypeInfo{Category: GoTypePrimitive, GoStr: "bool"}},
-		Op:       cmpOp,
-		Left: &IRStdlibCall{
-			exprBase: exprBase{Typ: GoTypeInfo{Category: GoTypePrimitive, GoStr: "string"}},
-			Package:  "jsrt", Func: "TypeOf",
-			Args: []GoExpr{inner},
-		},
-		Right: irString(fmt.Sprintf("%q", typeStr)),
+		Code:     code,
+	}
+}
+
+// buildTypeAssertionCheckMulti generates func() bool { switch x.(type) { case T1, T2: return true ... } }()
+func (b *IRBuilder) buildTypeAssertionCheckMulti(inner GoExpr, goTypes []string, negate bool) GoExpr {
+	operand := EmitExprToString(inner)
+	cases := strings.Join(goTypes, ", ")
+	var code string
+	if negate {
+		code = fmt.Sprintf("func() bool { switch %s.(type) { case %s: return false; default: return true } }()", operand, cases)
+	} else {
+		code = fmt.Sprintf("func() bool { switch %s.(type) { case %s: return true; default: return false } }()", operand, cases)
+	}
+	return &IRRawExpr{
+		exprBase: exprBase{Typ: GoTypeInfo{Category: GoTypePrimitive, GoStr: "bool"}},
+		Code:     code,
 	}
 }
 
@@ -813,6 +886,31 @@ func (b *IRBuilder) buildMethodCallExpr(call *ast.CallExpression, resultType GoT
 	prop := call.Expression.AsPropertyAccessExpression()
 	methodName := nodeText(prop.Name())
 	args := b.buildArgList(call.Arguments)
+
+	// Optional chaining call: obj?.method() → nil check
+	if prop.QuestionDotToken != nil {
+		obj := b.BuildExpr(prop.Expression)
+		objType := b.getGoType(prop.Expression)
+		if objType.IsAny() {
+			// any-typed → jsrt.Obj dispatch (already nil-safe)
+			b.addImport("github.com/i2y/ramune/jsrt", "")
+		} else {
+			// Concrete type → nil check wrapping
+			callExpr := &IRMethodCall{
+				exprBase: exprBase{Typ: resultType},
+				Strategy: DispatchConcreteMethod,
+				Object:   obj,
+				Method:   goExportedName(methodName),
+				Args:     args,
+			}
+			return &IRNilCheck{
+				exprBase: exprBase{Typ: resultType},
+				Expr:     obj,
+				Then:     callExpr,
+				Else:     irNil(),
+			}
+		}
+	}
 
 	// JS global static method calls: Object.keys, JSON.parse, Math.floor, etc.
 	if prop.Expression.Kind == ast.KindIdentifier {
@@ -1873,18 +1971,20 @@ func (b *IRBuilder) buildForStmt(node *ast.Node) GoStmt {
 
 func (b *IRBuilder) buildForInOfStmt(node *ast.Node) GoStmt {
 	fio := node.AsForInOrOfStatement()
+	isAwait := fio.AwaitModifier != nil
 
 	key := "_"
 	value := ""
+	var varName string
 	if fio.Initializer != nil && fio.Initializer.Kind == ast.KindVariableDeclarationList {
 		declList := fio.Initializer.AsVariableDeclarationList()
 		if declList.Declarations != nil && len(declList.Declarations.Nodes) > 0 {
 			name := declList.Declarations.Nodes[0].Name()
 			if name != nil && name.Kind == ast.KindIdentifier {
-				varName := goVarName(name.AsIdentifier().Text)
+				varName = goVarName(name.AsIdentifier().Text)
 				if node.Kind == ast.KindForInStatement {
 					key = varName
-				} else {
+				} else if !isAwait {
 					value = varName
 				}
 			}
@@ -1892,6 +1992,27 @@ func (b *IRBuilder) buildForInOfStmt(node *ast.Node) GoStmt {
 	}
 
 	over := b.BuildExpr(fio.Expression)
+
+	if isAwait && varName != "" {
+		// for await (const x of promises) → for _, __p := range promises { x := __p.Await(); ... }
+		b.addImport("github.com/i2y/ramune/jsrt", "")
+		innerBody := b.buildStmtList(fio.Statement)
+
+		// Prepend: varName := func() any { __v, __err := __p.Await(); if __err != nil { jsrt.Throw(__err) }; return __v }()
+		awaitStmt := &IRVarDecl{
+			Name: varName,
+			Typ:  GoTypeInfo{GoStr: "any"},
+			Init: &IRRawExpr{
+				exprBase: exprBase{},
+				Code:     `func() any { __v, __err := __p.Await(); if __err != nil { jsrt.Throw(__err) }; return __v }()`,
+			},
+			UseShort: true,
+		}
+
+		body := append([]GoStmt{awaitStmt}, innerBody...)
+		return &IRRange{Key: "_", Value: "__p", Over: over, Body: body}
+	}
+
 	body := b.buildStmtList(fio.Statement)
 	return &IRRange{Key: key, Value: value, Over: over, Body: body}
 }
@@ -2032,7 +2153,20 @@ func (b *IRBuilder) buildVarDeclList(node *ast.Node) GoStmt {
 	var stmts []GoStmt
 	for _, decl := range declList.Declarations.Nodes {
 		d := decl.AsVariableDeclaration()
-		name := nodeText(d.Name())
+		nameNode := d.Name()
+
+		// Object destructuring: const { a, b } = expr
+		if nameNode != nil && nameNode.Kind == ast.KindObjectBindingPattern {
+			stmts = append(stmts, b.buildObjectDestructuring(nameNode, d.Initializer)...)
+			continue
+		}
+		// Array destructuring: const [a, b] = expr
+		if nameNode != nil && nameNode.Kind == ast.KindArrayBindingPattern {
+			stmts = append(stmts, b.buildArrayDestructuring(nameNode, d.Initializer)...)
+			continue
+		}
+
+		name := nodeText(nameNode)
 		goName := goVarName(name)
 		typ := b.getGoType(decl)
 
@@ -2057,6 +2191,143 @@ func (b *IRBuilder) buildVarDeclList(node *ast.Node) GoStmt {
 		return stmts[0]
 	}
 	return &IRBlock{Stmts: stmts}
+}
+
+// --------------------------------------------------------------------
+// Destructuring
+// --------------------------------------------------------------------
+
+// buildObjectDestructuring handles: const { a = 1, b = 2 } = expr
+func (b *IRBuilder) buildObjectDestructuring(pattern *ast.Node, initializer *ast.Node) []GoStmt {
+	bp := pattern.AsBindingPattern()
+	if bp.Elements == nil || initializer == nil {
+		return nil
+	}
+
+	initExpr := b.BuildExpr(initializer)
+	initType := b.getGoType(initializer)
+	initIsAny := initType.IsAny()
+
+	tmpVar := "__obj"
+	var stmts []GoStmt
+	stmts = append(stmts, &IRVarDecl{
+		Name: tmpVar, Typ: initType, Init: initExpr, UseShort: true,
+	})
+
+	for _, elem := range bp.Elements.Nodes {
+		be := elem.AsBindingElement()
+		elemName := elem.Name()
+		if elemName == nil || elemName.Kind != ast.KindIdentifier {
+			continue
+		}
+		localName := goVarName(elemName.AsIdentifier().Text)
+
+		propName := localName
+		if be.PropertyName != nil && be.PropertyName.Kind == ast.KindIdentifier {
+			propName = be.PropertyName.AsIdentifier().Text
+		}
+
+		var access GoExpr
+		if initIsAny {
+			b.addImport("github.com/i2y/ramune/jsrt", "")
+			access = &IRStdlibCall{
+				exprBase: exprBase{Typ: GoTypeInfo{GoStr: "any"}},
+				Package:  "jsrt", Func: "GetField",
+				Args: []GoExpr{
+					&IRIdent{exprBase: exprBase{}, Name: tmpVar},
+					irString(fmt.Sprintf("%q", goExportedName(propName))),
+				},
+			}
+		} else {
+			access = &IRFieldAccess{
+				exprBase: exprBase{},
+				Object:   &IRIdent{exprBase: exprBase{}, Name: tmpVar},
+				Field:    goExportedName(propName),
+			}
+		}
+
+		stmts = append(stmts, &IRVarDecl{
+			Name: localName, Typ: GoTypeInfo{GoStr: "any"}, Init: access, UseShort: true,
+		})
+
+		// Default value: const { a = 1 } = obj → if a == zero { a = 1 }
+		if be.Initializer != nil {
+			defaultVal := b.BuildExpr(be.Initializer)
+			stmts = append(stmts, b.buildDestructuringDefault(localName, defaultVal, initIsAny)...)
+		}
+	}
+	return stmts
+}
+
+// buildArrayDestructuring handles: const [a = 10, b = 20] = expr
+func (b *IRBuilder) buildArrayDestructuring(pattern *ast.Node, initializer *ast.Node) []GoStmt {
+	bp := pattern.AsBindingPattern()
+	if bp.Elements == nil || initializer == nil {
+		return nil
+	}
+
+	initExpr := b.BuildExpr(initializer)
+	initType := b.getGoType(initializer)
+
+	tmpVar := "__arr"
+	var stmts []GoStmt
+	stmts = append(stmts, &IRVarDecl{
+		Name: tmpVar, Typ: initType, Init: initExpr, UseShort: true,
+	})
+
+	for i, elem := range bp.Elements.Nodes {
+		if elem.Kind == ast.KindOmittedExpression {
+			continue
+		}
+		be := elem.AsBindingElement()
+		elemName := elem.Name()
+		if elemName == nil || elemName.Kind != ast.KindIdentifier {
+			continue
+		}
+		localName := goVarName(elemName.AsIdentifier().Text)
+
+		access := &IRIndexAccess{
+			exprBase: exprBase{Typ: GoTypeInfo{GoStr: "any"}},
+			Object:   &IRIdent{exprBase: exprBase{}, Name: tmpVar},
+			Index:    irFloat64(fmt.Sprintf("%d", i)),
+		}
+
+		stmts = append(stmts, &IRVarDecl{
+			Name: localName, Typ: GoTypeInfo{GoStr: "any"}, Init: access, UseShort: true,
+		})
+
+		if be.Initializer != nil {
+			defaultVal := b.BuildExpr(be.Initializer)
+			stmts = append(stmts, b.buildDestructuringDefault(localName, defaultVal, true)...)
+		}
+	}
+	return stmts
+}
+
+// buildDestructuringDefault generates: if localName == zero { localName = defaultVal }
+func (b *IRBuilder) buildDestructuringDefault(localName string, defaultVal GoExpr, isAny bool) []GoStmt {
+	var zeroVal GoExpr
+	var op string
+	if isAny {
+		zeroVal = irNil()
+		op = "=="
+	} else {
+		zeroVal = irString(`""`)
+		op = "=="
+	}
+	return []GoStmt{&IRIf{
+		Cond: &IRBinaryOp{
+			exprBase: exprBase{Typ: GoTypeInfo{GoStr: "bool"}},
+			Op:       op,
+			Left:     &IRIdent{exprBase: exprBase{}, Name: localName},
+			Right:    zeroVal,
+		},
+		Body: []GoStmt{&IRAssign{
+			Targets: []GoExpr{&IRIdent{exprBase: exprBase{}, Name: localName}},
+			Op:      "=",
+			Values:  []GoExpr{defaultVal},
+		}},
+	}}
 }
 
 // --------------------------------------------------------------------
