@@ -521,17 +521,16 @@ Ramune provides its own API namespace. `Bun.*` is available as an alias for back
 
 ### GC Configuration
 
-Go's garbage collector can interfere with JavaScriptCore under high load. Ramune provides tunable GC settings:
+Ramune provides tunable GC settings for high-throughput HTTP servers:
 
 ```go
 rt, _ := ramune.New(ramune.NodeCompat(), ramune.WithGC(ramune.GCConfig{
-    DisableAutoGC: true,   // disable Go's auto GC during HTTP serving
-    GCInterval:    2000,   // manual GC every N requests
-    GCPercent:     100,    // Go GC target %
+    GCInterval: 2000,   // manual JSC GC every N requests
+    GCPercent:  100,    // Go GC target % (GOGC)
 }))
 ```
 
-For most use cases (CLI, scripting, SDK), defaults work fine. Tuning is only needed for high-throughput HTTP servers.
+For most use cases (CLI, scripting, SDK), defaults work fine.
 
 ### Permissions (Library API)
 
@@ -763,7 +762,7 @@ This generates `declare module "go:fmt" { ... }` with full function signatures, 
 - **HTTP self-fetch**: Ramune.serve() handlers cannot fetch their own server (same JS context deadlock).
 - **Windows**: JSC backend not available. Use `-tags quickjs` for Windows support.
 - **Linux multi-runtime (JSC)**: Architecture-dependent signal handling. On arm64, `CGO_ENABLED=1` and gcc are required for multi-runtime (cgo's signal forwarding is needed for JSC's GC). On x86_64, multi-runtime works without cgo (`CGO_ENABLED=0`).
-- **Multi-worker limit (JSC)**: 2-3 workers recommended for sustained high-throughput; 4+ may trigger JSC JIT contention.
+- **Multi-worker scaling (JSC)**: Scaling flattens around 4+ workers on macOS due to JSC shared-cache threading constraints. Linux (libjavascriptcoregtk) may differ.
 - **QuickJS backend**: No JIT — CPU-bound JS is ~67x slower than JSC. Error stack traces not available. Best for embedding/scripting, not compute-heavy workloads.
 - **Native module instance lifecycle**: Struct instances returned to JS are not automatically freed when the JS object is garbage collected. Instances are cleaned up when `Runtime.Close()` is called. For long-running servers creating many short-lived struct instances, this may cause increased memory usage.
 

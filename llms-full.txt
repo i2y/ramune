@@ -278,9 +278,8 @@ result, err := fn.Call(arg1, arg2)  // invoke, returns Go value
 
 ```go
 ramune.WithGC(ramune.GCConfig{
-    DisableAutoGC: true,   // disable Go auto GC during HTTP serving (default: true)
-    GCInterval:    2000,   // manual GC every N requests (default: 2000)
-    GCPercent:     100,    // Go GOGC value (default: 100)
+    GCInterval: 2000,   // manual JSC GC every N requests (default: 2000)
+    GCPercent:  100,    // Go GOGC value (default: 100)
 })
 ```
 
@@ -403,7 +402,7 @@ test("mock", () => {
 - Independent VMs via JSContextGroupCreate + JSGlobalContextCreateInGroup (bypasses macOS shared VM)
 - Channel-driven event loop with Wake() — no 10ms polling
 - Multi-core via RuntimePool (N independent JSC contexts on separate OS threads)
-- HTTP server disables Go auto GC during serving (prevents JSC corruption)
+- Map/slice conversion uses JSON.parse to avoid JSC structure table corruption from rapid C API calls
 - Async handlers support setTimeout via real-time tick loop
 - QuickJS backend: single-threaded interpreter via modernc.org/quickjs, pure Go, no OS thread pinning needed
 - Backend selected at build time via `-tags quickjs` build tag
@@ -456,7 +455,7 @@ Run `make bench` to reproduce.
 - **HTTP self-fetch**: Ramune.serve() handlers cannot fetch their own server (same JS context deadlock).
 - **Windows**: JSC backend not available. Use `-tags quickjs` for Windows support.
 - **Linux multi-runtime (JSC)**: On arm64, `CGO_ENABLED=1` and gcc required (cgo signal forwarding for JSC GC). On x86_64, works without cgo.
-- **Multi-worker limit (JSC)**: 2-3 workers recommended; 4+ may trigger JSC JIT contention.
+- **Multi-worker scaling (JSC)**: Scaling flattens around 4+ workers on macOS due to JSC shared-cache threading constraints.
 - **QuickJS backend**: No JIT — CPU-bound JS is ~67x slower than JSC. Error stack traces not available.
 - **Native module instance lifecycle**: Struct instances returned to JS are not automatically freed when JS GC collects the object. Cleaned up on Runtime.Close().
 - **Generic native exports**: Generic functions cannot be exposed as native module exports; wrap in a non-generic function.

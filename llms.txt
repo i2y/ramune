@@ -58,7 +58,7 @@ Two backends, same API:
 - [Native Instance (native_instance.go)](https://github.com/i2y/ramune/blob/main/native_instance.go): Per-type callback registry for struct→JS conversion with live getter/setter properties and methods
 - [Type Conversion (convert_jsc.go)](https://github.com/i2y/ramune/blob/main/convert_jsc.go): Go↔JS conversion for bool, numbers, strings, nil, map[string]any, []any, []byte (Uint8Array), structs (live binding), *promise.Promise[T] (→JS Promise), *JSFunc (→JS function)
 - [Error Handling (errors.go)](https://github.com/i2y/ramune/blob/main/errors.go): JSError with Message and Stack trace, ErrAlreadyClosed, ErrNilValue
-- [GC Config (types.go)](https://github.com/i2y/ramune/blob/main/types.go): WithGC(GCConfig) — DisableAutoGC, GCInterval, GCPercent for JSC/Go GC interop
+- [GC Config (types.go)](https://github.com/i2y/ramune/blob/main/types.go): WithGC(GCConfig) — GCInterval, GCPercent for JSC GC tuning
 - [Permissions (permissions.go)](https://github.com/i2y/ramune/blob/main/permissions.go): WithPermissions() — read/write/net/env/run access control
 - [RuntimePool (pool.go)](https://github.com/i2y/ramune/blob/main/pool.go): NewPool(n) for multi-core parallel JS execution with HTTP dispatch
 
