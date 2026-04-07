@@ -225,10 +225,19 @@ func (b *IRBuilder) processImportDeclaration(node *ast.Node) {
 	goAlias := modulePathToGoAlias(modulePath)
 	goImportPath := modulePathToGoImport(modulePath)
 
+	// Relative imports are same-package in Go — no package prefix needed.
+	isRelative := len(modulePath) > 0 && modulePath[0] == '.'
+
 	if imp.ImportClause == nil {
 		return
 	}
 	ic := imp.ImportClause.AsImportClause()
+
+	// For relative imports, use empty alias so names resolve without prefix.
+	effectiveAlias := goAlias
+	if isRelative {
+		effectiveAlias = ""
+	}
 
 	// Default import: import foo from "bar"
 	if ic.Name() != nil {
@@ -236,7 +245,7 @@ func (b *IRBuilder) processImportDeclaration(node *ast.Node) {
 		if b.importedNames == nil {
 			b.importedNames = make(map[string]string)
 		}
-		b.importedNames[name] = goAlias
+		b.importedNames[name] = effectiveAlias
 		if goImportPath != "" {
 			b.pendingImports[goAlias] = goImportPath
 		}
@@ -253,7 +262,7 @@ func (b *IRBuilder) processImportDeclaration(node *ast.Node) {
 					if b.importedNames == nil {
 						b.importedNames = make(map[string]string)
 					}
-					b.importedNames[localName] = goAlias
+					b.importedNames[localName] = effectiveAlias
 
 					// Track original name for renamed imports
 					if is.PropertyName != nil {
@@ -274,12 +283,21 @@ func (b *IRBuilder) processImportDeclaration(node *ast.Node) {
 			// import * as foo from "bar"
 			nsImport := ic.NamedBindings.AsNamespaceImport()
 			name := nodeText(nsImport.Name())
-			if b.packageRefs == nil {
-				b.packageRefs = make(map[string]string)
-			}
-			b.packageRefs[name] = goAlias
-			if goImportPath != "" {
-				b.pendingImports[goAlias] = goImportPath
+			if isRelative {
+				// Same-package namespace: import * as types from './types'
+				// In Go, no prefix needed — track for property access rewriting.
+				if b.samePackageNamespaces == nil {
+					b.samePackageNamespaces = make(map[string]bool)
+				}
+				b.samePackageNamespaces[name] = true
+			} else {
+				if b.packageRefs == nil {
+					b.packageRefs = make(map[string]string)
+				}
+				b.packageRefs[name] = goAlias
+				if goImportPath != "" {
+					b.pendingImports[goAlias] = goImportPath
+				}
 			}
 		}
 	}

@@ -511,7 +511,7 @@ func (m *typeMapper) goObjectType(t *checker.Type) string {
 func (m *typeMapper) qualifyTypeName(name string) string {
 	goName := goTypeName(name)
 	if m.importedNames != nil {
-		if pkg, ok := m.importedNames[name]; ok {
+		if pkg, ok := m.importedNames[name]; ok && pkg != "" {
 			return pkg + "." + goName
 		}
 	}

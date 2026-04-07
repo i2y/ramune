@@ -23,8 +23,9 @@ type IRBuilder struct {
 	thisReceiver          string
 	importedNames         map[string]string
 	importedOriginalNames map[string]string
-	packageRefs           map[string]string
-	samePackageExports    map[string]bool
+	packageRefs            map[string]string
+	samePackageExports     map[string]bool
+	samePackageNamespaces  map[string]bool // relative namespace imports (import * as x from './y')
 	goNativeImports       map[string]string
 	classNames            map[string]bool
 	privateFields         map[string]string
@@ -1182,6 +1183,14 @@ func (b *IRBuilder) buildPropertyAccess(node *ast.Node) GoExpr {
 	// Optional chaining
 	if prop.QuestionDotToken != nil {
 		return b.buildOptionalPropertyAccess(prop, propName, resultType)
+	}
+
+	// Same-package namespace: types.Env → Env (no prefix)
+	if prop.Expression.Kind == ast.KindIdentifier {
+		objName := prop.Expression.AsIdentifier().Text
+		if b.samePackageNamespaces != nil && b.samePackageNamespaces[objName] {
+			return &IRIdent{exprBase: exprBase{Typ: resultType}, Name: goExportedName(propName)}
+		}
 	}
 
 	// Math.xxx

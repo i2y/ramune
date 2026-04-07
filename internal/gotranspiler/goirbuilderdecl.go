@@ -414,7 +414,7 @@ func (b *IRBuilder) buildTypeAliasDecl(node *ast.Node) []GoDecl {
 	if aliasType != nil {
 		goType = b.tm.goType(aliasType)
 	}
-	if goType == "" {
+	if goType == "" || goType == goName {
 		goType = "any"
 	}
 
