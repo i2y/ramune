@@ -346,8 +346,8 @@ func fixTrailingFuncArgs(src string) string {
 	return strings.Join(lines, "\n")
 }
 
-// isFuncLiteralClose checks if the } at line idx closes a func literal by walking
-// backwards to find the matching { and checking if its line contains "func".
+// isFuncLiteralClose checks if the } at line idx closes a func literal that is
+// a function argument (not the RHS of an assignment).
 func isFuncLiteralClose(lines []string, idx int) bool {
 	depth := 0
 	for j := idx; j >= 0; j-- {
@@ -359,7 +359,17 @@ func isFuncLiteralClose(lines []string, idx int) bool {
 			} else if ch == '{' {
 				depth--
 				if depth == 0 {
-					return strings.Contains(lines[j], "func")
+					if !strings.Contains(lines[j], "func") {
+						return false
+					}
+					// Check if this func literal is the RHS of an assignment (= or :=).
+					// e.g. "s[method] = func(...) {" → not a function arg, no comma needed.
+					funcIdx := strings.Index(lines[j], "func")
+					prefix := strings.TrimSpace(lines[j][:funcIdx])
+					if strings.HasSuffix(prefix, "=") {
+						return false
+					}
+					return true
 				}
 			}
 		}
