@@ -23,9 +23,9 @@ type IRBuilder struct {
 	thisReceiver          string
 	importedNames         map[string]string
 	importedOriginalNames map[string]string
-	packageRefs            map[string]string
-	samePackageExports     map[string]bool
-	samePackageNamespaces  map[string]bool // relative namespace imports (import * as x from './y')
+	packageRefs           map[string]string
+	samePackageExports    map[string]bool
+	samePackageNamespaces map[string]bool // relative namespace imports (import * as x from './y')
 	goNativeImports       map[string]string
 	classNames            map[string]bool
 	privateFields         map[string]string
@@ -72,6 +72,29 @@ func (b *IRBuilder) resolvePendingImport(alias string) {
 	}
 }
 
+// isKnownType returns true if the Go type string refers to a type known to exist at compile time.
+// This includes types defined in the current compilation unit, package-qualified types,
+// and types from well-known mappings.
+func (b *IRBuilder) isKnownType(goStr string) bool {
+	name := goStr
+	if strings.HasPrefix(name, "*") {
+		name = name[1:]
+	}
+	// Strip generic type args: Foo[string, any] → Foo
+	if idx := strings.Index(name, "["); idx > 0 {
+		name = name[:idx]
+	}
+	// Types defined in current compilation unit
+	if b.classNames[name] {
+		return true
+	}
+	// Package-qualified names (e.g., web.Response) — assumed safe
+	if strings.Contains(name, ".") {
+		return true
+	}
+	return false
+}
+
 // getGoType returns the Go type for an AST node using the checker's flow-narrowed type.
 func (b *IRBuilder) getGoType(node *ast.Node) GoTypeInfo {
 	if b.ck == nil || node == nil {
@@ -87,7 +110,13 @@ func (b *IRBuilder) getGoType(node *ast.Node) GoTypeInfo {
 	if typ == nil {
 		return GoTypeInfo{Category: GoTypeJSObject, GoStr: "any"}
 	}
-	return b.tm.goTypeInfo(typ)
+	info := b.tm.goTypeInfo(typ)
+	// Safety gate: demote unknown types to any to prevent compile errors.
+	// Only use concrete typed code when the type is provably safe.
+	if !b.tm.isSafeType(info.GoStr) && !b.isKnownType(info.GoStr) {
+		return GoTypeInfo{Category: GoTypeJSObject, GoStr: "any"}
+	}
+	return info
 }
 
 // getVarGoType returns the tracked Go type for a variable.
@@ -131,7 +160,11 @@ func (b *IRBuilder) dispatchMethod(objType GoTypeInfo, declType GoTypeInfo) Disp
 		case ty.IsMap():
 			return DispatchMapOperation
 		case ty.IsPointer() || isGenericType(ty.GoStr):
-			return DispatchConcreteMethod
+			// Only use concrete dispatch if the type is known to exist at compile time
+			if ty.GoStr == "pkg" || b.isKnownType(ty.GoStr) {
+				return DispatchConcreteMethod
+			}
+			continue // unknown pointer → fall through to DispatchJSRTRuntime
 		}
 	}
 	return DispatchJSRTRuntime
@@ -492,12 +525,32 @@ func (b *IRBuilder) buildBinaryExpr(node *ast.Node) GoExpr {
 	left := b.BuildExpr(bin.Left)
 	right := b.BuildExpr(bin.Right)
 
+	// For || and &&, wrap any-typed operands in jsrt.ToBool()
+	if goOp == "||" || goOp == "&&" {
+		left = b.ensureBool(left)
+		right = b.ensureBool(right)
+	}
+
 	return &IRBinaryOp{
 		exprBase: exprBase{Typ: resultType},
 		Op:       goOp,
 		Left:     left,
 		Right:    right,
 	}
+}
+
+// ensureBool wraps an any-typed expression in jsrt.ToBool() for use in boolean context.
+func (b *IRBuilder) ensureBool(expr GoExpr) GoExpr {
+	typ := expr.ExprType()
+	if typ.GoStr == "any" || typ.GoStr == "" {
+		b.addImport("github.com/i2y/ramune/jsrt", "")
+		return &IRStdlibCall{
+			exprBase: exprBase{Typ: GoTypeInfo{Category: GoTypePrimitive, GoStr: "bool"}},
+			Package:  "jsrt", Func: "ToBool",
+			Args: []GoExpr{expr},
+		}
+	}
+	return expr
 }
 
 func (b *IRBuilder) buildInstanceOf(bin *ast.BinaryExpression) GoExpr {
@@ -1260,10 +1313,10 @@ func (b *IRBuilder) buildPropertyAccess(node *ast.Node) GoExpr {
 
 	obj := b.BuildExpr(prop.Expression)
 
-	// Narrowed types
+	// Narrowed types — only use type assertion if the type is known to exist
 	if prop.Expression.Kind == ast.KindIdentifier {
 		varName := prop.Expression.AsIdentifier().Text
-		if narrowed, ok := b.getNarrowedType(varName); ok {
+		if narrowed, ok := b.getNarrowedType(varName); ok && b.isKnownType(narrowed.GoStr) {
 			return &IRFieldAccess{
 				exprBase:       exprBase{Typ: resultType},
 				Object:         &IRTypeAssertion{exprBase: exprBase{Typ: narrowed}, Expr: obj, TargetType: narrowed},
@@ -1275,8 +1328,8 @@ func (b *IRBuilder) buildPropertyAccess(node *ast.Node) GoExpr {
 
 	// Any-typed → jsrt.Obj().Get()
 	if declType.IsAny() && !b.isPackageRef(prop.Expression) {
-		if !objType.IsAny() {
-			// Checker narrowed → type assertion + field
+		if !objType.IsAny() && b.isKnownType(objType.GoStr) {
+			// Checker narrowed to known type → type assertion + field
 			return &IRFieldAccess{
 				exprBase:       exprBase{Typ: resultType},
 				Object:         obj,
@@ -1285,10 +1338,10 @@ func (b *IRBuilder) buildPropertyAccess(node *ast.Node) GoExpr {
 				AssertType:     objType,
 			}
 		}
-		// No narrowing → runtime dispatch
+		// No narrowing → runtime dispatch (Unwrap() always returns any)
 		b.addImport("github.com/i2y/ramune/jsrt", "")
 		return &IRJSRTCall{
-			exprBase: exprBase{Typ: resultType},
+			exprBase: exprBase{Typ: GoTypeInfo{GoStr: "any"}},
 			Pattern:  "Get",
 			Object:   obj,
 			Field:    goExportedName(propName),
@@ -1351,7 +1404,7 @@ func (b *IRBuilder) buildOptionalPropertyAccess(prop *ast.PropertyAccessExpressi
 	if objType.IsAny() {
 		b.addImport("github.com/i2y/ramune/jsrt", "")
 		return &IRJSRTCall{
-			exprBase: exprBase{Typ: resultType},
+			exprBase: exprBase{Typ: GoTypeInfo{GoStr: "any"}},
 			Pattern:  "Get",
 			Object:   obj,
 			Field:    goField,
@@ -1498,7 +1551,7 @@ func (b *IRBuilder) buildConditionalExpr(node *ast.Node) GoExpr {
 		resultType = GoTypeInfo{Category: GoTypeJSObject, GoStr: "any"}
 	}
 
-	condExpr := b.BuildExpr(cond.Condition)
+	condExpr := b.ensureBool(b.BuildExpr(cond.Condition))
 	thenExpr := b.BuildExpr(cond.WhenTrue)
 	elseExpr := b.BuildExpr(cond.WhenFalse)
 
@@ -1813,7 +1866,14 @@ func (b *IRBuilder) buildNewExpr(node *ast.Node) GoExpr {
 		}
 	}
 
-	// General case: &TypeName{fields...}
+	// General case: if type is known, use &TypeName{fields...}
+	// Otherwise fall back to map[string]any{} for unknown types
+	if typeName != "" && !b.isKnownType("*"+typeName) && !b.tm.isSafeType(typeName) {
+		return &IRCompositeLit{
+			exprBase: exprBase{Typ: GoTypeInfo{Category: GoTypeMap, GoStr: "map[string]any"}},
+			TypeStr:  "map[string]any",
+		}
+	}
 	args := b.buildArgList(newExpr.Arguments)
 	return &IRNewExpr{
 		exprBase: exprBase{Typ: resultType},
@@ -2060,7 +2120,7 @@ func (b *IRBuilder) buildForStmt(node *ast.Node) GoStmt {
 	}
 	var cond GoExpr
 	if forStmt.Condition != nil {
-		cond = b.BuildExpr(forStmt.Condition)
+		cond = b.ensureBool(b.BuildExpr(forStmt.Condition))
 	}
 	var post GoStmt
 	if forStmt.Incrementor != nil {
@@ -2152,7 +2212,7 @@ func (b *IRBuilder) buildWhileStmt(node *ast.Node) GoStmt {
 		}
 	}
 
-	cond := b.BuildExpr(ws.Expression)
+	cond := b.ensureBool(b.BuildExpr(ws.Expression))
 	body := b.buildStmtList(ws.Statement)
 	return &IRFor{Cond: cond, Body: body}
 }
@@ -2160,7 +2220,7 @@ func (b *IRBuilder) buildWhileStmt(node *ast.Node) GoStmt {
 func (b *IRBuilder) buildDoWhileStmt(node *ast.Node) GoStmt {
 	ds := node.AsDoStatement()
 	body := b.buildStmtList(ds.Statement)
-	cond := b.BuildExpr(ds.Expression)
+	cond := b.ensureBool(b.BuildExpr(ds.Expression))
 	// do { body } while (cond) → for { body; if !cond { break } }
 	body = append(body, &IRIf{
 		Cond: &IRUnaryOp{exprBase: exprBase{Typ: GoTypeInfo{Category: GoTypePrimitive, GoStr: "bool"}}, Op: "!", Operand: cond},

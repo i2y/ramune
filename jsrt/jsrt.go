@@ -397,3 +397,144 @@ func CatchValue(r any) *JSError {
 		return &JSError{Value: v, Message: fmt.Sprint(v)}
 	}
 }
+
+// Keys returns the keys of a map or struct as a string slice (like Object.keys()).
+func Keys(v any) []string {
+	if v == nil {
+		return nil
+	}
+	rv := reflect.ValueOf(v)
+	for rv.Kind() == reflect.Ptr || rv.Kind() == reflect.Interface {
+		if rv.IsNil() {
+			return nil
+		}
+		rv = rv.Elem()
+	}
+	switch rv.Kind() {
+	case reflect.Map:
+		keys := make([]string, 0, rv.Len())
+		for _, k := range rv.MapKeys() {
+			keys = append(keys, fmt.Sprint(k.Interface()))
+		}
+		return keys
+	case reflect.Struct:
+		t := rv.Type()
+		keys := make([]string, 0, t.NumField())
+		for i := range t.NumField() {
+			if t.Field(i).IsExported() {
+				keys = append(keys, t.Field(i).Name)
+			}
+		}
+		return keys
+	}
+	return nil
+}
+
+// Values returns the values of a map or struct as an any slice (like Object.values()).
+func Values(v any) []any {
+	if v == nil {
+		return nil
+	}
+	rv := reflect.ValueOf(v)
+	for rv.Kind() == reflect.Ptr || rv.Kind() == reflect.Interface {
+		if rv.IsNil() {
+			return nil
+		}
+		rv = rv.Elem()
+	}
+	switch rv.Kind() {
+	case reflect.Map:
+		vals := make([]any, 0, rv.Len())
+		for _, k := range rv.MapKeys() {
+			vals = append(vals, rv.MapIndex(k).Interface())
+		}
+		return vals
+	case reflect.Struct:
+		t := rv.Type()
+		vals := make([]any, 0, t.NumField())
+		for i := range t.NumField() {
+			if t.Field(i).IsExported() {
+				vals = append(vals, rv.Field(i).Interface())
+			}
+		}
+		return vals
+	}
+	return nil
+}
+
+// Entries returns [key, value] pairs from a map or struct (like Object.entries()).
+func Entries(v any) []any {
+	if v == nil {
+		return nil
+	}
+	rv := reflect.ValueOf(v)
+	for rv.Kind() == reflect.Ptr || rv.Kind() == reflect.Interface {
+		if rv.IsNil() {
+			return nil
+		}
+		rv = rv.Elem()
+	}
+	switch rv.Kind() {
+	case reflect.Map:
+		entries := make([]any, 0, rv.Len())
+		for _, k := range rv.MapKeys() {
+			entries = append(entries, []any{fmt.Sprint(k.Interface()), rv.MapIndex(k).Interface()})
+		}
+		return entries
+	case reflect.Struct:
+		t := rv.Type()
+		entries := make([]any, 0, t.NumField())
+		for i := range t.NumField() {
+			if t.Field(i).IsExported() {
+				entries = append(entries, []any{t.Field(i).Name, rv.Field(i).Interface()})
+			}
+		}
+		return entries
+	}
+	return nil
+}
+
+// FromEntries creates a map from [key, value] pairs (like Object.fromEntries()).
+func FromEntries(entries any) map[string]any {
+	result := make(map[string]any)
+	if entries == nil {
+		return result
+	}
+	rv := reflect.ValueOf(entries)
+	for rv.Kind() == reflect.Ptr || rv.Kind() == reflect.Interface {
+		if rv.IsNil() {
+			return result
+		}
+		rv = rv.Elem()
+	}
+	if rv.Kind() != reflect.Slice {
+		return result
+	}
+	for i := range rv.Len() {
+		entry := rv.Index(i).Interface()
+		erv := reflect.ValueOf(entry)
+		for erv.Kind() == reflect.Ptr || erv.Kind() == reflect.Interface {
+			erv = erv.Elem()
+		}
+		if erv.Kind() == reflect.Slice && erv.Len() >= 2 {
+			key := fmt.Sprint(erv.Index(0).Interface())
+			result[key] = erv.Index(1).Interface()
+		}
+	}
+	return result
+}
+
+// IsArray returns true if the value is a slice or array (like Array.isArray()).
+func IsArray(v any) bool {
+	if v == nil {
+		return false
+	}
+	rv := reflect.ValueOf(v)
+	for rv.Kind() == reflect.Ptr || rv.Kind() == reflect.Interface {
+		if rv.IsNil() {
+			return false
+		}
+		rv = rv.Elem()
+	}
+	return rv.Kind() == reflect.Slice || rv.Kind() == reflect.Array
+}

@@ -132,14 +132,29 @@ func (b *IRBuilder) BuildSourceFile(sf *ast.SourceFile, pkgName string, isEntry 
 	b.tm.importedNames = b.importedNames
 	b.tm.pendingImports = b.pendingImports
 
-	// Pass 1.5: Collect class names for forward references
+	// Pass 1.5: Collect class/interface/type names and pre-register unexported type alias renames
 	for _, node := range sf.Statements.Nodes {
-		if node.Kind == ast.KindClassDeclaration {
+		switch node.Kind {
+		case ast.KindClassDeclaration, ast.KindInterfaceDeclaration:
 			if n := node.Name(); n != nil {
 				b.classNames[goTypeName(nodeText(n))] = true
 			}
+		case ast.KindTypeAliasDeclaration:
+			if n := node.Name(); n != nil {
+				goName := goTypeName(nodeText(n))
+				b.classNames[goName] = true
+				if !isExported(node) && b.filePrefix != "" {
+					if b.tm.typeAliasRenames == nil {
+						b.tm.typeAliasRenames = make(map[string]string)
+					}
+					b.tm.typeAliasRenames[goName] = b.filePrefix + goName
+				}
+			}
 		}
 	}
+
+	// Link known types to type mapper for safety gate
+	b.tm.knownTypes = b.classNames
 
 	// Pass 2: Categorize and build
 	var decls []GoDecl
@@ -170,7 +185,11 @@ func (b *IRBuilder) BuildSourceFile(sf *ast.SourceFile, pkgName string, isEntry 
 			decls = append(decls, b.buildExportAssignment(node)...)
 
 		case ast.KindVariableStatement:
-			if isEntry {
+			// Promote module-scope const arrow functions to top-level function declarations.
+			// This applies in both entry and library mode to prevent scope issues.
+			if fds := b.tryBuildVarAsFuncDecls(node); len(fds) > 0 {
+				decls = append(decls, fds...)
+			} else if isEntry {
 				s := b.buildVariableStmt(node)
 				if s != nil {
 					stmts = append(stmts, s)
@@ -341,11 +360,14 @@ func (b *IRBuilder) buildFuncDecl(node *ast.Node) GoDecl {
 	retTypeInfo := goTypeInfoFromString(retType)
 	if isAsync {
 		b.addImport("github.com/i2y/ramune/jsrt/promise", "")
-		innerType := retType
-		if innerType == "" {
-			innerType = "any"
+		// Don't double-wrap: async function returning Promise<T> stays *promise.Promise[T]
+		if !strings.HasPrefix(retType, "*promise.Promise[") {
+			innerType := retType
+			if innerType == "" {
+				innerType = "any"
+			}
+			retTypeInfo = goTypeInfoFromString("*promise.Promise[" + innerType + "]")
 		}
-		retTypeInfo = goTypeInfoFromString("*promise.Promise[" + innerType + "]")
 	}
 
 	return &IRFuncDecl{
@@ -356,6 +378,114 @@ func (b *IRBuilder) buildFuncDecl(node *ast.Node) GoDecl {
 		IsAsync:    isAsync,
 		IsExported: isExported,
 	}
+}
+
+// tryBuildVarAsFuncDecls checks if a variable statement contains only const arrow/function
+// expression assignments, and if so, promotes them to top-level function declarations.
+// This prevents module-scope const functions from being trapped inside init().
+func (b *IRBuilder) tryBuildVarAsFuncDecls(node *ast.Node) []GoDecl {
+	varStmt := node.AsVariableStatement()
+	if varStmt.DeclarationList == nil {
+		return nil
+	}
+	declList := varStmt.DeclarationList.AsVariableDeclarationList()
+	if declList.Declarations == nil {
+		return nil
+	}
+
+	var decls []GoDecl
+	for _, decl := range declList.Declarations.Nodes {
+		d := decl.AsVariableDeclaration()
+		if d.Initializer == nil {
+			return nil // not all declarations have function initializers
+		}
+		if d.Initializer.Kind != ast.KindArrowFunction && d.Initializer.Kind != ast.KindFunctionExpression {
+			return nil // non-function initializer, bail out
+		}
+
+		nameNode := d.Name()
+		if nameNode == nil || nameNode.Kind != ast.KindIdentifier {
+			return nil
+		}
+		name := nodeText(nameNode)
+		exported := isExported(node)
+		goName := goVarName(name)
+		if exported {
+			exportedName := goExportedName(name)
+			// Avoid collision with declared type/interface/class names
+			if b.classNames[exportedName] {
+				// Keep camelCase to avoid name collision in Go
+			} else {
+				goName = exportedName
+			}
+		}
+
+		// Build the function from the arrow/function expression
+		funcNode := d.Initializer
+		isAsync := false
+		var params []IRParam
+		var retType string
+		var body []GoStmt
+
+		if funcNode.Kind == ast.KindArrowFunction {
+			af := funcNode.AsArrowFunction()
+			isAsync = ast.HasSyntacticModifier(funcNode, ast.ModifierFlagsAsync)
+			params = b.buildParamList(funcNode)
+			retType = b.resolveReturnType(funcNode)
+
+			savedAsync := b.inAsyncBody
+			savedRetType := b.currentRetType
+			b.inAsyncBody = isAsync
+			b.currentRetType = retType
+
+			if af.Body != nil && af.Body.Kind == ast.KindBlock {
+				body = b.buildStmtList(af.Body)
+			} else if af.Body != nil {
+				body = []GoStmt{&IRReturn{Values: []GoExpr{b.BuildExpr(af.Body)}}}
+			}
+
+			b.inAsyncBody = savedAsync
+			b.currentRetType = savedRetType
+		} else {
+			isAsync = ast.HasSyntacticModifier(funcNode, ast.ModifierFlagsAsync)
+			params = b.buildParamList(funcNode)
+			retType = b.resolveReturnType(funcNode)
+
+			savedAsync := b.inAsyncBody
+			savedRetType := b.currentRetType
+			b.inAsyncBody = isAsync
+			b.currentRetType = retType
+
+			if funcNode.Body() != nil {
+				body = b.buildStmtList(funcNode.Body())
+			}
+
+			b.inAsyncBody = savedAsync
+			b.currentRetType = savedRetType
+		}
+
+		retTypeInfo := goTypeInfoFromString(retType)
+		if isAsync {
+			b.addImport("github.com/i2y/ramune/jsrt/promise", "")
+			if !strings.HasPrefix(retType, "*promise.Promise[") {
+				innerType := retType
+				if innerType == "" {
+					innerType = "any"
+				}
+				retTypeInfo = goTypeInfoFromString("*promise.Promise[" + innerType + "]")
+			}
+		}
+
+		decls = append(decls, &IRFuncDecl{
+			Name:       goName,
+			Params:     params,
+			RetType:    retTypeInfo,
+			Body:       body,
+			IsAsync:    isAsync,
+			IsExported: exported,
+		})
+	}
+	return decls
 }
 
 // modulePathToGoAlias converts a TS module path to a Go package alias.

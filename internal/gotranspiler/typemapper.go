@@ -159,6 +159,9 @@ type typeMapper struct {
 	typeAliases map[string]string
 	// typeAliasRenames maps original Go type names to prefixed names for unexported types.
 	typeAliasRenames map[string]string
+	// knownTypes tracks struct/interface/type names defined in the current compilation unit.
+	// Populated from classNames after Pass 1.5.
+	knownTypes map[string]bool
 }
 
 func newTypeMapper(c *checker.Checker) *typeMapper {
@@ -265,6 +268,25 @@ func (m *typeMapper) goType(t *checker.Type) string {
 
 // goUnionType handles union types like T | null, string | number, etc.
 func (m *typeMapper) goUnionType(t *checker.Type) string {
+	// If the union has a non-generic type alias, preserve the alias name
+	if alias := t.Alias(); alias != nil && alias.Symbol() != nil {
+		aliasName := alias.Symbol().Name
+		if isValidGoIdentifier(aliasName) && !strings.HasPrefix(aliasName, "__") {
+			// Skip generic aliases — they resolve to any and can't be instantiated meaningfully
+			isGenericAlias := len(alias.TypeArguments()) > 0
+			if !isGenericAlias && m.checker != nil {
+				localTPs := m.checker.GetLocalTypeParametersOfClassOrInterfaceOrTypeAlias(alias.Symbol())
+				isGenericAlias = len(localTPs) > 0
+			}
+			if !isGenericAlias {
+				if mapped := m.mapWellKnownType(aliasName); mapped != "" {
+					return mapped
+				}
+				return m.qualifyTypeName(aliasName)
+			}
+		}
+	}
+
 	union := t.AsUnionType()
 	types := union.Types()
 
@@ -360,6 +382,15 @@ func (m *typeMapper) goUnionType(t *checker.Type) string {
 		tsName := m.checker.TypeToString(t)
 		// TypeToString for union alias returns the alias name if defined
 		if tsName != "" && isValidGoIdentifier(tsName) && !strings.Contains(tsName, "|") {
+			// Skip generic type aliases — they can't be used bare in Go
+			if alias := t.Alias(); alias != nil && alias.Symbol() != nil {
+				if len(alias.TypeArguments()) > 0 {
+					return "any"
+				}
+				if localTPs := m.checker.GetLocalTypeParametersOfClassOrInterfaceOrTypeAlias(alias.Symbol()); len(localTPs) > 0 {
+					return "any"
+				}
+			}
 			// Check if this is a well-known Web API type → map it
 			if mapped := m.mapWellKnownType(tsName); mapped != "" {
 				return mapped
@@ -417,27 +448,29 @@ func (m *typeMapper) goObjectType(t *checker.Type) string {
 					}
 					// Custom generic class (e.g., HonoRequest<P, I>) → include type args
 					goName := m.qualifyTypeName(name)
+					// Resolve type parameter constraints for defaults
+					var localTPs []*checker.Type
+					if target != nil && target.Symbol() != nil {
+						localTPs = m.checker.GetLocalTypeParametersOfClassOrInterfaceOrTypeAlias(target.Symbol())
+					}
 					if len(typeArgs) > 0 {
 						parts := make([]string, len(typeArgs))
 						for i, ta := range typeArgs {
 							gt := m.goType(ta)
-							if gt == "" {
-								gt = "any"
+							if gt == "" || gt == "any" {
+								gt = m.constraintDefault(localTPs, i)
 							}
 							parts[i] = gt
 						}
 						return goName + "[" + strings.Join(parts, ", ") + "]"
 					}
-					// No type args but target has type params → use defaults (any)
-					if target != nil && target.Symbol() != nil {
-						localTPs := m.checker.GetLocalTypeParametersOfClassOrInterfaceOrTypeAlias(target.Symbol())
-						if len(localTPs) > 0 {
-							parts := make([]string, len(localTPs))
-							for i := range localTPs {
-								parts[i] = "any"
-							}
-							return goName + "[" + strings.Join(parts, ", ") + "]"
+					// No type args but target has type params → use constraint defaults
+					if len(localTPs) > 0 {
+						parts := make([]string, len(localTPs))
+						for i := range localTPs {
+							parts[i] = m.constraintDefault(localTPs, i)
 						}
+						return goName + "[" + strings.Join(parts, ", ") + "]"
 					}
 				}
 			}
@@ -501,10 +534,39 @@ func (m *typeMapper) goObjectType(t *checker.Type) string {
 		if mapped := m.mapWellKnownType(name); mapped != "" {
 			return mapped
 		}
-		return m.qualifyTypeName(name)
+		goName := m.qualifyTypeName(name)
+		// If the symbol defines type parameters, add default type args using constraints
+		if m.checker != nil {
+			localTPs := m.checker.GetLocalTypeParametersOfClassOrInterfaceOrTypeAlias(sym)
+			if len(localTPs) > 0 {
+				parts := make([]string, len(localTPs))
+				for i := range localTPs {
+					parts[i] = m.constraintDefault(localTPs, i)
+				}
+				return goName + "[" + strings.Join(parts, ", ") + "]"
+			}
+		}
+		return goName
 	}
 
 	return "any"
+}
+
+// constraintDefault returns the Go type to use as a default for the i-th type parameter.
+// If the type parameter has a non-any constraint, return the constraint type; otherwise "any".
+func (m *typeMapper) constraintDefault(localTPs []*checker.Type, i int) string {
+	if i >= len(localTPs) || m.checker == nil {
+		return "any"
+	}
+	constraint := m.checker.GetBaseConstraintOfType(localTPs[i])
+	if constraint == nil || constraint == localTPs[i] {
+		return "any"
+	}
+	gt := m.goType(constraint)
+	if gt == "" {
+		return "any"
+	}
+	return gt
 }
 
 // qualifyTypeName adds package qualification if the type was imported from another package.
@@ -536,7 +598,35 @@ func (m *typeMapper) goIntersectionType(t *checker.Type) string {
 	if alias := t.Alias(); alias != nil && alias.Symbol() != nil {
 		aliasName := alias.Symbol().Name
 		if isValidGoIdentifier(aliasName) && !strings.HasPrefix(aliasName, "__") {
-			return m.qualifyTypeName(aliasName)
+			goName := m.qualifyTypeName(aliasName)
+			// Add type arguments if the alias is generic
+			if aliasArgs := alias.TypeArguments(); len(aliasArgs) > 0 {
+				var localTPs []*checker.Type
+				if m.checker != nil {
+					localTPs = m.checker.GetLocalTypeParametersOfClassOrInterfaceOrTypeAlias(alias.Symbol())
+				}
+				parts := make([]string, len(aliasArgs))
+				for i, ta := range aliasArgs {
+					gt := m.goType(ta)
+					if gt == "" || gt == "any" {
+						gt = m.constraintDefault(localTPs, i)
+					}
+					parts[i] = gt
+				}
+				return goName + "[" + strings.Join(parts, ", ") + "]"
+			}
+			// Check if alias symbol has type params even without args
+			if m.checker != nil {
+				localTPs := m.checker.GetLocalTypeParametersOfClassOrInterfaceOrTypeAlias(alias.Symbol())
+				if len(localTPs) > 0 {
+					parts := make([]string, len(localTPs))
+					for i := range localTPs {
+						parts[i] = m.constraintDefault(localTPs, i)
+					}
+					return goName + "[" + strings.Join(parts, ", ") + "]"
+				}
+			}
+			return goName
 		}
 	}
 
@@ -629,10 +719,11 @@ var wellKnownTypeMap = map[string]string{
 	"Uint8Array":                      "any", "ArrayBuffer": "any", "ArrayBufferLike": "any",
 	"BufferSource": "any", "ArrayBufferView": "any",
 	"Blob": "any", "File": "any", "AbortController": "any", "AbortSignal": "any",
-	"URLSearchParams": "any", "CryptoKey": "any", "SubtleCrypto": "any",
+	"URLSearchParams": "any", "CryptoKey": "any", "SubtleCrypto": "any", "RequestInit": "any",
 	"Function": "any", "RegExp": "any", "Date": "any", "Symbol": "any", "Proxy": "any",
 	"PromiseLike": "any", "IterableIterator": "any", "Iterator": "any",
 	"PropertyKey": "any", "SharedArrayBuffer": "any", "DataView": "any",
+	"FormDataEntryValue": "any",
 }
 
 // mapWellKnownType maps a type name to its Go equivalent if it's a well-known Web API / global type.
@@ -642,6 +733,54 @@ func (m *typeMapper) mapWellKnownType(name string) string {
 		return goType
 	}
 	return ""
+}
+
+// isSafeType returns true if the Go type string is guaranteed to compile correctly.
+// Safe types: primitives, collections, promises, func types, well-known types, pkg-qualified names,
+// and types defined in the current compilation unit (knownTypes).
+func (m *typeMapper) isSafeType(goStr string) bool {
+	switch goStr {
+	case "string", "float64", "bool", "int", "any", "", "byte", "error":
+		return true
+	}
+	// Pointer to safe type
+	if strings.HasPrefix(goStr, "*") {
+		return m.isSafeType(goStr[1:])
+	}
+	// Slice
+	if strings.HasPrefix(goStr, "[]") {
+		return m.isSafeType(goStr[2:])
+	}
+	// Map — always safe (keys/values resolve to any at worst)
+	if strings.HasPrefix(goStr, "map[") {
+		return true
+	}
+	// Promise
+	if strings.HasPrefix(goStr, "promise.Promise[") {
+		return true
+	}
+	// Func type
+	if strings.HasPrefix(goStr, "func(") || strings.HasPrefix(goStr, "func ") {
+		return true
+	}
+	// Package-qualified names (e.g., web.Response, jsrt.JSError)
+	if strings.Contains(goStr, ".") {
+		return true
+	}
+	// Generic type: check base name
+	if idx := strings.Index(goStr, "["); idx > 0 {
+		baseName := goStr[:idx]
+		return m.isSafeType(baseName)
+	}
+	// Well-known type (check both raw name and as value in wellKnownTypeMap)
+	if _, ok := wellKnownTypeMap[goStr]; ok {
+		return true
+	}
+	// Type defined in current compilation unit
+	if m.knownTypes != nil && m.knownTypes[goStr] {
+		return true
+	}
+	return false
 }
 
 // goReturnType returns the Go return type string. Empty string means no return (void).

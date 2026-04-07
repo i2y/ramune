@@ -935,7 +935,7 @@ func (e *IREmitter) emitReturn(node *IRReturn) {
 
 func (e *IREmitter) emitIf(node *IRIf) {
 	e.w.write("if ")
-	e.EmitExpr(node.Cond)
+	e.emitBoolExpr(node.Cond)
 	e.w.openBlock()
 	e.EmitStmts(node.Body)
 	if len(node.Else) > 0 {
@@ -955,6 +955,20 @@ func (e *IREmitter) emitIf(node *IRIf) {
 		e.EmitStmts(node.Else)
 	}
 	e.w.closeBlock()
+}
+
+// emitBoolExpr emits an expression in boolean context. If the expression is any-typed,
+// wraps it in jsrt.ToBool() to satisfy Go's boolean requirement.
+func (e *IREmitter) emitBoolExpr(expr GoExpr) {
+	typ := expr.ExprType()
+	if typ.GoStr == "any" || typ.GoStr == "" {
+		e.w.addImport("github.com/i2y/ramune/jsrt", "")
+		e.w.write("jsrt.ToBool(")
+		e.EmitExpr(expr)
+		e.w.write(")")
+		return
+	}
+	e.EmitExpr(expr)
 }
 
 func (e *IREmitter) emitFor(node *IRFor) {
@@ -1159,8 +1173,28 @@ func (e *IREmitter) emitFuncDecl(node *IRFuncDecl) {
 		e.w.writef(" %s", node.RetType.GoStr)
 	}
 	e.w.openBlock()
+	if node.IsAsync {
+		e.emitAsyncFuncDeclBody(node)
+	} else {
+		e.EmitStmts(node.Body)
+	}
+	e.w.closeBlock()
+}
+
+// emitAsyncFuncDeclBody wraps the function body in promise.New[T]().
+func (e *IREmitter) emitAsyncFuncDeclBody(node *IRFuncDecl) {
+	e.w.addImport("github.com/i2y/ramune/jsrt/promise", "")
+	// Extract inner type from *promise.Promise[T]
+	innerType := "any"
+	retStr := node.RetType.GoStr
+	if strings.HasPrefix(retStr, "*promise.Promise[") && strings.HasSuffix(retStr, "]") {
+		innerType = retStr[len("*promise.Promise[") : len(retStr)-1]
+	}
+	e.w.writef("return promise.New[%s](func(__resolve func(%s), __reject func(error))", innerType, innerType)
+	e.w.openBlock()
 	e.EmitStmts(node.Body)
 	e.w.closeBlock()
+	e.w.writeln(")")
 }
 
 func (e *IREmitter) emitStructDecl(node *IRStructDecl) {

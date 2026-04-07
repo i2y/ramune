@@ -45,6 +45,14 @@ func (b *IRBuilder) buildTypeParamsAndSuffix(node *ast.Node) ([]IRTypeParam, str
 	return result, "[" + strings.Join(suffixParts, ", ") + "]"
 }
 
+// tsUtilityTypes lists TS built-in utility types that have no Go equivalent.
+var tsUtilityTypes = map[string]bool{
+	"Partial": true, "Required": true, "Readonly": true,
+	"Pick": true, "Omit": true, "Record": true,
+	"Exclude": true, "Extract": true, "NonNullable": true,
+	"ReturnType": true, "Parameters": true, "InstanceType": true,
+}
+
 // mapConstraintIR maps a TypeScript type constraint to a Go constraint string.
 // Mirrors decl.go's mapConstraint but operates on *IRBuilder instead of *Transpiler.
 func (b *IRBuilder) mapConstraintIR(constraint *ast.Node) string {
@@ -61,7 +69,16 @@ func (b *IRBuilder) mapConstraintIR(constraint *ast.Node) string {
 	case ast.KindTypeReference:
 		ref := constraint.AsTypeReference()
 		if ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier {
-			return b.tm.qualifyTypeName(ref.TypeName.AsIdentifier().Text)
+			name := ref.TypeName.AsIdentifier().Text
+			// TS utility types (Partial, Required, etc.) have no Go equivalent → any
+			if tsUtilityTypes[name] {
+				return "any"
+			}
+			// Generic type reference with type args can't be a Go constraint → any
+			if ref.TypeArguments != nil && len(ref.TypeArguments.Nodes) > 0 {
+				return "any"
+			}
+			return b.tm.qualifyTypeName(name)
 		}
 	}
 	if b.ck != nil {
@@ -444,7 +461,7 @@ func (b *IRBuilder) buildTypeAliasDecl(node *ast.Node) []GoDecl {
 	if aliasType != nil {
 		goType = b.tm.goType(aliasType)
 	}
-	if goType == "" || goType == goName {
+	if goType == "" || goType == goName || strings.HasPrefix(goType, goName+"[") {
 		goType = "any"
 	}
 
@@ -524,6 +541,49 @@ func (b *IRBuilder) buildClassDecl(node *ast.Node) []GoDecl {
 		if count > 1 {
 			overloadedMethods[n] = true
 		}
+	}
+
+	// Collect all method-like names (method declarations + constructor arrow assignments)
+	methodGoNames := make(map[string]bool, len(methodNameCount))
+	for n := range methodNameCount {
+		methodGoNames[goExportedName(n)] = true
+	}
+	if constructor != nil {
+		if ctorBody := constructor.Body(); ctorBody != nil {
+			block := ctorBody.AsBlock()
+			if block.Statements != nil {
+				for _, stmt := range block.Statements.Nodes {
+					if stmt.Kind == ast.KindExpressionStatement {
+						expr := stmt.AsExpressionStatement().Expression
+						if expr.Kind == ast.KindBinaryExpression {
+							bin := expr.AsBinaryExpression()
+							if bin.OperatorToken.Kind == ast.KindEqualsToken && bin.Left.Kind == ast.KindPropertyAccessExpression {
+								prop := bin.Left.AsPropertyAccessExpression()
+								if prop.Expression.Kind == ast.KindThisKeyword &&
+									(bin.Right.Kind == ast.KindArrowFunction || bin.Right.Kind == ast.KindFunctionExpression) {
+									methodGoNames[goExportedName(nodeText(prop.Name()))] = true
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Remove fields whose Go name collides with a method name (method takes priority)
+	if len(methodGoNames) > 0 && len(fields) > 0 {
+		filtered := fields[:0]
+		for _, f := range fields {
+			if fn := f.Name(); fn != nil {
+				goFieldName := goExportedName(nodeText(fn))
+				if methodGoNames[goFieldName] {
+					continue
+				}
+			}
+			filtered = append(filtered, f)
+		}
+		fields = filtered
 	}
 
 	// Build private field map (save/restore)
