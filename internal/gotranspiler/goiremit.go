@@ -1093,7 +1093,18 @@ func (e *IREmitter) EmitDecl(decl GoDecl) {
 	case *IRInterfaceDecl:
 		e.emitInterfaceDecl(node)
 	case *IRTypeAlias:
-		e.w.writef("type %s = %s", node.Name, node.Underlying)
+		e.w.writef("type %s", node.Name)
+		if len(node.TypeParams) > 0 {
+			e.w.write("[")
+			for i, tp := range node.TypeParams {
+				if i > 0 {
+					e.w.write(", ")
+				}
+				e.w.writef("%s %s", tp.Name, tp.Constraint)
+			}
+			e.w.write("]")
+		}
+		e.w.writef(" = %s", node.Underlying)
 		e.w.newline()
 	case *IREnumDecl:
 		e.emitEnumDecl(node)

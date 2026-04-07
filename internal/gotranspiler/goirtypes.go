@@ -534,6 +534,7 @@ type IRTypeAlias struct {
 	declBase
 	Name       string
 	Underlying string // Go type string
+	TypeParams []IRTypeParam
 	IsExported bool
 }
 

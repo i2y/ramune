@@ -96,6 +96,7 @@ func transpileSourceIR(filename string, source string, pkgName string, isEntry b
 	// Phase 1+2: Build IR
 	tm := newTypeMapper(ck)
 	builder := NewIRBuilderFromChecker(ck, tm)
+	builder.filePrefix = sanitizeFilePrefix(filepath.Base(filename))
 
 	file := builder.BuildSourceFile(sourceFile, pkgName, isEntry)
 
@@ -415,6 +416,13 @@ func stripExtension(name string) string {
 		}
 	}
 	return name
+}
+
+// sanitizeFilePrefix converts a filename like "crypto.ts" to "crypto_" for type prefixing.
+func sanitizeFilePrefix(filename string) string {
+	base := stripExtension(filename)
+	base = strings.ReplaceAll(base, "-", "_")
+	return base + "_"
 }
 
 // isExported is defined in importmapper.go

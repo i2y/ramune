@@ -277,9 +277,17 @@ func (b *IRBuilder) buildCallableInterface(node *ast.Node, goName string) []GoDe
 		return nil
 	}
 
+	typeParams, _ := b.buildTypeParamsAndSuffix(node)
+	defer func() {
+		for _, tp := range typeParams {
+			delete(b.tm.typeParams, tp.Name)
+		}
+	}()
+
 	return []GoDecl{&IRTypeAlias{
 		Name:       goName,
 		Underlying: b.buildCallableFuncType(sigs),
+		TypeParams: typeParams,
 		IsExported: isExported(node),
 	}}
 }
@@ -378,11 +386,22 @@ func (b *IRBuilder) buildTypeAliasDecl(node *ast.Node) []GoDecl {
 		return nil
 	}
 	goName := goTypeName(nodeText(name))
+	exported := isExported(node)
+
+	// Extract type parameters (generic type alias)
+	typeParams, _ := b.buildTypeParamsAndSuffix(node)
+	// Clean up type params from mapper after building
+	defer func() {
+		for _, tp := range typeParams {
+			delete(b.tm.typeParams, tp.Name)
+		}
+	}()
 
 	if ta.Type == nil || b.ck == nil {
 		return []GoDecl{&IRTypeAlias{
 			Name:       goName,
 			Underlying: "any",
+			TypeParams: typeParams,
 			IsExported: isExported(node),
 		}}
 	}
@@ -397,6 +416,16 @@ func (b *IRBuilder) buildTypeAliasDecl(node *ast.Node) []GoDecl {
 		}
 	}
 
+	// Prefix unexported type aliases with file name to avoid cross-file collisions
+	if !exported && b.filePrefix != "" {
+		prefixed := b.filePrefix + goName
+		if b.tm.typeAliasRenames == nil {
+			b.tm.typeAliasRenames = make(map[string]string)
+		}
+		b.tm.typeAliasRenames[goName] = prefixed
+		goName = prefixed
+	}
+
 	// Callable type (function type alias)
 	if aliasType != nil {
 		sigs := b.ck.GetSignaturesOfType(aliasType, checker.SignatureKindCall)
@@ -404,7 +433,8 @@ func (b *IRBuilder) buildTypeAliasDecl(node *ast.Node) []GoDecl {
 			return []GoDecl{&IRTypeAlias{
 				Name:       goName,
 				Underlying: b.buildCallableFuncType(sigs),
-				IsExported: isExported(node),
+				TypeParams: typeParams,
+				IsExported: exported,
 			}}
 		}
 	}
@@ -421,7 +451,8 @@ func (b *IRBuilder) buildTypeAliasDecl(node *ast.Node) []GoDecl {
 	return []GoDecl{&IRTypeAlias{
 		Name:       goName,
 		Underlying: goType,
-		IsExported: isExported(node),
+		TypeParams: typeParams,
+		IsExported: exported,
 	}}
 }
 

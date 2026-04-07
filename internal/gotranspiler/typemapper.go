@@ -157,6 +157,8 @@ type typeMapper struct {
 	// Populated by emitTypeAliasDeclaration when `type X = Y` is emitted.
 	// Used by goTypeInfo to resolve alias names to concrete Go types.
 	typeAliases map[string]string
+	// typeAliasRenames maps original Go type names to prefixed names for unexported types.
+	typeAliasRenames map[string]string
 }
 
 func newTypeMapper(c *checker.Checker) *typeMapper {
@@ -513,6 +515,12 @@ func (m *typeMapper) qualifyTypeName(name string) string {
 	if m.importedNames != nil {
 		if pkg, ok := m.importedNames[name]; ok && pkg != "" {
 			return pkg + "." + goName
+		}
+	}
+	// Apply file-prefix renames for unexported types
+	if m.typeAliasRenames != nil {
+		if renamed, ok := m.typeAliasRenames[goName]; ok {
+			return renamed
 		}
 	}
 	return goName

@@ -36,6 +36,9 @@ type IRBuilder struct {
 	// Narrowed types in current scope (from typeof/instanceof checks)
 	narrowedTypes map[string]GoTypeInfo
 
+	// File context
+	filePrefix string // sanitized file base name for unexported type prefixing
+
 	// Function context
 	inAsyncBody    bool
 	currentRetType string
