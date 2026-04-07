@@ -194,7 +194,7 @@ func (b *IRBuilder) BuildSourceFile(sf *ast.SourceFile, pkgName string, isEntry 
 	// Wrap executable statements
 	if len(stmts) > 0 {
 		funcName := "init"
-		if isEntry {
+		if isEntry && pkgName == "main" {
 			funcName = "main"
 		}
 		file.Decls = append(file.Decls, &IRFuncDecl{
