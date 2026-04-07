@@ -1146,24 +1146,60 @@ func nodeCompatJSSource() string {
 
 	// --- Buffer ---
 	if (typeof globalThis.Buffer === 'undefined') {
+		var _fBuf = new ArrayBuffer(8);
+		var _fDV = new DataView(_fBuf);
+		var _te = typeof TextEncoder !== 'undefined' ? new TextEncoder() : null;
+		function _toNeedle(val) {
+			return typeof val === 'object' ? val._data : (typeof val === 'number' ? String.fromCharCode(val) : String(val));
+		}
+		function _u8ToStr(bytes) {
+			var s = '';
+			for (var i = 0; i < bytes.length; i += 8192) s += String.fromCharCode.apply(null, bytes.subarray(i, Math.min(i + 8192, bytes.length)));
+			return s;
+		}
 		function BufferObj(data) {
 			this._data = data || '';
 			this.length = this._data.length;
 			this._isBuffer = true;
 		}
-		BufferObj.prototype.toString = function(encoding) {
+		BufferObj.prototype.toString = function(encoding, start, end) {
+			var d = this._data;
+			if (start !== undefined || end !== undefined) d = d.slice(start || 0, end !== undefined ? end : d.length);
+			if (!encoding || encoding === 'utf8' || encoding === 'utf-8') {
+				var nonASCII = false;
+				for (var i = 0; i < d.length; i++) { if (d.charCodeAt(i) > 127) { nonASCII = true; break; } }
+				if (!nonASCII) return d;
+				var arr = new Uint8Array(d.length);
+				for (var i = 0; i < d.length; i++) arr[i] = d.charCodeAt(i);
+				return new TextDecoder('utf-8').decode(arr);
+			}
 			if (encoding === 'hex') {
 				var hex = '';
-				for (var i = 0; i < this._data.length; i++) {
-					hex += ('0' + this._data.charCodeAt(i).toString(16)).slice(-2);
+				for (var i = 0; i < d.length; i++) {
+					hex += ('0' + d.charCodeAt(i).toString(16)).slice(-2);
 				}
 				return hex;
 			}
 			if (encoding === 'base64') {
-				if (typeof btoa === 'function') return btoa(this._data);
-				return this._data;
+				if (typeof btoa === 'function') return btoa(d);
+				return d;
 			}
-			return this._data;
+			if (encoding === 'ascii') {
+				var s = '';
+				for (var i = 0; i < d.length; i++) s += String.fromCharCode(d.charCodeAt(i) & 0x7F);
+				return s;
+			}
+			if (encoding === 'latin1' || encoding === 'binary') {
+				return d;
+			}
+			if (encoding === 'utf16le' || encoding === 'ucs2' || encoding === 'ucs-2') {
+				var s = '';
+				for (var i = 0; i + 1 < d.length; i += 2) {
+					s += String.fromCharCode(d.charCodeAt(i) | (d.charCodeAt(i + 1) << 8));
+				}
+				return s;
+			}
+			return d;
 		};
 		BufferObj.prototype.slice = function(start, end) {
 			return new BufferObj(this._data.slice(start, end));
@@ -1178,8 +1214,15 @@ func nodeCompatJSSource() string {
 		BufferObj.prototype.equals = function(other) {
 			return this._data === other._data;
 		};
-		BufferObj.prototype.indexOf = function(val) {
-			return this._data.indexOf(typeof val === 'object' ? val._data : String(val));
+		BufferObj.prototype.indexOf = function(val, byteOffset) {
+			return this._data.indexOf(_toNeedle(val), byteOffset);
+		};
+		BufferObj.prototype.lastIndexOf = function(val, byteOffset) {
+			var needle = _toNeedle(val);
+			return byteOffset !== undefined ? this._data.lastIndexOf(needle, byteOffset) : this._data.lastIndexOf(needle);
+		};
+		BufferObj.prototype.includes = function(val, byteOffset) {
+			return this.indexOf(val, byteOffset) !== -1;
 		};
 		BufferObj.prototype.write = function(str, offset) {
 			offset = offset || 0;
@@ -1207,6 +1250,19 @@ func nodeCompatJSSource() string {
 		BufferObj.prototype.writeUInt16LE = function(val, offset) { offset = offset || 0; this.writeUInt8(val & 0xFF, offset); this.writeUInt8((val >> 8) & 0xFF, offset+1); return offset + 2; };
 		BufferObj.prototype.writeUInt32BE = function(val, offset) { offset = offset || 0; this.writeUInt8((val >> 24) & 0xFF, offset); this.writeUInt8((val >> 16) & 0xFF, offset+1); this.writeUInt8((val >> 8) & 0xFF, offset+2); this.writeUInt8(val & 0xFF, offset+3); return offset + 4; };
 		BufferObj.prototype.writeUInt32LE = function(val, offset) { offset = offset || 0; this.writeUInt8(val & 0xFF, offset); this.writeUInt8((val >> 8) & 0xFF, offset+1); this.writeUInt8((val >> 16) & 0xFF, offset+2); this.writeUInt8((val >> 24) & 0xFF, offset+3); return offset + 4; };
+		BufferObj.prototype.writeInt8 = function(val, offset) { this.writeUInt8(val < 0 ? val + 256 : val, offset); return (offset || 0) + 1; };
+		BufferObj.prototype.writeInt16BE = function(val, offset) { this.writeUInt16BE(val < 0 ? val + 65536 : val, offset); return (offset || 0) + 2; };
+		BufferObj.prototype.writeInt16LE = function(val, offset) { this.writeUInt16LE(val < 0 ? val + 65536 : val, offset); return (offset || 0) + 2; };
+		BufferObj.prototype.writeInt32BE = function(val, offset) { this.writeUInt32BE(val < 0 ? val + 4294967296 : val, offset); return (offset || 0) + 4; };
+		BufferObj.prototype.writeInt32LE = function(val, offset) { this.writeUInt32LE(val < 0 ? val + 4294967296 : val, offset); return (offset || 0) + 4; };
+		BufferObj.prototype.readFloatBE = function(offset) { offset = offset || 0; for (var i = 0; i < 4; i++) _fDV.setUint8(i, this._data.charCodeAt(offset + i)); return _fDV.getFloat32(0, false); };
+		BufferObj.prototype.readFloatLE = function(offset) { offset = offset || 0; for (var i = 0; i < 4; i++) _fDV.setUint8(i, this._data.charCodeAt(offset + i)); return _fDV.getFloat32(0, true); };
+		BufferObj.prototype.readDoubleBE = function(offset) { offset = offset || 0; for (var i = 0; i < 8; i++) _fDV.setUint8(i, this._data.charCodeAt(offset + i)); return _fDV.getFloat64(0, false); };
+		BufferObj.prototype.readDoubleLE = function(offset) { offset = offset || 0; for (var i = 0; i < 8; i++) _fDV.setUint8(i, this._data.charCodeAt(offset + i)); return _fDV.getFloat64(0, true); };
+		BufferObj.prototype.writeFloatBE = function(val, offset) { offset = offset || 0; _fDV.setFloat32(0, val, false); var s = ''; for (var i = 0; i < 4; i++) s += String.fromCharCode(_fDV.getUint8(i)); this._data = this._data.substring(0, offset) + s + this._data.substring(offset + 4); this.length = this._data.length; return offset + 4; };
+		BufferObj.prototype.writeFloatLE = function(val, offset) { offset = offset || 0; _fDV.setFloat32(0, val, true); var s = ''; for (var i = 0; i < 4; i++) s += String.fromCharCode(_fDV.getUint8(i)); this._data = this._data.substring(0, offset) + s + this._data.substring(offset + 4); this.length = this._data.length; return offset + 4; };
+		BufferObj.prototype.writeDoubleBE = function(val, offset) { offset = offset || 0; _fDV.setFloat64(0, val, false); var s = ''; for (var i = 0; i < 8; i++) s += String.fromCharCode(_fDV.getUint8(i)); this._data = this._data.substring(0, offset) + s + this._data.substring(offset + 8); this.length = this._data.length; return offset + 8; };
+		BufferObj.prototype.writeDoubleLE = function(val, offset) { offset = offset || 0; _fDV.setFloat64(0, val, true); var s = ''; for (var i = 0; i < 8; i++) s += String.fromCharCode(_fDV.getUint8(i)); this._data = this._data.substring(0, offset) + s + this._data.substring(offset + 8); this.length = this._data.length; return offset + 8; };
 		BufferObj.prototype.fill = function(val, offset, end) {
 			offset = offset || 0; end = end || this.length;
 			var ch = typeof val === 'number' ? String.fromCharCode(val) : (val ? String(val).charAt(0) : '\0');
@@ -1245,12 +1301,26 @@ func nodeCompatJSSource() string {
 				if (data && data._isBuffer) {
 					return new BufferObj(data._data);
 				}
+				if (data instanceof ArrayBuffer) {
+					var bo = encoding || 0, len = arguments[2] !== undefined ? arguments[2] : data.byteLength - bo;
+					return new BufferObj(_u8ToStr(new Uint8Array(data, bo, len)));
+				}
+				if (ArrayBuffer.isView(data)) {
+					return new BufferObj(_u8ToStr(new Uint8Array(data.buffer, data.byteOffset, data.byteLength)));
+				}
 				return new BufferObj('');
 			},
-			alloc: function(size, fill) {
-				var ch = fill ? String.fromCharCode(typeof fill === 'number' ? fill : 0) : '\0';
+			alloc: function(size, fill, encoding) {
+				var pat = '\0';
+				if (fill !== undefined && fill !== null) {
+					if (typeof fill === 'number') { pat = String.fromCharCode(fill & 0xFF); }
+					else if (typeof fill === 'string') {
+						pat = fill;
+						if (encoding === 'hex') { pat = ''; for (var i = 0; i < fill.length; i += 2) pat += String.fromCharCode(parseInt(fill.substr(i, 2), 16)); }
+					} else if (fill._isBuffer) { pat = fill._data; }
+				}
 				var s = '';
-				for (var i = 0; i < size; i++) s += ch;
+				for (var i = 0; i < size; i++) s += pat.charAt(i % pat.length);
 				return new BufferObj(s);
 			},
 			allocUnsafe: function(size) { return globalThis.Buffer.alloc(size); },
@@ -1260,7 +1330,13 @@ func nodeCompatJSSource() string {
 				for (var i = 0; i < list.length; i++) s += list[i]._data || list[i].toString();
 				return new BufferObj(s);
 			},
-			byteLength: function(str, encoding) { return str.length; },
+			byteLength: function(str, encoding) {
+				if (!encoding || encoding === 'utf8' || encoding === 'utf-8') return _te ? _te.encode(str).length : str.length;
+				if (encoding === 'hex') return str.length >>> 1;
+				if (encoding === 'base64') { var pad = 0; if (str[str.length - 1] === '=') pad++; if (str[str.length - 2] === '=') pad++; return Math.ceil(str.length * 3 / 4) - pad; }
+				if (encoding === 'utf16le' || encoding === 'ucs2' || encoding === 'ucs-2') return str.length * 2;
+				return str.length;
+			},
 			isEncoding: function() { return true; }
 		};
 	}

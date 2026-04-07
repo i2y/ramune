@@ -133,14 +133,14 @@ func goWorkerCreate(wm *workerManager) GoFunc {
 				globalThis.isMainThread = false;
 				globalThis.parentPort = {
 					postMessage: function(msg) {
-						__go_parent_post(JSON.stringify(msg));
+						__go_parent_post(JSON.stringify(msg, globalThis.__sabReplacer));
 					},
 					on: function(event, cb) {
 						if (event === 'message') {
 							setInterval(function() {
 								var msgs = JSON.parse(__go_parent_drain());
 								for (var i = 0; i < msgs.length; i++) {
-									cb(JSON.parse(msgs[i]));
+									cb(JSON.parse(msgs[i], globalThis.__sabReviver));
 								}
 							}, 10);
 						}
@@ -314,7 +314,7 @@ func workerThreadsJSSource() string {
 	Worker.prototype.constructor = Worker;
 
 	Worker.prototype.postMessage = function(msg) {
-		__go_worker_post(this.threadId, JSON.stringify(msg));
+		__go_worker_post(this.threadId, JSON.stringify(msg, __sabReplacer));
 	};
 
 	Worker.prototype.terminate = function() {
@@ -322,6 +322,25 @@ func workerThreadsJSSource() string {
 		__go_worker_terminate(this.threadId);
 		this.emit('exit', 0);
 	};
+
+	// Structured clone helpers for SharedArrayBuffer transfer via JSON.
+	function __sabReplacer(key, value) {
+		if (value && typeof value === 'object' && value._sabId !== undefined && value.byteLength !== undefined) {
+			return { __sab: true, _sabId: value._sabId, byteLength: value.byteLength };
+		}
+		return value;
+	}
+	function __sabReviver(key, value) {
+		if (value && typeof value === 'object' && value.__sab === true) {
+			var sab = Object.create(globalThis.SharedArrayBuffer.prototype);
+			sab._sabId = value._sabId;
+			sab.byteLength = value.byteLength;
+			return sab;
+		}
+		return value;
+	}
+	globalThis.__sabReplacer = __sabReplacer;
+	globalThis.__sabReviver = __sabReviver;
 
 	// Registry of active workers for event delivery by Go.
 	var __activeWorkers = {};
@@ -335,7 +354,7 @@ func workerThreadsJSSource() string {
 			if (!worker) continue;
 			var msgs = msgsMap[id];
 			for (var i = 0; i < msgs.length; i++) {
-				var parsed = JSON.parse(msgs[i]);
+				var parsed = JSON.parse(msgs[i], __sabReviver);
 				if (parsed && parsed.__error) {
 					worker.emit('error', new Error(parsed.__error));
 					worker.emit('exit', 1);

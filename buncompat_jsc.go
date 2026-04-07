@@ -3,9 +3,7 @@
 package ramune
 
 import (
-	"encoding/json"
 	"strconv"
-	"strings"
 	"time"
 )
 
@@ -210,20 +208,7 @@ func (s *bunServerState) handleSingleRequest(r *Runtime, req pendingHTTPReq) {
 		}
 	}
 
-	// Parse "status\nheadersJSON\nbody" format directly into struct.
-	parts := strings.SplitN(raw, "\n", 3)
-	resp := httpResponse{Status: 200}
-	if len(parts) >= 1 {
-		if n, err := strconv.Atoi(parts[0]); err == nil {
-			resp.Status = n
-		}
-	}
-	if len(parts) >= 2 && parts[1] != "" {
-		json.Unmarshal([]byte(parts[1]), &resp.Headers)
-	}
-	if len(parts) >= 3 {
-		resp.Body = parts[2]
-	}
-
+	// Parse response format.
+	resp := parseHTTPResponse(raw)
 	s.respond(req.ID, resp)
 }

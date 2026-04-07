@@ -37,8 +37,11 @@ type Runtime struct {
 	vmMgr           *vmManager
 	procMgr         *processManager
 	sockMgr         *socketManager
+	tcpSrvMgr       *tcpServerManager
 	workerMgr       *workerManager
 	sqliteMgr       *sqliteManager
+	streamMgr       *streamManager
+	fetchMgr        *fetchManager
 	bunSrv          *bunServerState
 	gcConfig        GCConfig
 	perms           *Permissions
@@ -144,14 +147,29 @@ func (r *Runtime) qjsLoop(ready chan<- error, cfg *config) {
 			ready <- fmt.Errorf("ramune: async net: %w", err)
 			return
 		}
+		if err := r.installTCPServer(); err != nil {
+			vm.Close()
+			ready <- fmt.Errorf("ramune: tcp server: %w", err)
+			return
+		}
 		if err := r.installWorkerThreads(); err != nil {
 			vm.Close()
 			ready <- fmt.Errorf("ramune: worker_threads: %w", err)
 			return
 		}
+		if err := r.installSharedArrayBuffer(); err != nil {
+			vm.Close()
+			ready <- fmt.Errorf("ramune: SharedArrayBuffer: %w", err)
+			return
+		}
 		if err := r.installWebStreams(); err != nil {
 			vm.Close()
 			ready <- fmt.Errorf("ramune: web streams: %w", err)
+			return
+		}
+		if err := r.installStreamBridge(); err != nil {
+			vm.Close()
+			ready <- fmt.Errorf("ramune: stream bridge: %w", err)
 			return
 		}
 		if err := r.installWebCrypto(); err != nil {
@@ -173,6 +191,18 @@ func (r *Runtime) qjsLoop(ready chan<- error, cfg *config) {
 
 	// Install fetch polyfill if requested (or if nodeCompat is enabled).
 	if cfg.withFetch || cfg.nodeCompat {
+		if r.streamMgr == nil {
+			if err := r.installWebStreams(); err != nil {
+				vm.Close()
+				ready <- fmt.Errorf("ramune: web streams: %w", err)
+				return
+			}
+			if err := r.installStreamBridge(); err != nil {
+				vm.Close()
+				ready <- fmt.Errorf("ramune: stream bridge: %w", err)
+				return
+			}
+		}
 		if err := r.installFetch(); err != nil {
 			vm.Close()
 			ready <- fmt.Errorf("ramune: fetch: %w", err)
@@ -251,8 +281,17 @@ func (r *Runtime) Close() error {
 	}
 	r.closeOnce.Do(func() {
 		// Stop managers.
+		if r.fetchMgr != nil {
+			r.fetchMgr.closeAll()
+		}
+		if r.streamMgr != nil {
+			r.streamMgr.closeAll()
+		}
 		if r.fswatchMgr != nil {
 			r.fswatchMgr.closeAll()
+		}
+		if r.tcpSrvMgr != nil {
+			r.tcpSrvMgr.closeAll()
 		}
 		if r.sqliteMgr != nil {
 			r.sqliteMgr.closeAll()

@@ -11,6 +11,15 @@ import (
 	"sync"
 )
 
+// Socket event kind constants.
+const (
+	sockEventConnect = "connect"
+	sockEventData    = "data"
+	sockEventEnd     = "end"
+	sockEventClose   = "close"
+	sockEventError   = "error"
+)
+
 // asyncSocket represents a managed TCP/TLS connection.
 type asyncSocket struct {
 	conn   net.Conn
@@ -39,6 +48,41 @@ func newSocketManager() *socketManager {
 	}
 }
 
+// startReader starts a background goroutine that reads from the socket's conn
+// and queues data/end/error/close events.
+func (sm *socketManager) startReader(sock *asyncSocket) {
+	go func() {
+		reader := bufio.NewReader(sock.conn)
+		buf := make([]byte, 4096)
+		for {
+			n, err := reader.Read(buf)
+			if n > 0 {
+				sock.mu.Lock()
+				sock.events = append(sock.events, socketEvent{Kind: sockEventData, Data: string(buf[:n])})
+				sock.mu.Unlock()
+				if sm.wakeFn != nil {
+					sm.wakeFn()
+				}
+			}
+			if err != nil {
+				sock.mu.Lock()
+				if err == io.EOF {
+					sock.events = append(sock.events, socketEvent{Kind: sockEventEnd})
+				} else if !sock.closed {
+					sock.events = append(sock.events, socketEvent{Kind: sockEventError, Data: err.Error()})
+				}
+				sock.events = append(sock.events, socketEvent{Kind: sockEventClose})
+				sock.closed = true
+				sock.mu.Unlock()
+				if sm.wakeFn != nil {
+					sm.wakeFn()
+				}
+				return
+			}
+		}
+	}()
+}
+
 func (sm *socketManager) connect(host string, port int, useTLS bool) (int, error) {
 	addr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
 	var conn net.Conn
@@ -53,6 +97,12 @@ func (sm *socketManager) connect(host string, port int, useTLS bool) (int, error
 		return 0, err
 	}
 
+	return sm.registerExisting(conn), nil
+}
+
+// registerExisting wraps an already-established net.Conn as a socket with
+// a background reader. Used by TCP server to register accepted connections.
+func (sm *socketManager) registerExisting(conn net.Conn) int {
 	sock := &asyncSocket{conn: conn}
 
 	sm.mu.Lock()
@@ -61,47 +111,15 @@ func (sm *socketManager) connect(host string, port int, useTLS bool) (int, error
 	sm.sockets[id] = sock
 	sm.mu.Unlock()
 
-	// Signal connect.
 	sock.mu.Lock()
-	sock.events = append(sock.events, socketEvent{Kind: "connect"})
+	sock.events = append(sock.events, socketEvent{Kind: sockEventConnect})
 	sock.mu.Unlock()
 	if sm.wakeFn != nil {
 		sm.wakeFn()
 	}
 
-	// Read in background.
-	go func() {
-		reader := bufio.NewReader(conn)
-		buf := make([]byte, 4096)
-		for {
-			n, err := reader.Read(buf)
-			if n > 0 {
-				sock.mu.Lock()
-				sock.events = append(sock.events, socketEvent{Kind: "data", Data: string(buf[:n])})
-				sock.mu.Unlock()
-				if sm.wakeFn != nil {
-					sm.wakeFn()
-				}
-			}
-			if err != nil {
-				sock.mu.Lock()
-				if err == io.EOF {
-					sock.events = append(sock.events, socketEvent{Kind: "end"})
-				} else if !sock.closed {
-					sock.events = append(sock.events, socketEvent{Kind: "error", Data: err.Error()})
-				}
-				sock.events = append(sock.events, socketEvent{Kind: "close"})
-				sock.closed = true
-				sock.mu.Unlock()
-				if sm.wakeFn != nil {
-					sm.wakeFn()
-				}
-				return
-			}
-		}
-	}()
-
-	return id, nil
+	sm.startReader(sock)
+	return id
 }
 
 func (sm *socketManager) write(id int, data string) error {
@@ -441,7 +459,9 @@ func asyncNetJSSource() string {
 	};
 
 	// Registry of active sockets for event delivery by Go.
+	// Exposed on globalThis so TCP server can register accepted connections.
 	var __activeSockets = {};
+	globalThis.__activeSockets = __activeSockets;
 
 	// Called by Go during event loop tick to deliver socket events.
 	globalThis.__socketDeliverEvents = function(eventsMap) {

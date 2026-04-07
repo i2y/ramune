@@ -1,6 +1,9 @@
 package ramune
 
 import (
+	"bytes"
+	"compress/flate"
+	"compress/gzip"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -8,8 +11,13 @@ import (
 	"net/http"
 	"os"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
+
+	"github.com/andybalholm/brotli"
+	"github.com/evanw/esbuild/pkg/api"
 
 	"golang.org/x/crypto/bcrypt"
 )
@@ -51,6 +59,12 @@ func (r *Runtime) installBunCompat() error {
 		if len(args) >= 2 {
 			if ws, ok := args[1].(bool); ok && ws {
 				r.bunSrv.wsEnabled = true
+			}
+		}
+		// Third arg: idle timeout in milliseconds.
+		if len(args) >= 3 {
+			if ms, ok := args[2].(float64); ok && ms > 0 {
+				r.bunSrv.idleTimeout = time.Duration(ms) * time.Millisecond
 			}
 		}
 		actualPort, err := r.bunSrv.start(int(port))
@@ -104,22 +118,125 @@ func (r *Runtime) installBunCompat() error {
 		return err
 	}
 
+	if err := r.registerFuncLocked("__go_bun_build", goBunBuild); err != nil {
+		return err
+	}
+
 	return r.execLocked(bunCompatJSSource())
+}
+
+func goBunBuild(args []any) (any, error) {
+	if len(args) < 1 {
+		return nil, fmt.Errorf("build: options required")
+	}
+	optsJSON, _ := args[0].(string)
+
+	var opts struct {
+		Entrypoints []string `json:"entrypoints"`
+		Outdir      string   `json:"outdir"`
+		Target      string   `json:"target"`
+		Format      string   `json:"format"`
+		Minify      bool     `json:"minify"`
+		Splitting   bool     `json:"splitting"`
+		Sourcemap   string   `json:"sourcemap"`
+		External    []string `json:"external"`
+	}
+	if err := json.Unmarshal([]byte(optsJSON), &opts); err != nil {
+		return nil, fmt.Errorf("build: invalid options: %w", err)
+	}
+
+	buildOpts := api.BuildOptions{
+		EntryPoints: opts.Entrypoints,
+		Bundle:      true,
+		LogLevel:    api.LogLevelSilent,
+	}
+
+	if opts.Outdir != "" {
+		buildOpts.Outdir = opts.Outdir
+		buildOpts.Write = true
+	}
+
+	switch opts.Target {
+	case "bun", "node":
+		buildOpts.Platform = api.PlatformNode
+	default:
+		buildOpts.Platform = api.PlatformBrowser
+	}
+
+	switch opts.Format {
+	case "cjs":
+		buildOpts.Format = api.FormatCommonJS
+	case "iife":
+		buildOpts.Format = api.FormatIIFE
+	default:
+		buildOpts.Format = api.FormatESModule
+	}
+
+	if opts.Minify {
+		buildOpts.MinifySyntax = true
+		buildOpts.MinifyWhitespace = true
+		buildOpts.MinifyIdentifiers = true
+	}
+	buildOpts.Splitting = opts.Splitting
+
+	switch opts.Sourcemap {
+	case "inline":
+		buildOpts.Sourcemap = api.SourceMapInline
+	case "linked", "external":
+		buildOpts.Sourcemap = api.SourceMapLinked
+	}
+
+	if len(opts.External) > 0 {
+		buildOpts.External = opts.External
+	}
+
+	result := api.Build(buildOpts)
+
+	outputs := make([]map[string]any, 0, len(result.OutputFiles))
+	for _, f := range result.OutputFiles {
+		kind := "entry-point"
+		if strings.HasSuffix(f.Path, ".map") {
+			kind = "sourcemap"
+		} else if strings.Contains(f.Path, "chunk-") {
+			kind = "chunk"
+		}
+		outputs = append(outputs, map[string]any{
+			"path": f.Path,
+			"kind": kind,
+		})
+	}
+
+	logs := make([]map[string]any, 0)
+	for _, msg := range result.Errors {
+		logs = append(logs, map[string]any{"level": "error", "message": msg.Text})
+	}
+	for _, msg := range result.Warnings {
+		logs = append(logs, map[string]any{"level": "warning", "message": msg.Text})
+	}
+
+	resp := map[string]any{
+		"outputs": outputs,
+		"success": len(result.Errors) == 0,
+		"logs":    logs,
+	}
+	b, _ := json.Marshal(resp)
+	return string(b), nil
 }
 
 // --- HTTP Server ---
 
 type bunServerState struct {
-	rt        *Runtime
-	mu        sync.Mutex
-	listener  net.Listener
-	server    *http.Server
-	requests  chan pendingHTTPReq
-	pending   map[int]chan httpResponse
-	nextID    int
-	gcCounter int
-	wsEnabled bool       // true when Bun.serve() was called with websocket handlers
-	wsMgr     *wsManager // WebSocket connection manager
+	rt          *Runtime
+	mu          sync.Mutex
+	listener    net.Listener
+	server      *http.Server
+	requests    chan pendingHTTPReq
+	pending     map[int]chan httpResponse
+	nextID      int
+	gcCounter   int
+	wsEnabled   bool          // true when Bun.serve() was called with websocket handlers
+	wsMgr       *wsManager    // WebSocket connection manager
+	idleTimeout time.Duration // configurable idle timeout
 
 	// Cached JSC references for direct function calls (avoids JS parsing per request).
 	handleFastFn uintptr // JSObjectRef for __bunHandleFast
@@ -138,9 +255,11 @@ type pendingUpgrade struct {
 }
 
 type httpResponse struct {
-	Status  int
-	Headers map[string]string
-	Body    string
+	Status   int
+	Headers  map[string]string
+	Body     string
+	StreamID int    // non-zero: body is a js2go managed stream
+	FilePath string // non-empty: serve static file
 }
 
 type pendingHTTPReq struct {
@@ -229,13 +348,7 @@ func (s *bunServerState) start(port int) (int, error) {
 			delete(s.pending, id)
 			s.mu.Unlock()
 
-			for k, v := range resp.Headers {
-				w.Header().Set(k, v)
-			}
-			if resp.Status > 0 {
-				w.WriteHeader(resp.Status)
-			}
-			w.Write([]byte(resp.Body))
+			s.writeResponse(w, r, resp)
 			return
 		}
 
@@ -253,16 +366,14 @@ func (s *bunServerState) start(port int) (int, error) {
 		delete(s.pending, id)
 		s.mu.Unlock()
 
-		for k, v := range resp.Headers {
-			w.Header().Set(k, v)
-		}
-		if resp.Status > 0 {
-			w.WriteHeader(resp.Status)
-		}
-		w.Write([]byte(resp.Body))
+		s.writeResponse(w, r, resp)
 	})
 
 	s.server = &http.Server{Handler: mux}
+	if s.idleTimeout > 0 {
+		s.server.IdleTimeout = s.idleTimeout
+		s.server.ReadHeaderTimeout = s.idleTimeout
+	}
 	go s.server.Serve(ln)
 
 	return ln.Addr().(*net.TCPAddr).Port, nil
@@ -301,8 +412,185 @@ func (s *bunServerState) respond(id int, resp httpResponse) {
 	}
 }
 
+func (s *bunServerState) writeResponse(w http.ResponseWriter, r *http.Request, resp httpResponse) {
+	for k, v := range resp.Headers {
+		w.Header().Set(k, v)
+	}
+
+	// Streaming response via js2go stream.
+	if resp.StreamID != 0 && s.rt.streamMgr != nil {
+		stream := s.rt.streamMgr.getStream(resp.StreamID)
+		if stream == nil {
+			w.WriteHeader(500)
+			w.Write([]byte("stream not found"))
+			return
+		}
+		if resp.Status > 0 {
+			w.WriteHeader(resp.Status)
+		}
+		flusher, _ := w.(http.Flusher)
+		for {
+			select {
+			case chunk, ok := <-stream.dataCh:
+				if !ok {
+					return
+				}
+				if _, err := w.Write(chunk); err != nil {
+					s.rt.streamMgr.cancelStream(resp.StreamID)
+					return
+				}
+				if flusher != nil {
+					flusher.Flush()
+				}
+			case <-stream.doneCh:
+				for {
+					select {
+					case chunk := <-stream.dataCh:
+						w.Write(chunk)
+					default:
+						if flusher != nil {
+							flusher.Flush()
+						}
+						s.rt.streamMgr.removeStream(resp.StreamID)
+						return
+					}
+				}
+			}
+		}
+	}
+
+	// Static file response.
+	if resp.FilePath != "" {
+		http.ServeFile(w, r, resp.FilePath)
+		return
+	}
+
+	// Normal buffered response with optional compression.
+	body := []byte(resp.Body)
+	ct := w.Header().Get("Content-Type")
+
+	// Compress if body is large enough, content type is compressible, and not already encoded.
+	if r != nil && len(body) >= 1024 && !strings.HasPrefix(ct, "text/event-stream") && w.Header().Get("Content-Encoding") == "" {
+		encoding := negotiateEncoding(r.Header.Get("Accept-Encoding"))
+		if encoding != "" {
+			compressed, err := compressBody(body, encoding)
+			if err == nil && len(compressed) < len(body) {
+				w.Header().Set("Content-Encoding", encoding)
+				w.Header().Del("Content-Length")
+				body = compressed
+			}
+		}
+	}
+
+	if resp.Status > 0 {
+		w.WriteHeader(resp.Status)
+	}
+	w.Write(body)
+}
+
+func negotiateEncoding(accept string) string {
+	if accept == "" {
+		return ""
+	}
+	// Simple quality-unaware negotiation: prefer br > gzip > deflate.
+	a := strings.ToLower(accept)
+	if strings.Contains(a, "br") {
+		return "br"
+	}
+	if strings.Contains(a, "gzip") {
+		return "gzip"
+	}
+	if strings.Contains(a, "deflate") {
+		return "deflate"
+	}
+	return ""
+}
+
+func compressBody(data []byte, encoding string) ([]byte, error) {
+	var buf bytes.Buffer
+	switch encoding {
+	case "gzip":
+		w := gzip.NewWriter(&buf)
+		w.Write(data)
+		w.Close()
+	case "deflate":
+		w, _ := flate.NewWriter(&buf, flate.DefaultCompression)
+		w.Write(data)
+		w.Close()
+	case "br":
+		w := brotli.NewWriter(&buf)
+		w.Write(data)
+		w.Close()
+	default:
+		return nil, fmt.Errorf("unsupported encoding: %s", encoding)
+	}
+	return buf.Bytes(), nil
+}
+
 func escJS(s string) string {
 	return jsEscaper.Replace(s)
+}
+
+// parseHTTPResponse parses the response string from JS handler.
+// Formats:
+//   - "__stream__:ID\nstatus\nheadersJSON" — streaming response
+//   - "__file__:/path\nstatus\nheadersJSON" — static file response
+//   - "status\nheadersJSON\nbody" — normal buffered response
+func parseHTTPResponse(raw string) httpResponse {
+	// Streaming response.
+	if strings.HasPrefix(raw, "__stream__:") {
+		parts := strings.SplitN(raw, "\n", 3)
+		resp := httpResponse{Status: 200}
+		if len(parts) >= 1 {
+			idStr := strings.TrimPrefix(parts[0], "__stream__:")
+			if n, err := strconv.Atoi(idStr); err == nil {
+				resp.StreamID = n
+			}
+		}
+		if len(parts) >= 2 {
+			if n, err := strconv.Atoi(parts[1]); err == nil {
+				resp.Status = n
+			}
+		}
+		if len(parts) >= 3 && parts[2] != "" {
+			json.Unmarshal([]byte(parts[2]), &resp.Headers)
+		}
+		return resp
+	}
+
+	// Static file response.
+	if strings.HasPrefix(raw, "__file__:") {
+		parts := strings.SplitN(raw, "\n", 3)
+		resp := httpResponse{Status: 200}
+		if len(parts) >= 1 {
+			resp.FilePath = strings.TrimPrefix(parts[0], "__file__:")
+		}
+		if len(parts) >= 2 {
+			if n, err := strconv.Atoi(parts[1]); err == nil {
+				resp.Status = n
+			}
+		}
+		if len(parts) >= 3 && parts[2] != "" {
+			json.Unmarshal([]byte(parts[2]), &resp.Headers)
+		}
+		return resp
+	}
+
+	// Normal buffered response.
+	parts := strings.SplitN(raw, "\n", 3)
+	resp := httpResponse{Status: 200}
+	if len(parts) >= 1 {
+		if n, err := strconv.Atoi(parts[0]); err == nil {
+			resp.Status = n
+		}
+	}
+	if len(parts) >= 2 && parts[1] != "" {
+		json.Unmarshal([]byte(parts[1]), &resp.Headers)
+	}
+	if len(parts) >= 3 {
+		resp.Body = parts[2]
+	}
+	return resp
 }
 
 // hasActive returns true if the server is running or WebSocket connections are active.
@@ -392,6 +680,16 @@ func bunCompatJSSource() string {
 			} else if (typeof r.headers === 'object') {
 				hd = r.headers;
 			}
+		}
+		// Detect ReadableStream body for streaming response.
+		if (r._stream && r._body === null && typeof ReadableStream !== 'undefined' && r._stream instanceof ReadableStream) {
+			var streamId = __go_stream_create_js2go();
+			__streamPumpToGo(r._stream, streamId);
+			return '__stream__:' + streamId + '\n' + s + '\n' + JSON.stringify(hd);
+		}
+		// Detect Bun.file() object in response body.
+		if (r._fileObj && r._fileObj._path) {
+			return '__file__:' + r._fileObj._path + '\n' + s + '\n' + JSON.stringify(hd);
 		}
 		var b = '';
 		if (typeof r.body === 'string') b = r.body;
@@ -488,7 +786,7 @@ func bunCompatJSSource() string {
 				globalThis.__bunWSHandlers = opts.websocket;
 			}
 
-			var actualPort = __go_bun_serve_start(port, !!opts.websocket);
+			var actualPort = __go_bun_serve_start(port, !!opts.websocket, opts.idleTimeout || 0);
 
 			var server = {
 				port: actualPort,
@@ -557,6 +855,15 @@ func bunCompatJSSource() string {
 		password: {
 			hash: function(pw) { return Promise.resolve(__go_bun_password_hash(String(pw))); },
 			verify: function(pw, h) { return Promise.resolve(__go_bun_password_verify(String(pw), String(h))); }
+		},
+
+		build: function(opts) {
+			return new Promise(function(resolve, reject) {
+				try {
+					var result = JSON.parse(__go_bun_build(JSON.stringify(opts || {})));
+					resolve(result);
+				} catch(e) { reject(e); }
+			});
 		}
 	};
 
@@ -664,6 +971,11 @@ func bunCompatJSSource() string {
 			if (body instanceof ReadableStream) {
 				this._stream = body;
 				this._body = null;
+			} else if (body && typeof body === 'object' && body._path) {
+				// Bun.file() object — preserve for static file serving.
+				this._fileObj = body;
+				this._body = null;
+				this._stream = null;
 			} else {
 				this._body = body != null ? String(body) : '';
 				this._stream = null;

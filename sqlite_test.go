@@ -181,3 +181,126 @@ func TestSQLitePrepare(t *testing.T) {
 		t.Errorf("got %q, want %q", got, "2")
 	}
 }
+
+func TestSQLiteWAL(t *testing.T) {
+	r := newNodeCompatOrSkip(t)
+	defer r.Close()
+
+	val, err := r.Eval(`
+		(function() {
+			var Database = require('bun:sqlite').Database;
+			var db = new Database(':memory:');
+			var row = db.get("PRAGMA journal_mode");
+			db.close();
+			return row.journal_mode;
+		})()
+	`)
+	if err != nil {
+		t.Fatalf("Eval failed: %v", err)
+	}
+	defer val.Close()
+
+	got := val.String()
+	// In-memory databases use "memory" journal mode; WAL applies to file-based.
+	// Just verify the PRAGMA works without error.
+	if got != "memory" && got != "wal" {
+		t.Errorf("got %q, want 'memory' or 'wal'", got)
+	}
+}
+
+func TestSQLiteTransaction(t *testing.T) {
+	r := newNodeCompatOrSkip(t)
+	defer r.Close()
+
+	val, err := r.Eval(`
+		(function() {
+			var Database = require('bun:sqlite').Database;
+			var db = new Database(':memory:');
+			db.run("CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT)");
+
+			var insertMany = db.transaction(function(names) {
+				for (var i = 0; i < names.length; i++) {
+					db.run("INSERT INTO items (name) VALUES (?)", [names[i]]);
+				}
+			});
+			insertMany(["Alice", "Bob", "Charlie"]);
+
+			var rows = db.all("SELECT name FROM items ORDER BY id");
+			db.close();
+			return JSON.stringify(rows);
+		})()
+	`)
+	if err != nil {
+		t.Fatalf("Eval failed: %v", err)
+	}
+	defer val.Close()
+
+	expected := `[{"name":"Alice"},{"name":"Bob"},{"name":"Charlie"}]`
+	if got := val.String(); got != expected {
+		t.Errorf("got %s, want %s", got, expected)
+	}
+}
+
+func TestSQLiteTransactionRollback(t *testing.T) {
+	r := newNodeCompatOrSkip(t)
+	defer r.Close()
+
+	val, err := r.Eval(`
+		(function() {
+			var Database = require('bun:sqlite').Database;
+			var db = new Database(':memory:');
+			db.run("CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT)");
+			db.run("INSERT INTO items (name) VALUES (?)", ["existing"]);
+
+			var failInsert = db.transaction(function() {
+				db.run("INSERT INTO items (name) VALUES (?)", ["should_rollback"]);
+				throw new Error("intentional failure");
+			});
+
+			try { failInsert(); } catch(e) {}
+
+			var rows = db.all("SELECT name FROM items");
+			db.close();
+			return JSON.stringify(rows);
+		})()
+	`)
+	if err != nil {
+		t.Fatalf("Eval failed: %v", err)
+	}
+	defer val.Close()
+
+	expected := `[{"name":"existing"}]`
+	if got := val.String(); got != expected {
+		t.Errorf("got %s, want %s (rollback failed)", got, expected)
+	}
+}
+
+func TestSQLiteQuery(t *testing.T) {
+	r := newNodeCompatOrSkip(t)
+	defer r.Close()
+
+	val, err := r.Eval(`
+		(function() {
+			var Database = require('bun:sqlite').Database;
+			var db = new Database(':memory:');
+			db.run("CREATE TABLE kv (key TEXT, value TEXT)");
+			db.run("INSERT INTO kv (key, value) VALUES (?, ?)", ["x", "10"]);
+			db.run("INSERT INTO kv (key, value) VALUES (?, ?)", ["y", "20"]);
+
+			var q = db.query("SELECT value FROM kv WHERE key = ?");
+			var row = q.get("x");
+			var all = db.query("SELECT * FROM kv ORDER BY key").all();
+			db.close();
+			return JSON.stringify({row: row, all: all});
+		})()
+	`)
+	if err != nil {
+		t.Fatalf("Eval failed: %v", err)
+	}
+	defer val.Close()
+
+	expected := `{"row":{"value":"10"},"all":[{"key":"x","value":"10"},{"key":"y","value":"20"}]}`
+	if got := val.String(); got != expected {
+		t.Errorf("got %s, want %s", got, expected)
+	}
+}

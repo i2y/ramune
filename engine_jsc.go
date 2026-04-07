@@ -183,8 +183,11 @@ type Runtime struct {
 	vmMgr           *vmManager          // vm module context manager
 	procMgr         *processManager     // async subprocess manager
 	sockMgr         *socketManager      // async socket manager
+	tcpSrvMgr       *tcpServerManager   // TCP server manager
 	workerMgr       *workerManager      // worker threads manager
 	sqliteMgr       *sqliteManager      // bun:sqlite database manager
+	streamMgr       *streamManager      // bidirectional stream bridge
+	fetchMgr        *fetchManager       // streaming fetch request manager
 	bunSrv          *bunServerState     // Bun.serve() state
 	gcConfig        GCConfig            // GC configuration
 	perms           *Permissions        // permission policy
@@ -382,14 +385,29 @@ func (r *Runtime) jscLoop(cfg config, initErr chan<- error) {
 			initErr <- fmt.Errorf("ramune: failed to install async net: %w", err)
 			return
 		}
+		if err := r.installTCPServer(); err != nil {
+			releaseCtx()
+			initErr <- fmt.Errorf("ramune: failed to install tcp server: %w", err)
+			return
+		}
 		if err := r.installWorkerThreads(); err != nil {
 			releaseCtx()
 			initErr <- fmt.Errorf("ramune: failed to install worker_threads: %w", err)
 			return
 		}
+		if err := r.installSharedArrayBuffer(); err != nil {
+			releaseCtx()
+			initErr <- fmt.Errorf("ramune: failed to install SharedArrayBuffer: %w", err)
+			return
+		}
 		if err := r.installWebStreams(); err != nil {
 			releaseCtx()
 			initErr <- fmt.Errorf("ramune: failed to install Web Streams: %w", err)
+			return
+		}
+		if err := r.installStreamBridge(); err != nil {
+			releaseCtx()
+			initErr <- fmt.Errorf("ramune: failed to install stream bridge: %w", err)
 			return
 		}
 		if err := r.installWebCrypto(); err != nil {
@@ -411,6 +429,19 @@ func (r *Runtime) jscLoop(cfg config, initErr chan<- error) {
 
 	// Install fetch polyfill if requested (or if nodeCompat is enabled).
 	if cfg.withFetch || cfg.nodeCompat {
+		// Ensure web streams and stream bridge are available for streaming fetch.
+		if r.streamMgr == nil {
+			if err := r.installWebStreams(); err != nil {
+				releaseCtx()
+				initErr <- fmt.Errorf("ramune: failed to install Web Streams: %w", err)
+				return
+			}
+			if err := r.installStreamBridge(); err != nil {
+				releaseCtx()
+				initErr <- fmt.Errorf("ramune: failed to install stream bridge: %w", err)
+				return
+			}
+		}
 		if err := r.installFetch(); err != nil {
 			releaseCtx()
 			initErr <- fmt.Errorf("ramune: failed to install fetch: %w", err)
@@ -472,8 +503,17 @@ func (r *Runtime) jscLoop(cfg config, initErr chan<- error) {
 func (r *Runtime) Close() error {
 	r.closeOnce.Do(func() {
 		r.closed.Store(true)
+		if r.fetchMgr != nil {
+			r.fetchMgr.closeAll()
+		}
+		if r.streamMgr != nil {
+			r.streamMgr.closeAll()
+		}
 		if r.fswatchMgr != nil {
 			r.fswatchMgr.closeAll()
+		}
+		if r.tcpSrvMgr != nil {
+			r.tcpSrvMgr.closeAll()
 		}
 		if r.sqliteMgr != nil {
 			r.sqliteMgr.closeAll()

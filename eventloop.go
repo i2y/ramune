@@ -59,11 +59,25 @@ func (r *Runtime) tickManagers() {
 	if r.procMgr != nil {
 		r.procMgr.processEvents(r)
 	}
+	// TCP server events must be processed before socket events so that
+	// accepted connections are registered in __activeSockets before
+	// their data events arrive.
+	if r.tcpSrvMgr != nil {
+		r.tcpSrvMgr.processEvents(r)
+	}
 	if r.sockMgr != nil {
 		r.sockMgr.processEvents(r)
 	}
 	if r.workerMgr != nil {
 		r.workerMgr.processEvents(r)
+	}
+	// Process fetch events before stream events so ReadableStream
+	// controllers are registered before chunks arrive.
+	if r.fetchMgr != nil {
+		r.fetchMgr.processEvents(r)
+	}
+	if r.streamMgr != nil {
+		r.streamMgr.processEvents(r)
 	}
 }
 
@@ -439,6 +453,10 @@ func (r *Runtime) hasPendingLocked() bool {
 	if r.sockMgr != nil && r.sockMgr.hasActive() {
 		return true
 	}
+	// Check for active TCP servers.
+	if r.tcpSrvMgr != nil && r.tcpSrvMgr.hasActive() {
+		return true
+	}
 	// Check for active Bun server.
 	if r.bunSrv != nil && r.bunSrv.hasActive() {
 		return true
@@ -449,6 +467,14 @@ func (r *Runtime) hasPendingLocked() bool {
 	}
 	// Check for pending async fs operations.
 	if r.fsMgr != nil && r.fsMgr.hasActive() {
+		return true
+	}
+	// Check for active streams.
+	if r.streamMgr != nil && r.streamMgr.hasActive() {
+		return true
+	}
+	// Check for active fetch requests.
+	if r.fetchMgr != nil && r.fetchMgr.hasActive() {
 		return true
 	}
 	return false

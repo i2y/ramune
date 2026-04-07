@@ -1051,6 +1051,166 @@ func TestBufferReadWrite(t *testing.T) {
 	}
 }
 
+func TestBufferSignedWrite(t *testing.T) {
+	r := sharedNodeCompat(t)
+	v, err := r.Eval(`
+		var buf = Buffer.alloc(14);
+		buf.writeInt8(-1, 0);
+		buf.writeInt8(-128, 1);
+		buf.writeInt16BE(-256, 2);
+		buf.writeInt16LE(-256, 4);
+		buf.writeInt32BE(-1, 6);
+		buf.writeInt32LE(-1, 10);
+		JSON.stringify([buf.readInt8(0), buf.readInt8(1), buf.readInt16BE(2), buf.readInt16LE(4), buf.readInt32BE(6), buf.readInt32LE(10)]);
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	s, _ := v.GoString()
+	if s != "[-1,-128,-256,-256,-1,-1]" {
+		t.Fatalf("got %s", s)
+	}
+}
+
+func TestBufferFloatDouble(t *testing.T) {
+	r := sharedNodeCompat(t)
+	v, err := r.Eval(`
+		var buf = Buffer.alloc(20);
+		buf.writeFloatBE(1.5, 0);
+		buf.writeFloatLE(1.5, 4);
+		buf.writeDoubleBE(Math.PI, 8);
+		var f1 = buf.readFloatBE(0);
+		var f2 = buf.readFloatLE(4);
+		var d1 = buf.readDoubleBE(8);
+		JSON.stringify([f1, f2, Math.abs(d1 - Math.PI) < 1e-15]);
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	s, _ := v.GoString()
+	if s != "[1.5,1.5,true]" {
+		t.Fatalf("got %s", s)
+	}
+}
+
+func TestBufferIncludes(t *testing.T) {
+	r := sharedNodeCompat(t)
+	v, err := r.Eval(`
+		var buf = Buffer.from('hello world');
+		JSON.stringify([buf.includes('world'), buf.includes('xyz'), buf.includes('world', 7)]);
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	s, _ := v.GoString()
+	if s != "[true,false,false]" {
+		t.Fatalf("got %s", s)
+	}
+}
+
+func TestBufferLastIndexOf(t *testing.T) {
+	r := sharedNodeCompat(t)
+	v, err := r.Eval(`
+		var buf = Buffer.from('abcabc');
+		JSON.stringify([buf.lastIndexOf('abc'), buf.lastIndexOf('abc', 2), buf.lastIndexOf('xyz')]);
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	s, _ := v.GoString()
+	if s != "[3,0,-1]" {
+		t.Fatalf("got %s", s)
+	}
+}
+
+func TestBufferToStringUTF8(t *testing.T) {
+	r := sharedNodeCompat(t)
+	v, err := r.Eval(`
+		var buf = Buffer.from([0xE3, 0x81, 0x82]);
+		buf.toString('utf8');
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	s, _ := v.GoString()
+	if s != "\u3042" {
+		t.Fatalf("got %q, want あ", s)
+	}
+}
+
+func TestBufferToStringUTF16LE(t *testing.T) {
+	r := sharedNodeCompat(t)
+	v, err := r.Eval(`
+		var buf = Buffer.from([0x42, 0x30]);
+		buf.toString('utf16le');
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	s, _ := v.GoString()
+	if s != "\u3042" {
+		t.Fatalf("got %q, want あ", s)
+	}
+}
+
+func TestBufferFromArrayBuffer(t *testing.T) {
+	r := sharedNodeCompat(t)
+	v, err := r.Eval(`
+		var ab = new ArrayBuffer(4);
+		var view = new Uint8Array(ab);
+		view[0] = 1; view[1] = 2; view[2] = 3; view[3] = 4;
+		var buf = Buffer.from(ab);
+		JSON.stringify([buf[0] || buf.readUInt8(0), buf.readUInt8(1), buf.readUInt8(2), buf.readUInt8(3), buf.length]);
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	s, _ := v.GoString()
+	if s != "[1,2,3,4,4]" {
+		t.Fatalf("got %s", s)
+	}
+}
+
+func TestBufferFromTypedArray(t *testing.T) {
+	r := sharedNodeCompat(t)
+	v, err := r.Eval(`
+		var u8 = new Uint8Array([0xCA, 0xFE, 0xBA, 0xBE]);
+		var buf = Buffer.from(u8);
+		buf.toString('hex');
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	s, _ := v.GoString()
+	if s != "cafebabe" {
+		t.Fatalf("got %q", s)
+	}
+}
+
+func TestBufferAllocFillString(t *testing.T) {
+	r := sharedNodeCompat(t)
+	v, err := r.Eval(`
+		var buf = Buffer.alloc(6, 'ab');
+		buf.toString('latin1');
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	s, _ := v.GoString()
+	if s != "ababab" {
+		t.Fatalf("got %q", s)
+	}
+}
+
 func TestCryptoAesCbc(t *testing.T) {
 	r := sharedNodeCompat(t)
 
