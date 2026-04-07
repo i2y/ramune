@@ -516,7 +516,8 @@ Ramune provides its own API namespace. `Bun.*` is available as an alias for back
 | `Ramune.sleep(ms)` | Supported |
 | `Ramune.plugin({setup})` | Supported (onLoad filters, virtual modules) |
 | `Request` / `Response` | Polyfilled with ReadableStream body |
-| `bun:sqlite` | Supported (pure Go, modernc.org/sqlite) |
+| `Ramune.build({entrypoints, outdir, ...})` | Supported (esbuild backend, minify, splitting, sourcemap) |
+| `bun:sqlite` | Supported (transactions, WAL, prepared stmt cache, pure Go) |
 | `Bun.*` | Alias for `Ramune.*` (partial Bun compatibility) |
 
 ### GC Configuration
@@ -622,10 +623,10 @@ Linux does not need JIT setup.
 | fs | 90% (async + sync + watch) | | os | 85% |
 | child_process | 80% | | events | 85% |
 | crypto | 85% (+ crypto.subtle) | | url | 80% |
-| stream | 70% | | Buffer | 60% |
+| stream | 70% | | Buffer | 90% |
 | http/https | 70% | | assert | 80% |
-| net/tls | 60% | | dns | basic |
-| worker_threads | 70% | | readline | 70% |
+| net/tls | 70% (+ net.createServer) | | dns | basic |
+| worker_threads | 75% (+ SharedArrayBuffer) | | readline | 70% |
 | vm | 70% | | querystring | 80% |
 | timers/promises | 70% | | perf_hooks | basic |
 | util | 80% (types, promisify, format) | | process | 85% (signals, exit, env) |
@@ -646,6 +647,7 @@ Linux does not need JIT setup.
 | `URL` / `URLSearchParams` | Supported |
 | `WebSocket` | Supported (server-side via Ramune.serve) |
 | `performance.now` / `mark` / `measure` | Supported |
+| `SharedArrayBuffer` / `Atomics` | Supported (Go []byte backed, wait/notify, worker transfer) |
 | `structuredClone` | Supported (circular refs, Map, Set, Date, RegExp, TypedArray) |
 | `setTimeout` / `setInterval` | Supported |
 | `navigator` | Supported (userAgent, platform, hardwareConcurrency) |
