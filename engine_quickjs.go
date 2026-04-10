@@ -43,6 +43,7 @@ type Runtime struct {
 	streamMgr       *streamManager
 	fetchMgr        *fetchManager
 	bunSrv          *bunServerState
+	customTickMgrs  []TickManager // user-registered event loop managers
 	gcConfig        GCConfig
 	perms           *Permissions
 	poolHandleFn    uintptr // unused in quickjs but needed for pool.go shared code
@@ -82,6 +83,7 @@ func newRuntime(opts []Option) (*Runtime, error) {
 	if cfg.permissions != nil {
 		r.perms = cfg.permissions
 	}
+	r.customTickMgrs = cfg.tickManagers
 
 	// Start the dedicated engine goroutine.
 	ready := make(chan error, 1)
@@ -295,6 +297,9 @@ func (r *Runtime) Close() error {
 		}
 		if r.sqliteMgr != nil {
 			r.sqliteMgr.closeAll()
+		}
+		for _, m := range r.customTickMgrs {
+			m.Close()
 		}
 		if r.nativeReg != nil {
 			r.nativeReg.clearInstances()

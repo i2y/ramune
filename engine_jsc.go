@@ -189,6 +189,7 @@ type Runtime struct {
 	streamMgr       *streamManager      // bidirectional stream bridge
 	fetchMgr        *fetchManager       // streaming fetch request manager
 	bunSrv          *bunServerState     // Bun.serve() state
+	customTickMgrs  []TickManager       // user-registered event loop managers
 	gcConfig        GCConfig            // GC configuration
 	perms           *Permissions        // permission policy
 	poolHandleFn    uintptr             // cached __poolHandleFast JSObjectRef (for RuntimePool)
@@ -283,6 +284,7 @@ func newRuntime(opts []Option) (*Runtime, error) {
 	} else {
 		rt.perms = AllPermissions()
 	}
+	rt.customTickMgrs = cfg.tickManagers
 
 	// Start the dedicated JSC goroutine. All JSC operations
 	// (bind, create, eval, close) happen on this single pinned OS thread.
@@ -517,6 +519,9 @@ func (r *Runtime) Close() error {
 		}
 		if r.sqliteMgr != nil {
 			r.sqliteMgr.closeAll()
+		}
+		for _, m := range r.customTickMgrs {
+			m.Close()
 		}
 		if r.nativeReg != nil {
 			r.nativeReg.clearInstances()

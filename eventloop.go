@@ -79,6 +79,9 @@ func (r *Runtime) tickManagers() {
 	if r.streamMgr != nil {
 		r.streamMgr.processEvents(r)
 	}
+	for _, m := range r.customTickMgrs {
+		m.ProcessEvents(r)
+	}
 }
 
 // RunEventLoop processes the event loop until all pending operations complete.
@@ -476,6 +479,11 @@ func (r *Runtime) hasPendingLocked() bool {
 	// Check for active fetch requests.
 	if r.fetchMgr != nil && r.fetchMgr.hasActive() {
 		return true
+	}
+	for _, m := range r.customTickMgrs {
+		if m.HasActive() {
+			return true
+		}
 	}
 	return false
 }

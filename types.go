@@ -37,6 +37,28 @@ func DefaultGCConfig() GCConfig {
 	}
 }
 
+// TickManager is the interface for custom event loop managers.
+// External packages implement this to integrate async I/O with ramune's event loop.
+type TickManager interface {
+	// ProcessEvents drains pending events and delivers them to JavaScript.
+	// Called on the dedicated engine goroutine during each event loop tick.
+	ProcessEvents(r *Runtime)
+
+	// HasActive returns true if there are pending operations that should
+	// keep the event loop running.
+	HasActive() bool
+
+	// Close releases resources held by the manager.
+	Close()
+}
+
+// WithTickManager registers a custom event loop manager.
+// The manager's ProcessEvents method is called during each event loop tick,
+// and HasActive is checked to determine if the event loop should keep running.
+func WithTickManager(m TickManager) Option {
+	return func(c *config) { c.tickManagers = append(c.tickManagers, m) }
+}
+
 // config holds resolved configuration for a Runtime.
 type config struct {
 	libraryPath  string
@@ -46,7 +68,8 @@ type config struct {
 	withFetch    bool     // install fetch polyfill
 	gc           *GCConfig
 	permissions  *Permissions
-	modules      []Module // user-provided modules for require()
+	modules      []Module      // user-provided modules for require()
+	tickManagers []TickManager // custom event loop managers
 }
 
 // Option configures a Runtime.
