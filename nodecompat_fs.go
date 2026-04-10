@@ -281,14 +281,21 @@ func goCpSync(args []any) (any, error) {
 		if d.IsDir() {
 			return os.MkdirAll(target, 0o755)
 		}
-		data, err := os.ReadFile(p)
-		if err != nil {
-			return err
-		}
 		info, err := d.Info()
 		if err != nil {
 			return err
 		}
-		return os.WriteFile(target, data, info.Mode())
+		sf, err := os.Open(p)
+		if err != nil {
+			return err
+		}
+		defer sf.Close()
+		df, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, info.Mode())
+		if err != nil {
+			return err
+		}
+		defer df.Close()
+		_, err = io.Copy(df, sf)
+		return err
 	})
 }

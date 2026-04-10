@@ -1,6 +1,7 @@
 package ramune
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -12,6 +13,8 @@ import (
 	"sync"
 	"time"
 )
+
+var errInvalidDockerClient = fmt.Errorf("docker: invalid client")
 
 // dockerClient wraps Docker Engine API calls over Unix socket or TCP.
 type dockerClient struct {
@@ -84,8 +87,6 @@ func (c *dockerClient) doJSON(method, path string, body io.Reader) (map[string]a
 	return result, nil
 }
 
-// --- Docker Engine API methods used by agent-ci ---
-
 func (c *dockerClient) ping() error {
 	resp, err := c.do("GET", "/_ping", nil)
 	if err != nil {
@@ -108,7 +109,6 @@ func (c *dockerClient) imagePull(name string) error {
 		return err
 	}
 	defer resp.Body.Close()
-	// Drain the pull progress stream.
 	io.Copy(io.Discard, resp.Body)
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("docker pull %s: status %d", name, resp.StatusCode)
@@ -118,7 +118,7 @@ func (c *dockerClient) imagePull(name string) error {
 
 func (c *dockerClient) createNetwork(opts map[string]any) (string, error) {
 	body, _ := json.Marshal(opts)
-	result, err := c.doJSON("POST", "/networks/create", strings.NewReader(string(body)))
+	result, err := c.doJSON("POST", "/networks/create", bytes.NewReader(body))
 	if err != nil {
 		return "", err
 	}
@@ -149,7 +149,7 @@ func (c *dockerClient) createContainer(opts map[string]any) (string, error) {
 	if name != "" {
 		path += "?name=" + name
 	}
-	result, err := c.doJSON("POST", path, strings.NewReader(string(body)))
+	result, err := c.doJSON("POST", path, bytes.NewReader(body))
 	if err != nil {
 		return "", err
 	}
@@ -235,8 +235,6 @@ func (c *dockerClient) containerLogs(id string, follow bool) (io.ReadCloser, err
 	return resp.Body, nil
 }
 
-// --- Docker module for JS ---
-
 // dockerModuleState holds per-Runtime state for the Docker module.
 type dockerModuleState struct {
 	mu      sync.Mutex
@@ -261,7 +259,18 @@ func installDockerModule(r *Runtime) error {
 		nextID:  1,
 	}
 
-	r.registerFuncLocked("__docker_connect", func(args []any) (any, error) {
+	reg := func(name string, fn GoFunc) error {
+		return r.registerFuncLocked(name, fn)
+	}
+	withClient := func(args []any, fn func(*dockerClient) (any, error)) (any, error) {
+		c := state.getClient(args)
+		if c == nil {
+			return nil, errInvalidDockerClient
+		}
+		return fn(c)
+	}
+
+	if err := reg("__docker_connect", func(args []any) (any, error) {
 		socketPath := ""
 		if len(args) > 0 {
 			if s, ok := args[0].(string); ok {
@@ -275,151 +284,141 @@ func installDockerModule(r *Runtime) error {
 		state.clients[id] = client
 		state.mu.Unlock()
 		return float64(id), nil
-	})
-
-	r.registerFuncLocked("__docker_ping", func(args []any) (any, error) {
-		client := state.getClient(args)
-		if client == nil {
-			return nil, fmt.Errorf("docker: invalid client")
-		}
-		return nil, client.ping()
-	})
-
-	r.registerFuncLocked("__docker_image_inspect", func(args []any) (any, error) {
-		client := state.getClient(args)
-		if client == nil {
-			return nil, fmt.Errorf("docker: invalid client")
-		}
-		name, _ := args[1].(string)
-		result, err := client.imageInspect(name)
-		if err != nil {
-			return nil, err
-		}
-		data, _ := json.Marshal(result)
-		return string(data), nil
-	})
-
-	r.registerFuncLocked("__docker_image_pull", func(args []any) (any, error) {
-		client := state.getClient(args)
-		if client == nil {
-			return nil, fmt.Errorf("docker: invalid client")
-		}
-		name, _ := args[1].(string)
-		return nil, client.imagePull(name)
-	})
-
-	r.registerFuncLocked("__docker_network_create", func(args []any) (any, error) {
-		client := state.getClient(args)
-		if client == nil {
-			return nil, fmt.Errorf("docker: invalid client")
-		}
-		optsJSON, _ := args[1].(string)
-		var opts map[string]any
-		json.Unmarshal([]byte(optsJSON), &opts)
-		return client.createNetwork(opts)
-	})
-
-	r.registerFuncLocked("__docker_network_remove", func(args []any) (any, error) {
-		client := state.getClient(args)
-		if client == nil {
-			return nil, fmt.Errorf("docker: invalid client")
-		}
-		name, _ := args[1].(string)
-		return nil, client.removeNetwork(name)
-	})
-
-	r.registerFuncLocked("__docker_container_create", func(args []any) (any, error) {
-		client := state.getClient(args)
-		if client == nil {
-			return nil, fmt.Errorf("docker: invalid client")
-		}
-		optsJSON, _ := args[1].(string)
-		var opts map[string]any
-		json.Unmarshal([]byte(optsJSON), &opts)
-		return client.createContainer(opts)
-	})
-
-	r.registerFuncLocked("__docker_container_start", func(args []any) (any, error) {
-		client := state.getClient(args)
-		if client == nil {
-			return nil, fmt.Errorf("docker: invalid client")
-		}
-		id, _ := args[1].(string)
-		return nil, client.startContainer(id)
-	})
-
-	r.registerFuncLocked("__docker_container_stop", func(args []any) (any, error) {
-		client := state.getClient(args)
-		if client == nil {
-			return nil, fmt.Errorf("docker: invalid client")
-		}
-		id, _ := args[1].(string)
-		timeout := 10
-		if len(args) > 2 {
-			if t, ok := args[2].(float64); ok {
-				timeout = int(t)
+	}); err != nil {
+		return err
+	}
+	if err := reg("__docker_ping", func(args []any) (any, error) {
+		return withClient(args, func(c *dockerClient) (any, error) {
+			return nil, c.ping()
+		})
+	}); err != nil {
+		return err
+	}
+	if err := reg("__docker_image_inspect", func(args []any) (any, error) {
+		return withClient(args, func(c *dockerClient) (any, error) {
+			name, _ := args[1].(string)
+			result, err := c.imageInspect(name)
+			if err != nil {
+				return nil, err
 			}
-		}
-		return nil, client.stopContainer(id, timeout)
-	})
-
-	r.registerFuncLocked("__docker_container_remove", func(args []any) (any, error) {
-		client := state.getClient(args)
-		if client == nil {
-			return nil, fmt.Errorf("docker: invalid client")
-		}
-		id, _ := args[1].(string)
-		force := false
-		if len(args) > 2 {
-			force, _ = args[2].(bool)
-		}
-		return nil, client.removeContainer(id, force)
-	})
-
-	r.registerFuncLocked("__docker_container_wait", func(args []any) (any, error) {
-		client := state.getClient(args)
-		if client == nil {
-			return nil, fmt.Errorf("docker: invalid client")
-		}
-		id, _ := args[1].(string)
-		code, err := client.waitContainer(id)
-		if err != nil {
-			return nil, err
-		}
-		return float64(code), nil
-	})
-
-	r.registerFuncLocked("__docker_container_inspect", func(args []any) (any, error) {
-		client := state.getClient(args)
-		if client == nil {
-			return nil, fmt.Errorf("docker: invalid client")
-		}
-		id, _ := args[1].(string)
-		result, err := client.inspectContainer(id)
-		if err != nil {
-			return nil, err
-		}
-		data, _ := json.Marshal(result)
-		return string(data), nil
-	})
-
-	r.registerFuncLocked("__docker_container_logs", func(args []any) (any, error) {
-		client := state.getClient(args)
-		if client == nil {
-			return nil, fmt.Errorf("docker: invalid client")
-		}
-		id, _ := args[1].(string)
-		follow := false
-		if len(args) > 2 {
-			follow, _ = args[2].(bool)
-		}
-		reader, err := client.containerLogs(id, follow)
-		if err != nil {
-			return nil, err
-		}
-		streamID := r.streamMgr.createGoToJS(reader)
-		return float64(streamID), nil
-	})
+			data, _ := json.Marshal(result)
+			return string(data), nil
+		})
+	}); err != nil {
+		return err
+	}
+	if err := reg("__docker_image_pull", func(args []any) (any, error) {
+		return withClient(args, func(c *dockerClient) (any, error) {
+			name, _ := args[1].(string)
+			return nil, c.imagePull(name)
+		})
+	}); err != nil {
+		return err
+	}
+	if err := reg("__docker_network_create", func(args []any) (any, error) {
+		return withClient(args, func(c *dockerClient) (any, error) {
+			optsJSON, _ := args[1].(string)
+			var opts map[string]any
+			json.Unmarshal([]byte(optsJSON), &opts)
+			return c.createNetwork(opts)
+		})
+	}); err != nil {
+		return err
+	}
+	if err := reg("__docker_network_remove", func(args []any) (any, error) {
+		return withClient(args, func(c *dockerClient) (any, error) {
+			name, _ := args[1].(string)
+			return nil, c.removeNetwork(name)
+		})
+	}); err != nil {
+		return err
+	}
+	if err := reg("__docker_container_create", func(args []any) (any, error) {
+		return withClient(args, func(c *dockerClient) (any, error) {
+			optsJSON, _ := args[1].(string)
+			var opts map[string]any
+			json.Unmarshal([]byte(optsJSON), &opts)
+			return c.createContainer(opts)
+		})
+	}); err != nil {
+		return err
+	}
+	if err := reg("__docker_container_start", func(args []any) (any, error) {
+		return withClient(args, func(c *dockerClient) (any, error) {
+			id, _ := args[1].(string)
+			return nil, c.startContainer(id)
+		})
+	}); err != nil {
+		return err
+	}
+	if err := reg("__docker_container_stop", func(args []any) (any, error) {
+		return withClient(args, func(c *dockerClient) (any, error) {
+			id, _ := args[1].(string)
+			timeout := 10
+			if len(args) > 2 {
+				if t, ok := args[2].(float64); ok {
+					timeout = int(t)
+				}
+			}
+			return nil, c.stopContainer(id, timeout)
+		})
+	}); err != nil {
+		return err
+	}
+	if err := reg("__docker_container_remove", func(args []any) (any, error) {
+		return withClient(args, func(c *dockerClient) (any, error) {
+			id, _ := args[1].(string)
+			force := false
+			if len(args) > 2 {
+				force, _ = args[2].(bool)
+			}
+			return nil, c.removeContainer(id, force)
+		})
+	}); err != nil {
+		return err
+	}
+	if err := reg("__docker_container_wait", func(args []any) (any, error) {
+		return withClient(args, func(c *dockerClient) (any, error) {
+			id, _ := args[1].(string)
+			code, err := c.waitContainer(id)
+			if err != nil {
+				return nil, err
+			}
+			return float64(code), nil
+		})
+	}); err != nil {
+		return err
+	}
+	if err := reg("__docker_container_inspect", func(args []any) (any, error) {
+		return withClient(args, func(c *dockerClient) (any, error) {
+			id, _ := args[1].(string)
+			result, err := c.inspectContainer(id)
+			if err != nil {
+				return nil, err
+			}
+			data, _ := json.Marshal(result)
+			return string(data), nil
+		})
+	}); err != nil {
+		return err
+	}
+	if err := reg("__docker_container_logs", func(args []any) (any, error) {
+		return withClient(args, func(c *dockerClient) (any, error) {
+			id, _ := args[1].(string)
+			follow := false
+			if len(args) > 2 {
+				follow, _ = args[2].(bool)
+			}
+			reader, err := c.containerLogs(id, follow)
+			if err != nil {
+				return nil, err
+			}
+			streamID := r.streamMgr.createGoToJS(reader)
+			return float64(streamID), nil
+		})
+	}); err != nil {
+		return err
+	}
 
 	return r.execLocked(dockerModuleJS())
 }
@@ -438,8 +437,6 @@ func (s *dockerModuleState) getClient(args []any) *dockerClient {
 	return c
 }
 
-// dockerModuleJS returns the JS source that wraps Go callbacks into
-// a dockerode-compatible API.
 func dockerModuleJS() string {
 	return `(function() {
 	function Docker(opts) {
@@ -595,10 +592,8 @@ func dockerModuleJS() string {
 		});
 	};
 
-	// Register as a module accessible via require('dockerode').
-	if (typeof globalThis.__modules !== 'undefined') {
-		globalThis.__modules['dockerode'] = Docker;
+	if (typeof globalThis.require !== 'undefined' && globalThis.require._modules) {
+		globalThis.require._modules['dockerode'] = Docker;
 	}
-	globalThis.__Docker = Docker;
 })();`
 }

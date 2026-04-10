@@ -493,7 +493,7 @@ func nodeCompatJSSource() string {
 		renameSync: function(oldPath, newPath) {
 			__go_rename(String(oldPath), String(newPath));
 		},
-		cpSync: function(src, dest, opts) {
+		cpSync: function(src, dest) {
 			__go_cp_sync(String(src), String(dest));
 		}
 	};
@@ -707,7 +707,7 @@ func nodeCompatJSSource() string {
 		}
 	});
 	p.cwd = function() { return __go_cwd(); };
-	p.pid = typeof __go_pid === 'function' ? __go_pid() : 0;
+	p.pid = __go_pid();
 	p.platform = _platform;
 	p.arch = '__ARCH__';
 	p.version = 'v20.0.0';
