@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"sync"
 )
 
@@ -363,6 +364,21 @@ func (r *Runtime) installStreamBridge() error {
 		id := int(args[0].(float64))
 		r.streamMgr.closeStream(id)
 		return nil, nil
+	}); err != nil {
+		return err
+	}
+
+	if err := r.registerFuncLocked("__go_stream_file", func(args []any) (any, error) {
+		if len(args) < 1 {
+			return nil, fmt.Errorf("stream_file: path required")
+		}
+		path, _ := args[0].(string)
+		f, err := os.Open(path)
+		if err != nil {
+			return nil, err
+		}
+		id := r.streamMgr.createGoToJS(f)
+		return float64(id), nil
 	}); err != nil {
 		return err
 	}

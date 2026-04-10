@@ -203,7 +203,7 @@ func (p *packageList) Set(val string) error {
 }
 
 func createRuntimeWithOpts(packages []string, extra ...ramune.Option) (*ramune.Runtime, error) {
-	opts := []ramune.Option{ramune.NodeCompat(), ramune.WithFetch()}
+	opts := []ramune.Option{ramune.NodeCompat(), ramune.WithFetch(), ramune.DockerModule()}
 	if len(packages) > 0 {
 		opts = append(opts, ramune.Dependencies(packages...))
 	}

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 )
@@ -250,4 +251,44 @@ func goReadlink(args []any) (any, error) {
 	}
 	path, _ := args[0].(string)
 	return os.Readlink(path)
+}
+
+func goRename(args []any) (any, error) {
+	if len(args) < 2 {
+		return nil, fmt.Errorf("renameSync: oldPath and newPath required")
+	}
+	oldPath, _ := args[0].(string)
+	newPath, _ := args[1].(string)
+	return nil, os.Rename(oldPath, newPath)
+}
+
+func goCpSync(args []any) (any, error) {
+	if len(args) < 2 {
+		return nil, fmt.Errorf("cpSync: src and dest required")
+	}
+	src, _ := args[0].(string)
+	dest, _ := args[1].(string)
+
+	return nil, filepath.WalkDir(src, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, p)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dest, rel)
+		if d.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		data, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(target, data, info.Mode())
+	})
 }

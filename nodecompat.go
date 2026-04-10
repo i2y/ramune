@@ -266,6 +266,11 @@ func (r *Runtime) installNodeCompat() error {
 	}); err != nil {
 		return err
 	}
+	if err := r.registerFuncLocked("__go_pid", func(args []any) (any, error) {
+		return float64(os.Getpid()), nil
+	}); err != nil {
+		return err
+	}
 	if err := r.registerFuncLocked("__go_os_hostname", goOsHostname); err != nil {
 		return err
 	}
@@ -276,6 +281,12 @@ func (r *Runtime) installNodeCompat() error {
 		return err
 	}
 	if err := r.registerFuncLocked("__go_chmod", goChmod); err != nil {
+		return err
+	}
+	if err := r.registerFuncLocked("__go_rename", goRename); err != nil {
+		return err
+	}
+	if err := r.registerFuncLocked("__go_cp_sync", goCpSync); err != nil {
 		return err
 	}
 	if err := r.registerFuncLocked("__go_symlink", goSymlink); err != nil {
@@ -480,9 +491,10 @@ func nodeCompatJSSource() string {
 			return ws;
 		},
 		renameSync: function(oldPath, newPath) {
-			// Copy + remove as a simple implementation.
-			__go_copy_file(String(oldPath), String(newPath));
-			__go_rm(String(oldPath), 'false');
+			__go_rename(String(oldPath), String(newPath));
+		},
+		cpSync: function(src, dest, opts) {
+			__go_cp_sync(String(src), String(dest));
 		}
 	};
 	// Async callback versions — wrap sync operations in setTimeout(cb, 0).
@@ -538,12 +550,16 @@ func nodeCompatJSSource() string {
 			};
 		},
 		execSync: function(cmd, opts) {
-			var optsJSON = opts ? JSON.stringify({cwd: opts.cwd}) : '{}';
+			var o = {};
+			if (opts) { o.cwd = opts.cwd; if (opts.env) o.env = opts.env; }
+			var optsJSON = JSON.stringify(o);
 			return __go_exec_sync(cmd, optsJSON);
 		},
 		execFileSync: function(file, args, opts) {
 			var argsJSON = args ? JSON.stringify(args) : '[]';
-			var optsJSON = opts ? JSON.stringify({cwd: opts.cwd}) : '{}';
+			var o = {};
+			if (opts) { o.cwd = opts.cwd; if (opts.env) o.env = opts.env; }
+			var optsJSON = JSON.stringify(o);
 			return __go_exec_file_sync(file, argsJSON, optsJSON);
 		},
 		spawn: function(cmd, args, opts) {
@@ -691,6 +707,7 @@ func nodeCompatJSSource() string {
 		}
 	});
 	p.cwd = function() { return __go_cwd(); };
+	p.pid = typeof __go_pid === 'function' ? __go_pid() : 0;
 	p.platform = _platform;
 	p.arch = '__ARCH__';
 	p.version = 'v20.0.0';
@@ -1062,7 +1079,7 @@ func nodeCompatJSSource() string {
 		type: function() { return _platform === 'darwin' ? 'Darwin' : 'Linux'; },
 		release: function() { return ''; },
 		cpus: function() {
-			var n = 4; // reasonable default
+			var n = typeof __go_os_num_cpus === 'function' ? __go_os_num_cpus() : 4;
 			var arr = [];
 			for (var i = 0; i < n; i++) arr.push({model: 'CPU', speed: 2400});
 			return arr;
@@ -2009,7 +2026,7 @@ func nodeCompatJSSource() string {
 							return self;
 						},
 						close: function(cb) { if (this._bunServer) this._bunServer.stop(); if (cb) setTimeout(cb, 0); },
-						on: function() { return this; }
+						on: function(ev, fn) { if (ev === 'request' && typeof fn === 'function') this._handler = fn; return this; }
 					};
 					return server;
 				},
@@ -2051,6 +2068,7 @@ func nodeCompatJSSource() string {
 			}
 		},
 		'string_decoder': { StringDecoder: function() { this.write = function(b) { return b.toString(); }; this.end = function() { return ''; }; } },
+		'tty': { isatty: function() { return false; }, ReadStream: function() {}, WriteStream: function() {} },
 		'readline': {
 			createInterface: function(opts) {
 				var input = opts.input || opts;

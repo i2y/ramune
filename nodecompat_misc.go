@@ -165,7 +165,8 @@ func goExecSync(args []any) (any, error) {
 	}
 
 	var opts struct {
-		Cwd string `json:"cwd"`
+		Cwd string            `json:"cwd"`
+		Env map[string]string `json:"env"`
 	}
 	if len(args) > 1 {
 		if s, ok := args[1].(string); ok && s != "" {
@@ -176,6 +177,13 @@ func goExecSync(args []any) (any, error) {
 	cmd := exec.Command("sh", "-c", command)
 	if opts.Cwd != "" {
 		cmd.Dir = opts.Cwd
+	}
+	if len(opts.Env) > 0 {
+		env := make([]string, 0, len(opts.Env))
+		for k, v := range opts.Env {
+			env = append(env, k+"="+v)
+		}
+		cmd.Env = env
 	}
 	out, err := cmd.Output()
 	if err != nil {
