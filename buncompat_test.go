@@ -132,8 +132,8 @@ func TestPerformanceObserver(t *testing.T) {
 
 	v, err := r.Eval(`
 		var entries = [];
-		var obs = new PerformanceObserver(function(observer) {
-			entries = entries.concat(observer.takeRecords());
+		var obs = new PerformanceObserver(function(list, observer) {
+			entries = entries.concat(list.getEntries());
 		});
 		obs.observe({ entryTypes: ['mark', 'measure'] });
 		performance.mark('start');

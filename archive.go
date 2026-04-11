@@ -45,6 +45,8 @@ func goBunArchiveTar(args []any) (any, error) {
 		w = gzip.NewWriter(&buf)
 	}
 	tw := tar.NewWriter(w)
+	defer tw.Close()
+	defer w.Close()
 
 	cwd := opts.Cwd
 	if cwd == "" {
@@ -58,33 +60,25 @@ func goBunArchiveTar(args []any) (any, error) {
 		}
 		info, err := os.Stat(path)
 		if err != nil {
-			tw.Close()
-			w.Close()
 			return nil, err
 		}
 		hdr, err := tar.FileInfoHeader(info, "")
 		if err != nil {
-			tw.Close()
-			w.Close()
 			return nil, err
 		}
 		hdr.Name = f
 		if err := tw.WriteHeader(hdr); err != nil {
-			tw.Close()
-			w.Close()
 			return nil, err
 		}
 		if !info.IsDir() {
-			data, err := os.ReadFile(path)
+			fh, err := os.Open(path)
 			if err != nil {
-				tw.Close()
-				w.Close()
 				return nil, err
 			}
-			if _, err := tw.Write(data); err != nil {
-				tw.Close()
-				w.Close()
-				return nil, err
+			_, copyErr := io.Copy(tw, fh)
+			fh.Close()
+			if copyErr != nil {
+				return nil, copyErr
 			}
 		}
 	}
@@ -95,6 +89,13 @@ func goBunArchiveTar(args []any) (any, error) {
 		return nil, os.WriteFile(opts.Output, buf.Bytes(), 0644)
 	}
 	return base64.StdEncoding.EncodeToString(buf.Bytes()), nil
+}
+
+// safePath checks that target stays within baseDir after cleaning.
+func safePath(target, baseDir string) bool {
+	cleanTarget := filepath.Clean(target)
+	cleanBase := filepath.Clean(baseDir) + string(filepath.Separator)
+	return strings.HasPrefix(cleanTarget+string(filepath.Separator), cleanBase)
 }
 
 func goBunArchiveUntar(args []any) (any, error) {
@@ -138,6 +139,10 @@ func goBunArchiveUntar(args []any) (any, error) {
 	if outDir == "" {
 		outDir = "."
 	}
+	absOutDir, err := filepath.Abs(outDir)
+	if err != nil {
+		return nil, err
+	}
 
 	tr := tar.NewReader(r)
 	var files []string
@@ -149,9 +154,8 @@ func goBunArchiveUntar(args []any) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		target := filepath.Join(outDir, hdr.Name)
-		// Prevent path traversal.
-		if !strings.HasPrefix(filepath.Clean(target), filepath.Clean(outDir)) {
+		target := filepath.Join(absOutDir, hdr.Name)
+		if !safePath(target, absOutDir) {
 			continue
 		}
 		if hdr.Typeflag == tar.TypeDir {
@@ -159,12 +163,14 @@ func goBunArchiveUntar(args []any) (any, error) {
 			continue
 		}
 		os.MkdirAll(filepath.Dir(target), 0755)
-		content, err := io.ReadAll(tr)
+		fh, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(hdr.Mode))
 		if err != nil {
 			return nil, err
 		}
-		if err := os.WriteFile(target, content, os.FileMode(hdr.Mode)); err != nil {
-			return nil, err
+		_, copyErr := io.Copy(fh, tr)
+		fh.Close()
+		if copyErr != nil {
+			return nil, copyErr
 		}
 		files = append(files, hdr.Name)
 	}

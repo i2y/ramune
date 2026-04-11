@@ -24,6 +24,10 @@ type cronManager struct {
 
 func (cm *cronManager) ProcessEvents(r *Runtime) {
 	cm.mu.Lock()
+	if len(cm.entries) == 0 {
+		cm.mu.Unlock()
+		return
+	}
 	now := time.Now()
 	for i := range cm.entries {
 		if !cm.entries[i].next.IsZero() && now.After(cm.entries[i].next) {
@@ -36,8 +40,8 @@ func (cm *cronManager) ProcessEvents(r *Runtime) {
 	cm.mu.Unlock()
 
 	for _, name := range fired {
-		escaped := strings.ReplaceAll(name, `'`, `\'`)
-		r.execLocked(`if (globalThis.__cronFire) globalThis.__cronFire('` + escaped + `');`)
+		nameJSON, _ := json.Marshal(name)
+		r.execLocked(`if (globalThis.__cronFire) globalThis.__cronFire(` + string(nameJSON) + `);`)
 	}
 }
 
@@ -89,14 +93,14 @@ func (s cronSchedule) nextAfter(t time.Time) time.Time {
 }
 
 func (s cronSchedule) matches(t time.Time) bool {
-	return contains(s.minute, t.Minute()) &&
-		contains(s.hour, t.Hour()) &&
-		contains(s.day, t.Day()) &&
-		contains(s.month, int(t.Month())) &&
-		contains(s.weekday, int(t.Weekday()))
+	return cronFieldMatches(s.minute, t.Minute()) &&
+		cronFieldMatches(s.hour, t.Hour()) &&
+		cronFieldMatches(s.day, t.Day()) &&
+		cronFieldMatches(s.month, int(t.Month())) &&
+		cronFieldMatches(s.weekday, int(t.Weekday()))
 }
 
-func contains(set []int, val int) bool {
+func cronFieldMatches(set []int, val int) bool {
 	if len(set) == 0 {
 		return true // wildcard
 	}

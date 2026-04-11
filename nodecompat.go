@@ -2436,7 +2436,10 @@ func nodeCompatJSSource() string {
 				if (obs._types.indexOf(type) !== -1) {
 					obs._buffer.push(entry);
 					if (obs._callback) {
-						try { obs._callback(obs, obs); } catch(e) {}
+						var list = { getEntries: function() { return obs._buffer.slice(); },
+							getEntriesByType: function(t) { return obs._buffer.filter(function(e) { return e.entryType === t; }); },
+							getEntriesByName: function(n) { return obs._buffer.filter(function(e) { return e.name === n; }); } };
+						try { obs._callback(list, obs); } catch(e) {}
 						obs._buffer = [];
 					}
 				}

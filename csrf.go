@@ -7,6 +7,7 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"fmt"
+	"strings"
 )
 
 func goBunCSRFGenerate(args []any) (any, error) {
@@ -31,15 +32,8 @@ func goBunCSRFVerify(args []any) (any, error) {
 	}
 	secret, _ := args[0].(string)
 	token, _ := args[1].(string)
-	var noncePart, sigPart string
-	for i := 0; i < len(token); i++ {
-		if token[i] == '.' {
-			noncePart = token[:i]
-			sigPart = token[i+1:]
-			break
-		}
-	}
-	if noncePart == "" || sigPart == "" {
+	noncePart, sigPart, ok := strings.Cut(token, ".")
+	if !ok || noncePart == "" || sigPart == "" {
 		return false, nil
 	}
 	nonce, err := base64.RawURLEncoding.DecodeString(noncePart)
