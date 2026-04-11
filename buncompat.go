@@ -18,6 +18,7 @@ import (
 
 	"github.com/andybalholm/brotli"
 	"github.com/evanw/esbuild/pkg/api"
+	"github.com/tailscale/hujson"
 
 	"golang.org/x/crypto/bcrypt"
 )
@@ -44,6 +45,10 @@ func (r *Runtime) installBunCompat() error {
 		return err
 	}
 	if err := r.registerFuncLocked("__go_bun_password_verify", goBunPasswordVerify); err != nil {
+		return err
+	}
+
+	if err := r.registerFuncLocked("__go_bun_jsonc_parse", goBunJSONCParse); err != nil {
 		return err
 	}
 
@@ -667,6 +672,18 @@ func goBunPasswordVerify(args []any) (any, error) {
 	return err == nil, nil
 }
 
+func goBunJSONCParse(args []any) (any, error) {
+	if len(args) < 1 {
+		return nil, fmt.Errorf("JSONC.parse: input required")
+	}
+	src, _ := args[0].(string)
+	b, err := hujson.Standardize([]byte(src))
+	if err != nil {
+		return nil, fmt.Errorf("JSONC.parse: %w", err)
+	}
+	return string(b), nil
+}
+
 func bunCompatJSSource() string {
 	return strings.TrimSpace(`
 (function() {
@@ -897,6 +914,105 @@ func bunCompatJSSource() string {
 		}
 		return null;
 	};
+
+	// --- Bun.JSONC ---
+	globalThis.Ramune.JSONC = {
+		parse: function(src) {
+			return JSON.parse(__go_bun_jsonc_parse(src));
+		}
+	};
+
+	// --- URLPattern (Web Standard) ---
+	if (typeof globalThis.URLPattern === 'undefined') {
+		function _patternToRegex(pat, isPath) {
+			if (!pat || pat === '*') return { re: /^.*$/, names: [] };
+			var names = [], regex = '^', i = 0;
+			while (i < pat.length) {
+				var ch = pat[i];
+				if (ch === ':') {
+					var name = '', j = i + 1;
+					while (j < pat.length && /\w/.test(pat[j])) name += pat[j++];
+					names.push(name);
+					regex += '([^' + (isPath ? '/' : '') + ']+)';
+					i = j;
+				} else if (ch === '*') {
+					names.push('0');
+					regex += '(.*)';
+					i++;
+				} else {
+					regex += ch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+					i++;
+				}
+			}
+			regex += '$';
+			return { re: new RegExp(regex), names: names };
+		}
+		function _parsePattern(input, baseURL) {
+			var p = { protocol: '*', hostname: '*', port: '*', pathname: '*', search: '*', hash: '*' };
+			if (typeof input === 'string') {
+				if (baseURL) {
+					var base = new URL(baseURL);
+					p.protocol = base.protocol.replace(/:$/, '');
+					p.hostname = base.hostname;
+					p.port = base.port;
+				}
+				p.pathname = input;
+			} else if (input && typeof input === 'object') {
+				if (input.protocol !== undefined) p.protocol = input.protocol.replace(/:$/, '');
+				if (input.hostname !== undefined) p.hostname = input.hostname;
+				if (input.port !== undefined) p.port = String(input.port);
+				if (input.pathname !== undefined) p.pathname = input.pathname;
+				if (input.search !== undefined) p.search = input.search.replace(/^\?/, '');
+				if (input.hash !== undefined) p.hash = input.hash.replace(/^#/, '');
+			}
+			return p;
+		}
+		function _matchComponent(pattern, value, isPath) {
+			var compiled = _patternToRegex(pattern, isPath);
+			var m = compiled.re.exec(value || '');
+			if (!m) return null;
+			var groups = {};
+			for (var i = 0; i < compiled.names.length; i++) groups[compiled.names[i]] = m[i + 1] || '';
+			return { input: value || '', groups: groups };
+		}
+		globalThis.URLPattern = function(input, baseURL) {
+			var p = _parsePattern(input, baseURL);
+			this.protocol = p.protocol;
+			this.hostname = p.hostname;
+			this.port = p.port;
+			this.pathname = p.pathname;
+			this.search = p.search;
+			this.hash = p.hash;
+		};
+		globalThis.URLPattern.prototype.test = function(input) {
+			return this.exec(input) !== null;
+		};
+		globalThis.URLPattern.prototype.exec = function(input) {
+			var url;
+			if (typeof input === 'string') {
+				try { url = new URL(input); } catch(e) { return null; }
+			} else if (input && typeof input === 'object') {
+				try { url = new URL(input.pathname || '/', 'http://' + (input.hostname || 'localhost')); } catch(e) { return null; }
+			} else { return null; }
+			var result = {};
+			var components = [
+				['protocol', url.protocol.replace(/:$/, ''), false],
+				['hostname', url.hostname, false],
+				['port', url.port, false],
+				['pathname', url.pathname, true],
+				['search', url.search.replace(/^\?/, ''), false],
+				['hash', url.hash.replace(/^#/, ''), false]
+			];
+			for (var i = 0; i < components.length; i++) {
+				var name = components[i][0], val = components[i][1], isP = components[i][2];
+				var m = _matchComponent(this[name], val, isP);
+				if (!m) return null;
+				result[name] = m;
+			}
+			result.inputs = [typeof input === 'string' ? input : input];
+			return result;
+		};
+	}
 
 	// Bun compatibility alias — existing Bun.serve() code works as-is.
 	globalThis.Bun = globalThis.Ramune;

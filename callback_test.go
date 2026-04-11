@@ -964,6 +964,105 @@ func TestStreamTransform(t *testing.T) {
 	}
 }
 
+func TestStreamPipeline(t *testing.T) {
+	r := sharedNodeCompat(t)
+
+	v, err := r.Eval(`
+		var stream = require('stream');
+		var result = [];
+		var src = new stream.Readable({ read: function() {} });
+		var upper = new stream.Transform({
+			transform: function(chunk, enc, cb) { cb(null, chunk.toUpperCase()); }
+		});
+		var dst = new stream.Writable({
+			write: function(chunk, enc, cb) { result.push(chunk); cb(); }
+		});
+		stream.pipeline(src, upper, dst, function(err) {});
+		src.push('hello');
+		src.push('world');
+		src.push(null);
+		JSON.stringify(result);
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	s, _ := v.GoString()
+	if s != `["HELLO","WORLD"]` {
+		t.Fatalf("got %s", s)
+	}
+}
+
+func TestStreamFinished(t *testing.T) {
+	r := sharedNodeCompat(t)
+
+	v, err := r.Eval(`
+		var stream = require('stream');
+		var called = false;
+		var w = new stream.Writable({
+			write: function(chunk, enc, cb) { cb(); }
+		});
+		stream.finished(w, function() { called = true; });
+		w.end('done');
+		String(called);
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	s, _ := v.GoString()
+	if s != "true" {
+		t.Fatalf("got %s", s)
+	}
+}
+
+func TestStreamReadableFrom(t *testing.T) {
+	r := sharedNodeCompat(t)
+
+	v, err := r.Eval(`
+		var stream = require('stream');
+		var result = [];
+		var src = stream.Readable.from(['a', 'b', 'c']);
+		src.on('data', function(d) { result.push(d); });
+		src.on('end', function() {});
+		JSON.stringify(result);
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	s, _ := v.GoString()
+	if s != `["a","b","c"]` {
+		t.Fatalf("got %s", s)
+	}
+}
+
+func TestStreamTransformFlush(t *testing.T) {
+	r := sharedNodeCompat(t)
+
+	v, err := r.Eval(`
+		var stream = require('stream');
+		var result = [];
+		var t = new stream.Transform({
+			transform: function(chunk, enc, cb) { this._acc = (this._acc || '') + chunk; cb(); },
+			flush: function(cb) { cb(null, this._acc.toUpperCase()); }
+		});
+		t.on('data', function(d) { result.push(d); });
+		t.write('hello');
+		t.write('world');
+		t.end();
+		JSON.stringify(result);
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	s, _ := v.GoString()
+	if s != `["HELLOWORLD"]` {
+		t.Fatalf("got %s", s)
+	}
+}
+
 func TestHttpRequest(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -1208,6 +1307,90 @@ func TestBufferAllocFillString(t *testing.T) {
 	s, _ := v.GoString()
 	if s != "ababab" {
 		t.Fatalf("got %q", s)
+	}
+}
+
+func TestBufferBigInt64(t *testing.T) {
+	r := sharedNodeCompat(t)
+	v, err := r.Eval(`
+		var buf = Buffer.alloc(16);
+		buf.writeBigUInt64BE(0x0102030405060708n, 0);
+		buf.writeBigInt64LE(-1n, 8);
+		JSON.stringify([
+			buf.readBigUInt64BE(0).toString(),
+			buf.readBigInt64BE(0).toString(),
+			buf.readBigUInt64LE(8).toString(),
+			buf.readBigInt64LE(8).toString()
+		]);
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	s, _ := v.GoString()
+	if s != `["72623859790382856","72623859790382856","18446744073709551615","-1"]` {
+		t.Fatalf("got %s", s)
+	}
+}
+
+func TestBufferSwap(t *testing.T) {
+	r := sharedNodeCompat(t)
+	v, err := r.Eval(`
+		var b16 = Buffer.from([1,2,3,4]);
+		b16.swap16();
+		var b32 = Buffer.from([1,2,3,4]);
+		b32.swap32();
+		var b64 = Buffer.from([1,2,3,4,5,6,7,8]);
+		b64.swap64();
+		JSON.stringify([
+			Array.from(b16),
+			Array.from(b32),
+			Array.from(b64)
+		]);
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	s, _ := v.GoString()
+	if s != "[[2,1,4,3],[4,3,2,1],[8,7,6,5,4,3,2,1]]" {
+		t.Fatalf("got %s", s)
+	}
+}
+
+func TestBufferIterator(t *testing.T) {
+	r := sharedNodeCompat(t)
+	v, err := r.Eval(`
+		var buf = Buffer.from([10, 20, 30]);
+		var result = [];
+		for (var b of buf) result.push(b);
+		JSON.stringify(result);
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	s, _ := v.GoString()
+	if s != "[10,20,30]" {
+		t.Fatalf("got %s", s)
+	}
+}
+
+func TestBufferCompareStatic(t *testing.T) {
+	r := sharedNodeCompat(t)
+	v, err := r.Eval(`
+		var a = Buffer.from('abc');
+		var b = Buffer.from('abd');
+		var c = Buffer.from('abc');
+		JSON.stringify([Buffer.compare(a, b), Buffer.compare(b, a), Buffer.compare(a, c)]);
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	s, _ := v.GoString()
+	if s != "[-1,1,0]" {
+		t.Fatalf("got %s", s)
 	}
 }
 

@@ -126,3 +126,62 @@ func TestBunBuildErrors(t *testing.T) {
 		t.Fatalf("got %s", got)
 	}
 }
+
+func TestURLPatternBasic(t *testing.T) {
+	r := sharedNodeCompat(t)
+
+	v, err := r.Eval(`
+		var p = new URLPattern({ pathname: '/users/:id' });
+		var result = p.exec('http://example.com/users/42');
+		JSON.stringify({
+			matched: result !== null,
+			id: result.pathname.groups.id
+		});
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	s, _ := v.GoString()
+	if s != `{"matched":true,"id":"42"}` {
+		t.Fatalf("got %s", s)
+	}
+}
+
+func TestURLPatternTest(t *testing.T) {
+	r := sharedNodeCompat(t)
+
+	v, err := r.Eval(`
+		var p = new URLPattern({ pathname: '/api/*' });
+		JSON.stringify([
+			p.test('http://localhost/api/users'),
+			p.test('http://localhost/other')
+		]);
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	s, _ := v.GoString()
+	if s != "[true,false]" {
+		t.Fatalf("got %s", s)
+	}
+}
+
+func TestBunJSONCParse(t *testing.T) {
+	r := sharedNodeCompat(t)
+
+	v, err := r.Eval(`
+		var result = Bun.JSONC.parse('{\n  // comment\n  "name": "test",\n  "value": 42 /* inline */\n}');
+		JSON.stringify(result);
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+
+	s, _ := v.GoString()
+	if s != `{"name":"test","value":42}` {
+		t.Fatalf("got %s", s)
+	}
+}

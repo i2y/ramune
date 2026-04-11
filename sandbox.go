@@ -348,9 +348,21 @@ func absPath(p string) (string, error) {
 	return wd + "/" + p, nil
 }
 
-func isAbs(p string) bool    { return len(p) > 0 && p[0] == '/' }
-func baseName(p string) string { i := strings.LastIndex(p, "/"); if i >= 0 { return p[i+1:] }; return p }
-func dirName(p string) string  { i := strings.LastIndex(p, "/"); if i >= 0 { return p[:i] }; return "." }
+func isAbs(p string) bool { return len(p) > 0 && p[0] == '/' }
+func baseName(p string) string {
+	i := strings.LastIndex(p, "/")
+	if i >= 0 {
+		return p[i+1:]
+	}
+	return p
+}
+func dirName(p string) string {
+	i := strings.LastIndex(p, "/")
+	if i >= 0 {
+		return p[:i]
+	}
+	return "."
+}
 
 // SandboxAvailable checks whether Docker is reachable.
 func SandboxAvailable() bool {

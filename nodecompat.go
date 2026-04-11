@@ -875,6 +875,7 @@ func nodeCompatJSSource() string {
 		while (this._buffer.length > 0) {
 			this.emit('data', this._buffer.shift());
 		}
+		this._read(0);
 		return this;
 	};
 	Readable.prototype.pause = function() {
@@ -900,7 +901,10 @@ func nodeCompatJSSource() string {
 		EventEmitter.call(this);
 		this._chunks = [];
 		this._finished = false;
+		this._writing = false;
 		this.writable = true;
+		this.writableHighWaterMark = (opts && opts.highWaterMark) || 16384;
+		this.writableLength = 0;
 		if (opts && opts.write) this._write = opts.write;
 	}
 	Writable.prototype = Object.create(EventEmitter.prototype);
@@ -909,16 +913,23 @@ func nodeCompatJSSource() string {
 	Writable.prototype.write = function(chunk, encoding, cb) {
 		if (typeof encoding === 'function') { cb = encoding; encoding = 'utf8'; }
 		this._chunks.push(chunk);
+		var clen = typeof chunk === 'string' ? chunk.length : (chunk && chunk.length || 0);
+		this.writableLength += clen;
 		var self = this;
+		this._writing = true;
 		this._write(chunk, encoding || 'utf8', function(err) {
+			self._writing = false;
+			self.writableLength -= clen;
 			if (err) self.emit('error', err);
 			else self.emit('drain');
 			if (cb) cb(err);
 		});
-		return true;
+		return this.writableLength < this.writableHighWaterMark;
 	};
 	Writable.prototype.end = function(chunk, encoding, cb) {
-		if (chunk) this.write(chunk, encoding);
+		if (typeof chunk === 'function') { cb = chunk; chunk = undefined; }
+		if (typeof encoding === 'function') { cb = encoding; encoding = undefined; }
+		if (chunk !== undefined && chunk !== null) this.write(chunk, encoding);
 		this._finished = true;
 		this.emit('finish');
 		if (cb) cb();
@@ -946,6 +957,7 @@ func nodeCompatJSSource() string {
 	function Transform(opts) {
 		Duplex.call(this, opts);
 		if (opts && opts.transform) this._transform = opts.transform;
+		if (opts && opts.flush) this._flush = opts.flush;
 	}
 	Transform.prototype = Object.create(Duplex.prototype);
 	Transform.prototype.constructor = Transform;
@@ -957,11 +969,99 @@ func nodeCompatJSSource() string {
 			cb(err);
 		});
 	};
+	Transform.prototype._flush = function(cb) { cb(); };
+	var _transformEnd = Transform.prototype.end;
+	Transform.prototype.end = function(chunk, encoding, cb) {
+		if (typeof chunk === 'function') { cb = chunk; chunk = undefined; }
+		if (typeof encoding === 'function') { cb = encoding; encoding = undefined; }
+		if (chunk !== undefined && chunk !== null) this.write(chunk, encoding);
+		var self = this;
+		this._flush(function(err, data) {
+			if (data !== undefined && data !== null) self.push(data);
+			self.push(null);
+			self._finished = true;
+			self.emit('finish');
+			if (cb) cb(err);
+		});
+		return this;
+	};
 
 	function PassThrough(opts) { Transform.call(this, opts); }
 	PassThrough.prototype = Object.create(Transform.prototype);
 	PassThrough.prototype.constructor = PassThrough;
 	PassThrough.prototype._transform = function(chunk, encoding, cb) { cb(null, chunk); };
+
+	Readable.from = function(iter) {
+		var r = new Readable();
+		var started = false;
+		r._read = function() {
+			if (started) return;
+			started = true;
+			if (iter && typeof iter[Symbol.asyncIterator] === 'function') {
+				var ai = iter[Symbol.asyncIterator]();
+				(function next() {
+					ai.next().then(function(res) {
+						if (res.done) { r.push(null); } else { r.push(res.value); next(); }
+					}).catch(function(e) { r.destroy(); r.emit('error', e); });
+				})();
+			} else {
+				try {
+					var it = iter[Symbol.iterator] ? iter[Symbol.iterator]() : iter;
+					var res;
+					while (!(res = it.next()).done) r.push(res.value);
+					r.push(null);
+				} catch(e) { r.destroy(); r.emit('error', e); }
+			}
+		};
+		return r;
+	};
+
+	function _streamFinished(s, cb) {
+		if (s._ended || s._finished) { cb(); return function() {}; }
+		var done = false;
+		function onceDone(err) {
+			if (done) return; done = true;
+			cb(err || null);
+		}
+		if (s.readable !== false) s.on('end', onceDone);
+		if (s.writable !== false) s.on('finish', onceDone);
+		s.on('error', onceDone);
+		s.on('close', function() { onceDone(s._ended || s._finished ? null : new Error('premature close')); });
+		return function() { done = true; };
+	}
+
+	function _streamPipeline() {
+		var streams = Array.prototype.slice.call(arguments);
+		var cb = typeof streams[streams.length - 1] === 'function' ? streams.pop() : null;
+		if (streams.length < 2) {
+			var err = new Error('pipeline requires at least 2 streams');
+			if (cb) { cb(err); return; }
+			return Promise.reject(err);
+		}
+		function destroyAll(e) {
+			for (var i = 0; i < streams.length; i++) {
+				if (streams[i].destroy) streams[i].destroy();
+			}
+		}
+		function run(resolve, reject) {
+			for (var i = 0; i < streams.length - 1; i++) {
+				streams[i].pipe(streams[i + 1]);
+			}
+			for (var i = 0; i < streams.length - 1; i++) {
+				(function(s) {
+					s.on('error', function(e) { destroyAll(e); if (resolve) { reject(e); resolve = null; } else if (cb) cb(e); });
+				})(streams[i]);
+			}
+			var last = streams[streams.length - 1];
+			_streamFinished(last, function(err) {
+				if (err) destroyAll(err);
+				if (resolve) { err ? reject(err) : resolve(); resolve = null; }
+				else if (cb) cb(err);
+			});
+		}
+		if (!cb) return new Promise(function(res, rej) { run(res, rej); });
+		run(null, null);
+	}
 
 	var stream = {
 		Readable: Readable,
@@ -969,7 +1069,12 @@ func nodeCompatJSSource() string {
 		Duplex: Duplex,
 		Transform: Transform,
 		PassThrough: PassThrough,
-		Stream: EventEmitter
+		Stream: EventEmitter,
+		pipeline: _streamPipeline,
+		finished: function(s, cb) {
+			if (!cb) return new Promise(function(res, rej) { _streamFinished(s, function(e) { e ? rej(e) : res(); }); });
+			return _streamFinished(s, cb);
+		}
 	};
 
 	// --- URLSearchParams ---
@@ -1317,8 +1422,64 @@ func nodeCompatJSSource() string {
 			return 0;
 		};
 		BufferObj.prototype.subarray = BufferObj.prototype.slice;
-		BufferObj.prototype.swap16 = function() { return this; };
-		BufferObj.prototype.swap32 = function() { return this; };
+		BufferObj.prototype.swap16 = function() {
+			if (this.length % 2 !== 0) throw new RangeError('Buffer size must be a multiple of 16-bits');
+			var d = this._data, s = '';
+			for (var i = 0; i < d.length; i += 2) s += d.charAt(i+1) + d.charAt(i);
+			this._data = s; return this;
+		};
+		BufferObj.prototype.swap32 = function() {
+			if (this.length % 4 !== 0) throw new RangeError('Buffer size must be a multiple of 32-bits');
+			var d = this._data, s = '';
+			for (var i = 0; i < d.length; i += 4) s += d.charAt(i+3) + d.charAt(i+2) + d.charAt(i+1) + d.charAt(i);
+			this._data = s; return this;
+		};
+		BufferObj.prototype.swap64 = function() {
+			if (this.length % 8 !== 0) throw new RangeError('Buffer size must be a multiple of 64-bits');
+			var d = this._data, s = '';
+			for (var i = 0; i < d.length; i += 8) s += d.charAt(i+7) + d.charAt(i+6) + d.charAt(i+5) + d.charAt(i+4) + d.charAt(i+3) + d.charAt(i+2) + d.charAt(i+1) + d.charAt(i);
+			this._data = s; return this;
+		};
+		BufferObj.prototype.readBigUInt64BE = function(offset) {
+			offset = offset || 0;
+			var hi = BigInt(this.readUInt32BE(offset)), lo = BigInt(this.readUInt32BE(offset + 4));
+			return (hi << 32n) | lo;
+		};
+		BufferObj.prototype.readBigUInt64LE = function(offset) {
+			offset = offset || 0;
+			var lo = BigInt(this.readUInt32LE(offset)), hi = BigInt(this.readUInt32LE(offset + 4));
+			return (hi << 32n) | lo;
+		};
+		BufferObj.prototype.readBigInt64BE = function(offset) {
+			var v = this.readBigUInt64BE(offset);
+			return v >= 0x8000000000000000n ? v - 0x10000000000000000n : v;
+		};
+		BufferObj.prototype.readBigInt64LE = function(offset) {
+			var v = this.readBigUInt64LE(offset);
+			return v >= 0x8000000000000000n ? v - 0x10000000000000000n : v;
+		};
+		BufferObj.prototype.writeBigUInt64BE = function(val, offset) {
+			offset = offset || 0; val = BigInt(val);
+			this.writeUInt32BE(Number((val >> 32n) & 0xFFFFFFFFn), offset);
+			this.writeUInt32BE(Number(val & 0xFFFFFFFFn), offset + 4);
+			return offset + 8;
+		};
+		BufferObj.prototype.writeBigUInt64LE = function(val, offset) {
+			offset = offset || 0; val = BigInt(val);
+			this.writeUInt32LE(Number(val & 0xFFFFFFFFn), offset);
+			this.writeUInt32LE(Number((val >> 32n) & 0xFFFFFFFFn), offset + 4);
+			return offset + 8;
+		};
+		BufferObj.prototype.writeBigInt64BE = function(val, offset) {
+			return this.writeBigUInt64BE(val < 0n ? val + 0x10000000000000000n : val, offset);
+		};
+		BufferObj.prototype.writeBigInt64LE = function(val, offset) {
+			return this.writeBigUInt64LE(val < 0n ? val + 0x10000000000000000n : val, offset);
+		};
+		BufferObj.prototype[Symbol.iterator] = function() {
+			var i = 0, d = this._data;
+			return { next: function() { return i < d.length ? { value: d.charCodeAt(i++), done: false } : { done: true }; } };
+		};
 
 		globalThis.Buffer = {
 			from: function(data, encoding) {
@@ -1378,7 +1539,9 @@ func nodeCompatJSSource() string {
 				if (encoding === 'utf16le' || encoding === 'ucs2' || encoding === 'ucs-2') return str.length * 2;
 				return str.length;
 			},
-			isEncoding: function() { return true; }
+			isEncoding: function() { return true; },
+			compare: function(a, b) { return a.compare(b); },
+			poolSize: 8192
 		};
 	}
 
@@ -2017,22 +2180,49 @@ func nodeCompatJSSource() string {
 								fetch: function(req) {
 									return new Promise(function(resolve) {
 										var url = new URL(req.url);
-										var nodeReq = { method: req.method, url: url.pathname + (url.search || ''), headers: {}, _body: '', _dataHandlers: [], _endHandlers: [],
-											on: function(ev, cb) { if (ev === 'data') this._dataHandlers.push(cb); if (ev === 'end') this._endHandlers.push(cb); return this; }
+										var nodeReq = new IncomingMessage({status: 0, body: ''});
+										nodeReq.method = req.method;
+										nodeReq.url = url.pathname + (url.search || '');
+										nodeReq.httpVersion = '1.1';
+										nodeReq.headers = {};
+										nodeReq.rawHeaders = [];
+										if (req.headers && typeof req.headers.forEach === 'function') {
+											req.headers.forEach(function(v, k) { nodeReq.headers[k] = v; nodeReq.rawHeaders.push(k, v); });
+										}
+										nodeReq.socket = { remoteAddress: '127.0.0.1', remotePort: 0, localAddress: '0.0.0.0', localPort: 0 };
+										nodeReq.connection = nodeReq.socket;
+
+										var resStatus = 200, resHeaders = {}, resBody = '', headersSent = false;
+										var nodeRes = Object.create(EventEmitter.prototype);
+										EventEmitter.call(nodeRes);
+										nodeRes.statusCode = 200;
+										nodeRes.statusMessage = 'OK';
+										nodeRes.headersSent = false;
+										nodeRes.writeHead = function(s, msg, h) {
+											if (typeof msg === 'object') { h = msg; msg = undefined; }
+											resStatus = s; this.statusCode = s;
+											if (msg) this.statusMessage = msg;
+											if (h) for (var k in h) resHeaders[k] = h[k];
+											this.headersSent = true;
+											return this;
 										};
-										if (req.headers && typeof req.headers.forEach === 'function') req.headers.forEach(function(v, k) { nodeReq.headers[k] = v; });
-										var resStatus = 200, resHeaders = {}, resBody = '';
-										var nodeRes = {
-											statusCode: 200,
-											writeHead: function(s, h) { resStatus = s; if (h) for (var k in h) resHeaders[k] = h[k]; return this; },
-											setHeader: function(k, v) { resHeaders[k] = v; return this; },
-											getHeader: function(k) { return resHeaders[k]; },
-											write: function(c) { resBody += String(c); return true; },
-											end: function(d) { if (d) resBody += String(d); resolve(new Response(resBody, { status: resStatus, headers: resHeaders })); }
+										nodeRes.setHeader = function(k, v) { resHeaders[k] = v; return this; };
+										nodeRes.getHeader = function(k) { return resHeaders[k]; };
+										nodeRes.getHeaders = function() { var o = {}; for (var k in resHeaders) o[k] = resHeaders[k]; return o; };
+										nodeRes.hasHeader = function(k) { return k in resHeaders; };
+										nodeRes.removeHeader = function(k) { delete resHeaders[k]; };
+										nodeRes.write = function(c) { headersSent = true; nodeRes.headersSent = true; resBody += String(c); return true; };
+										nodeRes.end = function(d) {
+											if (d) resBody += String(d);
+											headersSent = true; nodeRes.headersSent = true;
+											resolve(new Response(resBody, { status: resStatus, headers: resHeaders }));
+											nodeRes.emit('finish');
 										};
+
 										self._handler(nodeReq, nodeRes);
-										if (req._body || req.body) { var b = req._body || ''; for (var i = 0; i < nodeReq._dataHandlers.length; i++) nodeReq._dataHandlers[i](b); }
-										for (var i = 0; i < nodeReq._endHandlers.length; i++) nodeReq._endHandlers[i]();
+										var body = req._body || '';
+										if (body) { nodeReq.emit('data', body); }
+										nodeReq.emit('end');
 									});
 								}
 							});
@@ -2048,6 +2238,7 @@ func nodeCompatJSSource() string {
 				},
 				IncomingMessage: IncomingMessage,
 				ClientRequest: ClientRequest,
+				ServerResponse: EventEmitter,
 				STATUS_CODES: {'200':'OK','201':'Created','204':'No Content','301':'Moved','302':'Found','304':'Not Modified','400':'Bad Request','401':'Unauthorized','403':'Forbidden','404':'Not Found','500':'Internal Server Error'}
 			};
 			return httpModule;
