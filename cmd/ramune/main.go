@@ -88,7 +88,35 @@ func printLogo() {
 	fmt.Fprintf(os.Stderr, "  %s %s\n\n", dim.Render(getVersion()), dim.Render("· JS/TS runtime for Go ("+backendName+")"))
 }
 
+func init() {
+	// Pin the main goroutine to the main OS thread before any scheduling.
+	// macOS requires WebView/AppKit operations on thread 0.
+	goruntime.LockOSThread()
+}
+
 func main() {
+	// Main goroutine is reserved for WebView UI operations (macOS requirement).
+	// Actual CLI logic runs in a background goroutine.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		cliMain()
+	}()
+
+	// Process WebView requests on main thread, exit when CLI is done.
+	for {
+		select {
+		case fn, ok := <-ramune.WebViewMainCh:
+			if ok {
+				fn()
+			}
+		case <-done:
+			return
+		}
+	}
+}
+
+func cliMain() {
 	if len(os.Args) < 2 {
 		printLogo()
 		printUsage()

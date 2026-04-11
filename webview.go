@@ -3,10 +3,27 @@ package ramune
 import (
 	"encoding/json"
 	"fmt"
+	"runtime"
 	"sync"
 
 	"github.com/crgimenes/glaze"
+	_ "github.com/crgimenes/glaze/embedded"
 )
+
+// WebViewMainCh receives functions to execute on the main OS thread.
+// macOS requires all UI operations on thread 0. Call RunWebViewLoop()
+// from the main goroutine to process these.
+var WebViewMainCh = make(chan func(), 4)
+
+// RunWebViewLoop processes webview operations on the main thread.
+// Must be called from the main goroutine (before any other goroutine
+// calls runtime.LockOSThread). Blocks until the channel is closed.
+func RunWebViewLoop() {
+	runtime.LockOSThread()
+	for fn := range WebViewMainCh {
+		fn()
+	}
+}
 
 type webviewInstance struct {
 	wv     glaze.WebView
@@ -44,7 +61,9 @@ func (m *webviewManager) create(opts webviewCreateOpts) (int, error) {
 
 	ready := make(chan error, 1)
 
-	go func() {
+	// WebView must be created on the main OS thread (macOS requirement).
+	// Send the creation work to WebViewMainCh for the main goroutine to execute.
+	WebViewMainCh <- func() {
 		wv, err := glaze.New(opts.Debug)
 		if err != nil {
 			ready <- err
@@ -67,9 +86,8 @@ func (m *webviewManager) create(opts webviewCreateOpts) (int, error) {
 
 		ready <- nil
 
-		wv.Run()
+		wv.Run() // blocks until window closed
 
-		// Window was closed.
 		m.mu.Lock()
 		inst.closed = true
 		delete(m.views, id)
@@ -81,7 +99,7 @@ func (m *webviewManager) create(opts webviewCreateOpts) (int, error) {
 		if m.wakeFn != nil {
 			m.wakeFn()
 		}
-	}()
+	}
 
 	if err := <-ready; err != nil {
 		m.mu.Lock()
