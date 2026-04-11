@@ -2026,6 +2026,7 @@ func nodeCompatJSSource() string {
 							return self;
 						},
 						close: function(cb) { if (this._bunServer) this._bunServer.stop(); if (cb) setTimeout(cb, 0); },
+						closeAllConnections: function() {},
 						on: function(ev, fn) { if (ev === 'request' && typeof fn === 'function') this._handler = fn; return this; }
 					};
 					return server;
