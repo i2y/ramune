@@ -71,6 +71,9 @@ func (r *Runtime) tickManagers() {
 	if r.udpMgr != nil {
 		r.udpMgr.processEvents(r)
 	}
+	if r.webviewMgr != nil {
+		r.webviewMgr.processEvents(r)
+	}
 	if r.workerMgr != nil {
 		r.workerMgr.processEvents(r)
 	}
@@ -465,6 +468,10 @@ func (r *Runtime) hasPendingLocked() bool {
 	}
 	// Check for active UDP sockets.
 	if r.udpMgr != nil && r.udpMgr.hasActive() {
+		return true
+	}
+	// Check for active webview windows.
+	if r.webviewMgr != nil && r.webviewMgr.hasActive() {
 		return true
 	}
 	// Check for active Bun server.

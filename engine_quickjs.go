@@ -41,6 +41,7 @@ type Runtime struct {
 	sockMgr         *socketManager
 	tcpSrvMgr       *tcpServerManager
 	udpMgr          *udpManager
+	webviewMgr      *webviewManager
 	workerMgr       *workerManager
 	sqliteMgr       *sqliteManager
 	streamMgr       *streamManager
@@ -229,6 +230,11 @@ func (r *Runtime) qjsLoop(ready chan<- error, cfg *config) {
 			ready <- fmt.Errorf("ramune: markdown: %w", err)
 			return
 		}
+		if err := r.installWebView(); err != nil {
+			vm.Close()
+			ready <- fmt.Errorf("ramune: webview: %w", err)
+			return
+		}
 		if err := r.installSQLite(); err != nil {
 			vm.Close()
 			ready <- fmt.Errorf("ramune: sqlite: %w", err)
@@ -342,6 +348,9 @@ func (r *Runtime) Close() error {
 		}
 		if r.udpMgr != nil {
 			r.udpMgr.closeAll()
+		}
+		if r.webviewMgr != nil {
+			r.webviewMgr.closeAll()
 		}
 		if r.sqliteMgr != nil {
 			r.sqliteMgr.closeAll()

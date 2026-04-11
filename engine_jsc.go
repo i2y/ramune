@@ -187,6 +187,7 @@ type Runtime struct {
 	sockMgr         *socketManager      // async socket manager
 	tcpSrvMgr       *tcpServerManager   // TCP server manager
 	udpMgr          *udpManager         // UDP/dgram manager
+	webviewMgr      *webviewManager     // WebView manager
 	workerMgr       *workerManager      // worker threads manager
 	sqliteMgr       *sqliteManager      // bun:sqlite database manager
 	streamMgr       *streamManager      // bidirectional stream bridge
@@ -467,6 +468,11 @@ func (r *Runtime) jscLoop(cfg config, initErr chan<- error) {
 			initErr <- fmt.Errorf("ramune: failed to install markdown: %w", err)
 			return
 		}
+		if err := r.installWebView(); err != nil {
+			releaseCtx()
+			initErr <- fmt.Errorf("ramune: failed to install WebView: %w", err)
+			return
+		}
 		if err := r.installSQLite(); err != nil {
 			releaseCtx()
 			initErr <- fmt.Errorf("ramune: failed to install bun:sqlite: %w", err)
@@ -564,6 +570,9 @@ func (r *Runtime) Close() error {
 		}
 		if r.udpMgr != nil {
 			r.udpMgr.closeAll()
+		}
+		if r.webviewMgr != nil {
+			r.webviewMgr.closeAll()
 		}
 		if r.sqliteMgr != nil {
 			r.sqliteMgr.closeAll()
