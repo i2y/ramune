@@ -808,6 +808,8 @@ func nodeCompatJSSource() string {
 	p.emit = EventEmitter.prototype.emit;
 	p.listeners = EventEmitter.prototype.listeners;
 	p.listenerCount = EventEmitter.prototype.listenerCount;
+	p.setMaxListeners = function() { return p; };
+	p.getMaxListeners = function() { return 10; };
 
 	// --- stream ---
 	function Readable(opts) {
