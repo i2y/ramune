@@ -45,13 +45,7 @@ func newTCPServerManager(sockMgr *socketManager, wakeFn func()) *tcpServerManage
 	}
 }
 
-func (m *tcpServerManager) listen(host string, port int) (int, int, error) {
-	addr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
-	ln, err := net.Listen("tcp", addr)
-	if err != nil {
-		return 0, 0, err
-	}
-
+func (m *tcpServerManager) registerAndAccept(ln net.Listener) (int, int) {
 	actualPort := ln.Addr().(*net.TCPAddr).Port
 	srv := &tcpServer{listener: ln}
 
@@ -94,6 +88,16 @@ func (m *tcpServerManager) listen(host string, port int) (int, int, error) {
 		}
 	}()
 
+	return id, actualPort
+}
+
+func (m *tcpServerManager) listen(host string, port int) (int, int, error) {
+	addr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return 0, 0, err
+	}
+	id, actualPort := m.registerAndAccept(ln)
 	return id, actualPort, nil
 }
 
@@ -108,49 +112,7 @@ func (m *tcpServerManager) listenTLS(host string, port int, certPEM, keyPEM stri
 	if err != nil {
 		return 0, 0, err
 	}
-
-	actualPort := ln.Addr().(*net.TCPAddr).Port
-	srv := &tcpServer{listener: ln}
-
-	m.mu.Lock()
-	id := m.nextID
-	m.nextID++
-	m.servers[id] = srv
-	m.mu.Unlock()
-
-	go func() {
-		srv.mu.Lock()
-		srv.events = append(srv.events, tcpServerEvent{Kind: srvEventListening})
-		srv.mu.Unlock()
-		if m.wakeFn != nil {
-			m.wakeFn()
-		}
-
-		for {
-			conn, err := ln.Accept()
-			if err != nil {
-				srv.mu.Lock()
-				if !srv.closed {
-					srv.events = append(srv.events, tcpServerEvent{Kind: srvEventError, Data: err.Error()})
-				}
-				srv.events = append(srv.events, tcpServerEvent{Kind: srvEventClose})
-				srv.closed = true
-				srv.mu.Unlock()
-				if m.wakeFn != nil {
-					m.wakeFn()
-				}
-				return
-			}
-			connID := m.sockMgr.registerExisting(conn)
-			srv.mu.Lock()
-			srv.events = append(srv.events, tcpServerEvent{Kind: srvEventConnection, ConnID: connID})
-			srv.mu.Unlock()
-			if m.wakeFn != nil {
-				m.wakeFn()
-			}
-		}
-	}()
-
+	id, actualPort := m.registerAndAccept(ln)
 	return id, actualPort, nil
 }
 

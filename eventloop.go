@@ -463,6 +463,10 @@ func (r *Runtime) hasPendingLocked() bool {
 	if r.tcpSrvMgr != nil && r.tcpSrvMgr.hasActive() {
 		return true
 	}
+	// Check for active UDP sockets.
+	if r.udpMgr != nil && r.udpMgr.hasActive() {
+		return true
+	}
 	// Check for active Bun server.
 	if r.bunSrv != nil && r.bunSrv.hasActive() {
 		return true

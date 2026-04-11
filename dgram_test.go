@@ -54,12 +54,12 @@ func TestDgramSendReceive(t *testing.T) {
 	}
 
 	// Send from a client socket.
-	r.Exec(`
+	r.Exec(fmt.Sprintf(`
 		var dgram = require('dgram');
 		var client = dgram.createSocket('udp4');
-		client.send('hello', 0, 5, ` + itoa(int(port)) + `, '127.0.0.1');
-		client.send('world', 0, 5, ` + itoa(int(port)) + `, '127.0.0.1');
-	`)
+		client.send('hello', 0, 5, %d, '127.0.0.1');
+		client.send('world', 0, 5, %d, '127.0.0.1');
+	`, int(port), int(port)))
 
 	// Wait for messages to arrive.
 	for i := 0; i < 50; i++ {
@@ -83,8 +83,4 @@ func TestDgramSendReceive(t *testing.T) {
 
 	r.Exec(`globalThis.__dgramServer.close()`)
 	r.Tick()
-}
-
-func itoa(n int) string {
-	return fmt.Sprintf("%d", n)
 }

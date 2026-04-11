@@ -94,8 +94,8 @@ func (m *udpManager) bind(id int, port int, address string) (int, error) {
 func (m *udpManager) send(id int, data string, port int, address string) error {
 	m.mu.Lock()
 	sock, ok := m.sockets[id]
-	m.mu.Unlock()
 	if !ok {
+		m.mu.Unlock()
 		return fmt.Errorf("dgram: socket %d not found", id)
 	}
 
@@ -103,21 +103,25 @@ func (m *udpManager) send(id int, data string, port int, address string) error {
 	if sock.conn == nil {
 		bindAddr, err := net.ResolveUDPAddr(sock.network, ":0")
 		if err != nil {
+			m.mu.Unlock()
 			return err
 		}
 		conn, err := net.ListenUDP(sock.network, bindAddr)
 		if err != nil {
+			m.mu.Unlock()
 			return err
 		}
 		sock.conn = conn
 		go m.readLoop(sock)
 	}
+	conn := sock.conn
+	m.mu.Unlock()
 
 	addr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(address, fmt.Sprintf("%d", port)))
 	if err != nil {
 		return err
 	}
-	_, err = sock.conn.WriteToUDP([]byte(data), addr)
+	_, err = conn.WriteToUDP([]byte(data), addr)
 	return err
 }
 
@@ -129,7 +133,7 @@ func (m *udpManager) closeSocket(id int) error {
 		delete(m.sockets, id)
 	}
 	m.mu.Unlock()
-	if ok {
+	if ok && sock.conn != nil {
 		return sock.conn.Close()
 	}
 	return nil
@@ -283,9 +287,9 @@ func dgramJSSource() string {
 	Socket.prototype.bind = function(port, address, cb) {
 		if (typeof port === 'object') {
 			var opts = port;
+			cb = address;
 			port = opts.port || 0;
 			address = opts.address || '';
-			cb = address;
 		}
 		if (typeof address === 'function') { cb = address; address = ''; }
 		if (typeof cb === 'function') this.once('listening', cb);
@@ -295,11 +299,17 @@ func dgramJSSource() string {
 		return this;
 	};
 
-	Socket.prototype.send = function(msg, offset, length, port, address, cb) {
-		if (typeof offset === 'number' && typeof length === 'number') {
-			msg = msg.slice(offset, offset + length);
+	Socket.prototype.send = function(msg) {
+		var args = Array.prototype.slice.call(arguments, 1);
+		var cb, address, port;
+		if (typeof args[args.length - 1] === 'function') cb = args.pop();
+		if (args.length >= 4 && typeof args[0] === 'number' && typeof args[1] === 'number') {
+			msg = msg.slice(args[0], args[0] + args[1]);
+			port = args[2];
+			address = args[3];
 		} else {
-			cb = address; address = port; port = length;
+			port = args[0];
+			address = args[1];
 		}
 		if (typeof msg !== 'string') msg = String(msg);
 		try {
