@@ -203,6 +203,26 @@ func (r *Runtime) qjsLoop(ready chan<- error, cfg *config) {
 			ready <- fmt.Errorf("ramune: bun compat: %w", err)
 			return
 		}
+		if err := r.installCSRF(); err != nil {
+			vm.Close()
+			ready <- fmt.Errorf("ramune: csrf: %w", err)
+			return
+		}
+		if err := r.installArchive(); err != nil {
+			vm.Close()
+			ready <- fmt.Errorf("ramune: archive: %w", err)
+			return
+		}
+		if err := r.installCron(); err != nil {
+			vm.Close()
+			ready <- fmt.Errorf("ramune: cron: %w", err)
+			return
+		}
+		if err := r.installMarkdown(); err != nil {
+			vm.Close()
+			ready <- fmt.Errorf("ramune: markdown: %w", err)
+			return
+		}
 		if err := r.installSQLite(); err != nil {
 			vm.Close()
 			ready <- fmt.Errorf("ramune: sqlite: %w", err)

@@ -922,6 +922,24 @@ func bunCompatJSSource() string {
 		}
 	};
 
+	// --- Bun.Archive ---
+	globalThis.Ramune.Archive = {
+		tar: function(opts) {
+			var result = __go_bun_archive_tar(JSON.stringify(opts));
+			return result;
+		},
+		untar: function(opts, data) {
+			var result = __go_bun_archive_untar(JSON.stringify(opts), data || '');
+			return JSON.parse(result);
+		}
+	};
+
+	// --- Bun.CSRF ---
+	globalThis.Ramune.CSRF = {
+		generate: function(secret) { return __go_bun_csrf_generate(secret); },
+		verify: function(secret, token) { return __go_bun_csrf_verify(secret, token); }
+	};
+
 	// --- URLPattern (Web Standard) ---
 	if (typeof globalThis.URLPattern === 'undefined') {
 		function _patternToRegex(pat, isPath) {

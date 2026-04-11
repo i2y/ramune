@@ -441,6 +441,26 @@ func (r *Runtime) jscLoop(cfg config, initErr chan<- error) {
 			initErr <- fmt.Errorf("ramune: failed to install Bun compat: %w", err)
 			return
 		}
+		if err := r.installCSRF(); err != nil {
+			releaseCtx()
+			initErr <- fmt.Errorf("ramune: failed to install CSRF: %w", err)
+			return
+		}
+		if err := r.installArchive(); err != nil {
+			releaseCtx()
+			initErr <- fmt.Errorf("ramune: failed to install Archive: %w", err)
+			return
+		}
+		if err := r.installCron(); err != nil {
+			releaseCtx()
+			initErr <- fmt.Errorf("ramune: failed to install cron: %w", err)
+			return
+		}
+		if err := r.installMarkdown(); err != nil {
+			releaseCtx()
+			initErr <- fmt.Errorf("ramune: failed to install markdown: %w", err)
+			return
+		}
 		if err := r.installSQLite(); err != nil {
 			releaseCtx()
 			initErr <- fmt.Errorf("ramune: failed to install bun:sqlite: %w", err)

@@ -2415,7 +2415,54 @@ func nodeCompatJSSource() string {
 		setInterval: function() { throw new Error('timers/promises.setInterval is not supported'); },
 		setImmediate: function(value) { return new Promise(function(resolve) { globalThis.setImmediate(function() { resolve(value); }); }); }
 	};
-	_modules['perf_hooks'] = { performance: globalThis.performance };
+	// --- PerformanceObserver ---
+	(function() {
+		var _observers = [];
+		var _origMark = globalThis.performance.mark;
+		var _origMeasure = globalThis.performance.measure;
+		globalThis.performance.mark = function(name) {
+			var entry = _origMark.call(globalThis.performance, name);
+			_notifyObservers('mark', entry);
+			return entry;
+		};
+		globalThis.performance.measure = function(name, startMark, endMark) {
+			var entry = _origMeasure.call(globalThis.performance, name, startMark, endMark);
+			_notifyObservers('measure', entry);
+			return entry;
+		};
+		function _notifyObservers(type, entry) {
+			for (var i = 0; i < _observers.length; i++) {
+				var obs = _observers[i];
+				if (obs._types.indexOf(type) !== -1) {
+					obs._buffer.push(entry);
+					if (obs._callback) {
+						try { obs._callback(obs, obs); } catch(e) {}
+						obs._buffer = [];
+					}
+				}
+			}
+		}
+		globalThis.PerformanceObserver = function(callback) {
+			this._callback = callback;
+			this._types = [];
+			this._buffer = [];
+		};
+		globalThis.PerformanceObserver.prototype.observe = function(opts) {
+			if (opts && opts.entryTypes) this._types = opts.entryTypes;
+			else if (opts && opts.type) this._types = [opts.type];
+			if (_observers.indexOf(this) === -1) _observers.push(this);
+		};
+		globalThis.PerformanceObserver.prototype.disconnect = function() {
+			var idx = _observers.indexOf(this);
+			if (idx !== -1) _observers.splice(idx, 1);
+		};
+		globalThis.PerformanceObserver.prototype.takeRecords = function() {
+			var r = this._buffer; this._buffer = []; return r;
+		};
+		globalThis.PerformanceObserver.prototype.getEntries = function() { return this._buffer.slice(); };
+		globalThis.PerformanceObserver.supportedEntryTypes = ['mark', 'measure'];
+	})();
+	_modules['perf_hooks'] = { performance: globalThis.performance, PerformanceObserver: globalThis.PerformanceObserver };
 
 	// require
 	globalThis.require = function(mod) {
