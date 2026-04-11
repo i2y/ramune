@@ -309,6 +309,17 @@ func (m *dockerManager) runAsync(fn func() (string, error)) int {
 	m.mu.Unlock()
 
 	go func() {
+		defer func() {
+			if rec := recover(); rec != nil {
+				m.mu.Lock()
+				m.pending[id] = dockerAsyncResult{Err: fmt.Sprintf("panic: %v", rec)}
+				m.active--
+				m.mu.Unlock()
+				if m.wakeFn != nil {
+					m.wakeFn()
+				}
+			}
+		}()
 		val, err := fn()
 		errStr := ""
 		if err != nil {
@@ -388,11 +399,11 @@ func installDockerModule(r *Runtime) error {
 		case "imageInspect":
 			name, _ := args[2].(string)
 			opFn = func() (string, error) {
-				r, err := c.imageInspect(name)
+				info, err := c.imageInspect(name)
 				if err != nil {
 					return "", err
 				}
-				d, _ := json.Marshal(r)
+				d, _ := json.Marshal(info)
 				return string(d), nil
 			}
 		case "imagePull":
@@ -402,7 +413,9 @@ func installDockerModule(r *Runtime) error {
 			optsJSON, _ := args[2].(string)
 			opFn = func() (string, error) {
 				var opts map[string]any
-				json.Unmarshal([]byte(optsJSON), &opts)
+				if err := json.Unmarshal([]byte(optsJSON), &opts); err != nil {
+					return "", fmt.Errorf("docker: invalid options: %w", err)
+				}
 				return c.createNetwork(opts)
 			}
 		case "networkRemove":
@@ -412,7 +425,9 @@ func installDockerModule(r *Runtime) error {
 			optsJSON, _ := args[2].(string)
 			opFn = func() (string, error) {
 				var opts map[string]any
-				json.Unmarshal([]byte(optsJSON), &opts)
+				if err := json.Unmarshal([]byte(optsJSON), &opts); err != nil {
+					return "", fmt.Errorf("docker: invalid options: %w", err)
+				}
 				return c.createContainer(opts)
 			}
 		case "containerStart":
@@ -446,11 +461,11 @@ func installDockerModule(r *Runtime) error {
 		case "containerInspect":
 			id, _ := args[2].(string)
 			opFn = func() (string, error) {
-				r, err := c.inspectContainer(id)
+				info, err := c.inspectContainer(id)
 				if err != nil {
 					return "", err
 				}
-				d, _ := json.Marshal(r)
+				d, _ := json.Marshal(info)
 				return string(d), nil
 			}
 		case "containerLogs":
