@@ -186,6 +186,7 @@ type Runtime struct {
 	procMgr         *processManager     // async subprocess manager
 	sockMgr         *socketManager      // async socket manager
 	tcpSrvMgr       *tcpServerManager   // TCP server manager
+	udpMgr          *udpManager         // UDP/dgram manager
 	workerMgr       *workerManager      // worker threads manager
 	sqliteMgr       *sqliteManager      // bun:sqlite database manager
 	streamMgr       *streamManager      // bidirectional stream bridge
@@ -411,6 +412,11 @@ func (r *Runtime) jscLoop(cfg config, initErr chan<- error) {
 			initErr <- fmt.Errorf("ramune: failed to install tcp server: %w", err)
 			return
 		}
+		if err := r.installDgram(); err != nil {
+			releaseCtx()
+			initErr <- fmt.Errorf("ramune: failed to install dgram: %w", err)
+			return
+		}
 		if err := r.installWorkerThreads(); err != nil {
 			releaseCtx()
 			initErr <- fmt.Errorf("ramune: failed to install worker_threads: %w", err)
@@ -555,6 +561,9 @@ func (r *Runtime) Close() error {
 		}
 		if r.tcpSrvMgr != nil {
 			r.tcpSrvMgr.closeAll()
+		}
+		if r.udpMgr != nil {
+			r.udpMgr.closeAll()
 		}
 		if r.sqliteMgr != nil {
 			r.sqliteMgr.closeAll()

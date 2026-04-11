@@ -40,6 +40,7 @@ type Runtime struct {
 	procMgr         *processManager
 	sockMgr         *socketManager
 	tcpSrvMgr       *tcpServerManager
+	udpMgr          *udpManager
 	workerMgr       *workerManager
 	sqliteMgr       *sqliteManager
 	streamMgr       *streamManager
@@ -171,6 +172,11 @@ func (r *Runtime) qjsLoop(ready chan<- error, cfg *config) {
 		if err := r.installTCPServer(); err != nil {
 			vm.Close()
 			ready <- fmt.Errorf("ramune: tcp server: %w", err)
+			return
+		}
+		if err := r.installDgram(); err != nil {
+			vm.Close()
+			ready <- fmt.Errorf("ramune: dgram: %w", err)
 			return
 		}
 		if err := r.installWorkerThreads(); err != nil {
@@ -333,6 +339,9 @@ func (r *Runtime) Close() error {
 		}
 		if r.tcpSrvMgr != nil {
 			r.tcpSrvMgr.closeAll()
+		}
+		if r.udpMgr != nil {
+			r.udpMgr.closeAll()
 		}
 		if r.sqliteMgr != nil {
 			r.sqliteMgr.closeAll()

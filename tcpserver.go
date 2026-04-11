@@ -1,6 +1,7 @@
 package ramune
 
 import (
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -47,6 +48,63 @@ func newTCPServerManager(sockMgr *socketManager, wakeFn func()) *tcpServerManage
 func (m *tcpServerManager) listen(host string, port int) (int, int, error) {
 	addr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
 	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	actualPort := ln.Addr().(*net.TCPAddr).Port
+	srv := &tcpServer{listener: ln}
+
+	m.mu.Lock()
+	id := m.nextID
+	m.nextID++
+	m.servers[id] = srv
+	m.mu.Unlock()
+
+	go func() {
+		srv.mu.Lock()
+		srv.events = append(srv.events, tcpServerEvent{Kind: srvEventListening})
+		srv.mu.Unlock()
+		if m.wakeFn != nil {
+			m.wakeFn()
+		}
+
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				srv.mu.Lock()
+				if !srv.closed {
+					srv.events = append(srv.events, tcpServerEvent{Kind: srvEventError, Data: err.Error()})
+				}
+				srv.events = append(srv.events, tcpServerEvent{Kind: srvEventClose})
+				srv.closed = true
+				srv.mu.Unlock()
+				if m.wakeFn != nil {
+					m.wakeFn()
+				}
+				return
+			}
+			connID := m.sockMgr.registerExisting(conn)
+			srv.mu.Lock()
+			srv.events = append(srv.events, tcpServerEvent{Kind: srvEventConnection, ConnID: connID})
+			srv.mu.Unlock()
+			if m.wakeFn != nil {
+				m.wakeFn()
+			}
+		}
+	}()
+
+	return id, actualPort, nil
+}
+
+func (m *tcpServerManager) listenTLS(host string, port int, certPEM, keyPEM string) (int, int, error) {
+	cert, err := tls.X509KeyPair([]byte(certPEM), []byte(keyPEM))
+	if err != nil {
+		return 0, 0, fmt.Errorf("tls: %w", err)
+	}
+	tlsCfg := &tls.Config{Certificates: []tls.Certificate{cert}}
+	addr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
+	ln, err := tls.Listen("tcp", addr, tlsCfg)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -208,6 +266,38 @@ func (r *Runtime) installTCPServer() error {
 		return err
 	}
 
+	if err := r.registerFuncLocked("__go_tls_listen", func(args []any) (any, error) {
+		host := "0.0.0.0"
+		if len(args) >= 1 {
+			if s, ok := args[0].(string); ok && s != "" {
+				host = s
+			}
+		}
+		port := 0
+		if len(args) >= 2 {
+			if p, ok := args[1].(float64); ok {
+				port = int(p)
+			}
+		}
+		certPEM := ""
+		if len(args) >= 3 {
+			certPEM, _ = args[2].(string)
+		}
+		keyPEM := ""
+		if len(args) >= 4 {
+			keyPEM, _ = args[3].(string)
+		}
+		id, actualPort, err := mgr.listenTLS(host, port, certPEM, keyPEM)
+		if err != nil {
+			return nil, err
+		}
+		resp := map[string]any{"serverId": float64(id), "port": float64(actualPort)}
+		b, _ := json.Marshal(resp)
+		return string(b), nil
+	}); err != nil {
+		return err
+	}
+
 	return r.execLocked(tcpServerJSSource())
 }
 
@@ -310,6 +400,39 @@ func tcpServerJSSource() string {
 		return new Server(connectionListener);
 	};
 	netModule.Server = Server;
+
+	// --- tls.createServer ---
+	var tlsModule = globalThis.require('tls');
+
+	function TLSServer(opts, connectionListener) {
+		Server.call(this, connectionListener);
+		this._cert = opts.cert || '';
+		this._key = opts.key || '';
+	}
+	TLSServer.prototype = Object.create(Server.prototype);
+	TLSServer.prototype.constructor = TLSServer;
+
+	TLSServer.prototype.listen = function(port, host, cb) {
+		if (typeof host === 'function') { cb = host; host = '0.0.0.0'; }
+		host = host || '0.0.0.0';
+		if (typeof cb === 'function') this.once('listening', cb);
+
+		var result = JSON.parse(__go_tls_listen(host, port || 0, this._cert, this._key));
+		this._id = result.serverId;
+		this._port = result.port;
+		this._host = host;
+		__activeServers[String(this._id)] = this;
+		return this;
+	};
+
+	tlsModule.createServer = function(opts, connectionListener) {
+		if (typeof opts === 'function') {
+			connectionListener = opts;
+			opts = {};
+		}
+		return new TLSServer(opts || {}, connectionListener);
+	};
+	tlsModule.Server = TLSServer;
 })();
 `)
 }

@@ -2245,8 +2245,8 @@ func nodeCompatJSSource() string {
 		})(),
 		'https': null, // set below
 		'tls': {
-			connect: function() { throw new Error('tls.connect is not supported in ramune'); },
-			createServer: function() { throw new Error('tls.createServer is not supported in ramune'); }
+			connect: function() { throw new Error('tls.connect: use installAsyncNet'); },
+			createServer: function() { throw new Error('tls.createServer: use installTCPServer'); }
 		},
 		'zlib': {
 			gzipSync: function(data) {

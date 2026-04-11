@@ -68,6 +68,9 @@ func (r *Runtime) tickManagers() {
 	if r.sockMgr != nil {
 		r.sockMgr.processEvents(r)
 	}
+	if r.udpMgr != nil {
+		r.udpMgr.processEvents(r)
+	}
 	if r.workerMgr != nil {
 		r.workerMgr.processEvents(r)
 	}
