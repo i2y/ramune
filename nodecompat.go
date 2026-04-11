@@ -1199,9 +1199,17 @@ func nodeCompatJSSource() string {
 				}
 				return hex;
 			}
-			if (encoding === 'base64') {
-				if (typeof btoa === 'function') return btoa(d);
-				return d;
+			if (encoding === 'base64' || encoding === 'base64url') {
+				var chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+				var b64 = '';
+				for (var i = 0; i < d.length; i += 3) {
+					var b0 = d.charCodeAt(i), b1 = i+1 < d.length ? d.charCodeAt(i+1) : 0, b2 = i+2 < d.length ? d.charCodeAt(i+2) : 0;
+					b64 += chars[(b0>>2)&63] + chars[((b0&3)<<4)|((b1>>4)&15)];
+					b64 += i+1 < d.length ? chars[((b1&15)<<2)|((b2>>6)&3)] : '=';
+					b64 += i+2 < d.length ? chars[b2&63] : '=';
+				}
+				if (encoding === 'base64url') return b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+				return b64;
 			}
 			if (encoding === 'ascii') {
 				var s = '';
