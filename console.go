@@ -1,29 +1,25 @@
 package ramune
 
-import "fmt"
+import (
+	"fmt"
+	"io"
+	"strings"
+)
 
 // installConsole registers console.log/error/warn/info/debug backed by
 // the Runtime's stdout/stderr writers. Called unconditionally during
 // Runtime initialization (before NodeCompat).
 func (r *Runtime) installConsole() error {
-	if err := r.registerFuncLocked("__go_stdout", func(args []any) (any, error) {
-		parts := make([]string, len(args))
-		for i, a := range args {
-			parts[i] = fmt.Sprint(a)
-		}
-		fmt.Fprintln(r.stdout, join(parts, " "))
-		return nil, nil
-	}); err != nil {
+	if err := r.registerFuncLocked("__go_stdout", r.printFunc(r.stdout)); err != nil {
 		return err
 	}
-	if err := r.registerFuncLocked("__go_stderr", func(args []any) (any, error) {
-		parts := make([]string, len(args))
-		for i, a := range args {
-			parts[i] = fmt.Sprint(a)
-		}
-		fmt.Fprintln(r.stderr, join(parts, " "))
-		return nil, nil
-	}); err != nil {
+	if err := r.registerFuncLocked("__go_stderr", r.printFunc(r.stderr)); err != nil {
+		return err
+	}
+	if err := r.registerFuncLocked("__go_stdout_raw", r.rawWriteFunc(r.stdout)); err != nil {
+		return err
+	}
+	if err := r.registerFuncLocked("__go_stderr_raw", r.rawWriteFunc(r.stderr)); err != nil {
 		return err
 	}
 	return r.execLocked(`
@@ -36,14 +32,22 @@ func (r *Runtime) installConsole() error {
 	`)
 }
 
-// join concatenates strings with a separator (avoids importing strings).
-func join(parts []string, sep string) string {
-	if len(parts) == 0 {
-		return ""
+func (r *Runtime) printFunc(w io.Writer) GoFunc {
+	return func(args []any) (any, error) {
+		parts := make([]string, len(args))
+		for i, a := range args {
+			parts[i] = fmt.Sprint(a)
+		}
+		fmt.Fprintln(w, strings.Join(parts, " "))
+		return nil, nil
 	}
-	s := parts[0]
-	for _, p := range parts[1:] {
-		s += sep + p
+}
+
+func (r *Runtime) rawWriteFunc(w io.Writer) GoFunc {
+	return func(args []any) (any, error) {
+		if len(args) > 0 {
+			fmt.Fprint(w, args[0])
+		}
+		return true, nil
 	}
-	return s
 }

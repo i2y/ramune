@@ -6,7 +6,8 @@ import (
 	"golang.org/x/term"
 )
 
-// goTTYIsatty checks if a file descriptor is a terminal.
+const defaultTermSize = `{"columns":80,"rows":24}`
+
 func goTTYIsatty(args []any) (any, error) {
 	if len(args) < 1 {
 		return false, nil
@@ -18,18 +19,17 @@ func goTTYIsatty(args []any) (any, error) {
 	return term.IsTerminal(int(fd)), nil
 }
 
-// goTTYGetSize returns the terminal size as JSON {"columns":N,"rows":M}.
 func goTTYGetSize(args []any) (any, error) {
 	if len(args) < 1 {
-		return `{"columns":80,"rows":24}`, nil
+		return defaultTermSize, nil
 	}
 	fd, ok := args[0].(float64)
 	if !ok {
-		return `{"columns":80,"rows":24}`, nil
+		return defaultTermSize, nil
 	}
 	w, h, err := term.GetSize(int(fd))
 	if err != nil {
-		return `{"columns":80,"rows":24}`, nil
+		return defaultTermSize, nil
 	}
 	b, _ := json.Marshal(map[string]int{"columns": w, "rows": h})
 	return string(b), nil

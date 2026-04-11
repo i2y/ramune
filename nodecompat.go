@@ -725,13 +725,13 @@ func nodeCompatJSSource() string {
 		if (typeof __go_process_exit === 'function') __go_process_exit(p._exitCode);
 	};
 	p.stdout = {
-		write: function(s) { __go_stdout(String(s).replace(/\n$/, '')); return true; },
+		write: function(s) { __go_stdout_raw(String(s)); return true; },
 		isTTY: __go_tty_isatty(1),
 		columns: (function() { try { return JSON.parse(__go_tty_getsize(1)).columns; } catch(e) { return 80; } })(),
 		rows: (function() { try { return JSON.parse(__go_tty_getsize(1)).rows; } catch(e) { return 24; } })()
 	};
 	p.stderr = {
-		write: function(s) { __go_stderr(String(s).replace(/\n$/, '')); return true; },
+		write: function(s) { __go_stderr_raw(String(s)); return true; },
 		isTTY: __go_tty_isatty(2)
 	};
 	p.nextTick = function(fn) { queueMicrotask(fn); };
@@ -1382,7 +1382,7 @@ func nodeCompatJSSource() string {
 		};
 	}
 
-	// --- console extensions (console.log/error/warn/info/debug already installed by installConsole) ---
+	// --- console extensions ---
 	var _consoleTimers = {};
 	if (!globalThis.console.time) {
 		globalThis.console.time = function(label) { _consoleTimers[label || 'default'] = performance.now(); };
