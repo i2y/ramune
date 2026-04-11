@@ -326,6 +326,8 @@ func runCmd(args []string) {
 	var packages packageList
 	var watch bool
 	var typeCheck, sandbox bool
+	var docker bool
+	var dockerImage string
 	var workers int
 	var allowRead, allowWrite, allowNet, allowEnv, allowRun string
 	fs.Var(&packages, "p", "npm package to include (repeatable)")
@@ -334,6 +336,8 @@ func runCmd(args []string) {
 	fs.BoolVar(&typeCheck, "check", false, "type-check with tsgo before running")
 	fs.IntVar(&workers, "workers", 0, "number of parallel workers for Ramune.serve()")
 	fs.BoolVar(&sandbox, "sandbox", false, "deny all permissions by default")
+	fs.BoolVar(&docker, "docker", false, "run in Docker container sandbox")
+	fs.StringVar(&dockerImage, "docker-image", "ubuntu:24.04", "Docker image for sandbox")
 	fs.StringVar(&allowRead, "allow-read", "", "allow file read (comma-separated paths, or empty for all)")
 	fs.StringVar(&allowWrite, "allow-write", "", "allow file write (comma-separated paths)")
 	fs.StringVar(&allowNet, "allow-net", "", "allow network access (comma-separated hosts)")
@@ -370,6 +374,29 @@ func runCmd(args []string) {
 				return
 			}
 		}
+	}
+
+	// Docker sandbox: re-exec self inside a container.
+	if docker {
+		if filename == "" || filename == "-" {
+			fmt.Fprintf(os.Stderr, "error: --docker requires a script file\n")
+			os.Exit(1)
+		}
+		result, err := ramune.SandboxRun(filename, ramune.SandboxConfig{
+			Image:   dockerImage,
+			Timeout: 10 * time.Minute,
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		if result.Stdout != "" {
+			os.Stdout.WriteString(result.Stdout)
+		}
+		if result.Stderr != "" {
+			os.Stderr.WriteString(result.Stderr)
+		}
+		os.Exit(result.ExitCode)
 	}
 
 	var code []byte
