@@ -273,6 +273,20 @@ ramune run --sandbox --allow-read=/tmp app.ts  # selective access
 
 Flags: `--allow-read`, `--allow-write`, `--allow-net`, `--allow-env`, `--allow-run`.
 
+### Docker Sandbox
+
+Run scripts in isolated Docker containers:
+
+```bash
+ramune run --docker app.ts                          # run in default ubuntu:24.04
+ramune run --docker --docker-image node:22 app.ts   # custom image
+ramune run --docker --docker-memory 512 app.ts      # 512MB memory limit
+ramune run --docker --docker-no-network app.ts      # no network access
+ramune run --docker --docker-network mynet app.ts   # specific Docker network
+```
+
+The host binary is automatically mounted into the container. On macOS/Windows, a Linux binary is cross-compiled and cached. Go functions registered via `SandboxRuntime.RegisterFunc` are available inside the container (they are compiled into the binary).
+
 ### Environment Variables
 
 `.env` and `.env.local` files are automatically loaded (like Bun/Deno). Use `--env-file` to specify a custom file:
@@ -557,6 +571,54 @@ rt, _ := ramune.New(
     }),
 )
 ```
+
+### Docker Sandbox (Library API)
+
+Execute untrusted JS in Docker containers with Go function passthrough:
+
+```go
+rt := ramune.NewSandboxRuntime(ramune.NodeCompat())
+
+// Go functions are available inside the container
+rt.RegisterFunc("multiply", func(args []any) (any, error) {
+    return args[0].(float64) * args[1].(float64), nil
+})
+
+// Must be called first — handles re-exec as sandbox worker
+if ramune.HandleSandboxWorker(rt) {
+    return
+}
+
+result, err := rt.SandboxRun("script.js", ramune.SandboxConfig{
+    Image:     "ubuntu:24.04",
+    MemoryMB:  512,
+    NoNetwork: true,
+    Timeout:   30 * time.Second,
+})
+fmt.Println(result.Stdout)
+```
+
+`SandboxEval` evaluates code strings instead of files. `SandboxAvailable()` checks if Docker is reachable.
+
+### Docker API (dockerode)
+
+Access Docker from JavaScript via the `DockerModule()` option:
+
+```go
+rt, _ := ramune.New(ramune.NodeCompat(), ramune.DockerModule())
+```
+
+```js
+const Docker = require('dockerode');
+const docker = new Docker();
+await docker.ping();
+
+const container = await docker.createContainer({ Image: 'alpine:latest', Cmd: ['echo', 'hello'] });
+await container.start();
+const { StatusCode } = await container.wait();
+```
+
+Supports: `ping`, `pull`, `createContainer`, `start/stop/remove/wait/inspect/logs`, `createNetwork/removeNetwork`.
 
 ## Performance
 
