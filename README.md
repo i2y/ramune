@@ -520,6 +520,17 @@ Ramune provides its own API namespace. `Bun.*` is available as an alias for back
 | `bun:sqlite` | Supported (transactions, WAL, prepared stmt cache, pure Go) |
 | `Bun.*` | Alias for `Ramune.*` (partial Bun compatibility) |
 
+### Console Output
+
+`console.log`/`error`/`warn` work out of the box in both CLI and library mode. Output goes to `os.Stdout`/`os.Stderr` by default. Use `WithStdout`/`WithStderr` to redirect:
+
+```go
+var buf bytes.Buffer
+rt, _ := ramune.New(ramune.WithStdout(&buf))
+rt.Exec(`console.log("captured")`)
+fmt.Println(buf.String()) // "captured\n"
+```
+
 ### GC Configuration
 
 Ramune provides tunable GC settings for high-throughput HTTP servers:
@@ -629,7 +640,8 @@ Linux does not need JIT setup.
 | worker_threads | 75% (+ SharedArrayBuffer) | | readline | 70% |
 | vm | 70% | | querystring | 80% |
 | timers/promises | 70% | | perf_hooks | basic |
-| util | 80% (types, promisify, format) | | process | 85% (signals, exit, env) |
+| util | 80% (types, promisify, format) | | process | 85% (signals, exit, env, tty) |
+| tty | 70% (isatty, WriteStream) | | | |
 
 ## Web Platform APIs
 
