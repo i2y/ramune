@@ -331,6 +331,12 @@ func (r *Runtime) installNodeCompat() error {
 	if err := r.registerFuncLocked("__go_crypto_generate_key_pair", goCryptoGenerateKeyPair); err != nil {
 		return err
 	}
+	if err := r.registerFuncLocked("__go_tty_isatty", goTTYIsatty); err != nil {
+		return err
+	}
+	if err := r.registerFuncLocked("__go_tty_getsize", goTTYGetSize); err != nil {
+		return err
+	}
 
 	if err := r.execLocked(nodeCompatJSSource()); err != nil {
 		return err
@@ -718,8 +724,16 @@ func nodeCompatJSSource() string {
 		p.emit('exit', p._exitCode);
 		if (typeof __go_process_exit === 'function') __go_process_exit(p._exitCode);
 	};
-	p.stdout = { write: function(s) { /* discard */ } };
-	p.stderr = { write: function(s) { /* discard */ } };
+	p.stdout = {
+		write: function(s) { __go_stdout(String(s).replace(/\n$/, '')); return true; },
+		isTTY: __go_tty_isatty(1),
+		columns: (function() { try { return JSON.parse(__go_tty_getsize(1)).columns; } catch(e) { return 80; } })(),
+		rows: (function() { try { return JSON.parse(__go_tty_getsize(1)).rows; } catch(e) { return 24; } })()
+	};
+	p.stderr = {
+		write: function(s) { __go_stderr(String(s).replace(/\n$/, '')); return true; },
+		isTTY: __go_tty_isatty(2)
+	};
 	p.nextTick = function(fn) { queueMicrotask(fn); };
 	p.hrtime = function(prev) {
 		var raw = JSON.parse(__go_hrtime());
@@ -1368,16 +1382,7 @@ func nodeCompatJSSource() string {
 		};
 	}
 
-	// --- console extensions ---
-	if (typeof globalThis.console === 'undefined') {
-		globalThis.console = {
-			log: function() {},
-			error: function() {},
-			warn: function() {},
-			info: function() {},
-			debug: function() {}
-		};
-	}
+	// --- console extensions (console.log/error/warn/info/debug already installed by installConsole) ---
 	var _consoleTimers = {};
 	if (!globalThis.console.time) {
 		globalThis.console.time = function(label) { _consoleTimers[label || 'default'] = performance.now(); };
@@ -2079,7 +2084,23 @@ func nodeCompatJSSource() string {
 			}
 		},
 		'string_decoder': { StringDecoder: function() { this.write = function(b) { return b.toString(); }; this.end = function() { return ''; }; } },
-		'tty': { isatty: function() { return false; }, ReadStream: function() {}, WriteStream: function() {} },
+		'tty': {
+			isatty: function(fd) { return __go_tty_isatty(typeof fd === 'number' ? fd : 0); },
+			ReadStream: function(fd) {
+				this.fd = fd;
+				this.isTTY = __go_tty_isatty(fd);
+				this.isRaw = false;
+				this.setRawMode = function(mode) { this.isRaw = !!mode; return this; };
+			},
+			WriteStream: function(fd) {
+				this.fd = fd;
+				this.isTTY = __go_tty_isatty(fd);
+				var size = JSON.parse(__go_tty_getsize(fd));
+				this.columns = size.columns;
+				this.rows = size.rows;
+				this.getWindowSize = function() { return [this.columns, this.rows]; };
+			}
+		},
 		'readline': {
 			createInterface: function(opts) {
 				var input = opts.input || opts;

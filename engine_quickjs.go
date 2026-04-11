@@ -6,6 +6,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"os"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -46,6 +48,8 @@ type Runtime struct {
 	customTickMgrs  []TickManager // user-registered event loop managers
 	gcConfig        GCConfig
 	perms           *Permissions
+	stdout          io.Writer
+	stderr          io.Writer
 	poolHandleFn    uintptr // unused in quickjs but needed for pool.go shared code
 
 	closeOnce sync.Once
@@ -84,6 +88,14 @@ func newRuntime(opts []Option) (*Runtime, error) {
 		r.perms = cfg.permissions
 	}
 	r.customTickMgrs = cfg.tickManagers
+	r.stdout = cfg.stdout
+	if r.stdout == nil {
+		r.stdout = os.Stdout
+	}
+	r.stderr = cfg.stderr
+	if r.stderr == nil {
+		r.stderr = os.Stderr
+	}
 
 	// Start the dedicated engine goroutine.
 	ready := make(chan error, 1)
@@ -114,6 +126,13 @@ func (r *Runtime) qjsLoop(ready chan<- error, cfg *config) {
 	if err := r.installEventLoop(); err != nil {
 		vm.Close()
 		ready <- fmt.Errorf("ramune: event loop: %w", err)
+		return
+	}
+
+	// Install console (always -- console.log should work in all modes).
+	if err := r.installConsole(); err != nil {
+		vm.Close()
+		ready <- fmt.Errorf("ramune: console: %w", err)
 		return
 	}
 

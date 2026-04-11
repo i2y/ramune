@@ -72,6 +72,8 @@ package ramune
 import (
 	"context"
 	"fmt"
+	"io"
+	"os"
 	"runtime"
 	"runtime/debug"
 	"sync"
@@ -192,6 +194,8 @@ type Runtime struct {
 	customTickMgrs  []TickManager       // user-registered event loop managers
 	gcConfig        GCConfig            // GC configuration
 	perms           *Permissions        // permission policy
+	stdout          io.Writer           // console.log output
+	stderr          io.Writer           // console.error output
 	poolHandleFn    uintptr             // cached __poolHandleFast JSObjectRef (for RuntimePool)
 
 	// Protected value tracking: values are unprotected on Runtime.Close()
@@ -285,6 +289,14 @@ func newRuntime(opts []Option) (*Runtime, error) {
 		rt.perms = AllPermissions()
 	}
 	rt.customTickMgrs = cfg.tickManagers
+	rt.stdout = cfg.stdout
+	if rt.stdout == nil {
+		rt.stdout = os.Stdout
+	}
+	rt.stderr = cfg.stderr
+	if rt.stderr == nil {
+		rt.stderr = os.Stderr
+	}
 
 	// Start the dedicated JSC goroutine. All JSC operations
 	// (bind, create, eval, close) happen on this single pinned OS thread.
@@ -352,6 +364,13 @@ func (r *Runtime) jscLoop(cfg config, initErr chan<- error) {
 	if err := r.installEventLoop(); err != nil {
 		releaseCtx()
 		initErr <- fmt.Errorf("ramune: failed to install event loop: %w", err)
+		return
+	}
+
+	// Install console (always — console.log should work in all modes).
+	if err := r.installConsole(); err != nil {
+		releaseCtx()
+		initErr <- fmt.Errorf("ramune: failed to install console: %w", err)
 		return
 	}
 

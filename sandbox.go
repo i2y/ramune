@@ -92,30 +92,6 @@ func (s *SandboxRuntime) runAsWorker(args []string) (*SandboxResult, error) {
 	}
 	defer rt.Close()
 
-	// Bridge console.log/error to stdout/stderr.
-	rt.RegisterFunc("__sandbox_stdout", func(a []any) (any, error) {
-		parts := make([]string, len(a))
-		for i, v := range a {
-			parts[i] = fmt.Sprint(v)
-		}
-		fmt.Fprintln(os.Stdout, strings.Join(parts, " "))
-		return nil, nil
-	})
-	rt.RegisterFunc("__sandbox_stderr", func(a []any) (any, error) {
-		parts := make([]string, len(a))
-		for i, v := range a {
-			parts[i] = fmt.Sprint(v)
-		}
-		fmt.Fprintln(os.Stderr, strings.Join(parts, " "))
-		return nil, nil
-	})
-	rt.Exec(`
-		console.log = function() { __sandbox_stdout.apply(null, Array.prototype.slice.call(arguments)); };
-		console.info = console.log;
-		console.error = function() { __sandbox_stderr.apply(null, Array.prototype.slice.call(arguments)); };
-		console.warn = console.error;
-	`)
-
 	for name, fn := range s.funcs {
 		if err := rt.RegisterFunc(name, fn); err != nil {
 			return &SandboxResult{ExitCode: 1, Stderr: err.Error()}, nil

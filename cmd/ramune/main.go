@@ -221,31 +221,6 @@ func createRuntimeFromOpts(opts []ramune.Option) (*ramune.Runtime, error) {
 		return nil, err
 	}
 
-	// Connect console.log/error/warn to stdout/stderr.
-	rt.RegisterFunc("__go_stdout", func(args []any) (any, error) {
-		parts := make([]string, len(args))
-		for i, a := range args {
-			parts[i] = fmt.Sprint(a)
-		}
-		fmt.Fprintln(os.Stdout, strings.Join(parts, " "))
-		return nil, nil
-	})
-	rt.RegisterFunc("__go_stderr", func(args []any) (any, error) {
-		parts := make([]string, len(args))
-		for i, a := range args {
-			parts[i] = fmt.Sprint(a)
-		}
-		fmt.Fprintln(os.Stderr, strings.Join(parts, " "))
-		return nil, nil
-	})
-	rt.Exec(`
-		console.log = function() { __go_stdout.apply(null, Array.prototype.slice.call(arguments)); };
-		console.info = console.log;
-		console.error = function() { __go_stderr.apply(null, Array.prototype.slice.call(arguments)); };
-		console.warn = console.error;
-		console.debug = console.log;
-	`)
-
 	// Enable local file require: require('./lib/utils'), require('./data.json')
 	rt.RegisterFunc("__go_require_resolve", func(args []any) (any, error) {
 		if len(args) < 2 {
@@ -2806,27 +2781,6 @@ func main() {
 		log.Fatal(err)
 	}
 	defer rt.Close()
-
-	// Connect console.log/error to stdout/stderr.
-	rt.RegisterFunc("__go_stdout", func(args []any) (any, error) {
-		parts := make([]string, len(args))
-		for i, a := range args { parts[i] = fmt.Sprint(a) }
-		fmt.Fprintln(os.Stdout, strings.Join(parts, " "))
-		return nil, nil
-	})
-	rt.RegisterFunc("__go_stderr", func(args []any) (any, error) {
-		parts := make([]string, len(args))
-		for i, a := range args { parts[i] = fmt.Sprint(a) }
-		fmt.Fprintln(os.Stderr, strings.Join(parts, " "))
-		return nil, nil
-	})
-	rt.Exec(`+"`"+`
-		console.log = function() { __go_stdout.apply(null, Array.prototype.slice.call(arguments)); };
-		console.info = console.log;
-		console.error = function() { __go_stderr.apply(null, Array.prototype.slice.call(arguments)); };
-		console.warn = console.error;
-		console.debug = console.log;
-	`+"`"+`)
 
 	if err := rt.Exec(appJS); err != nil {
 		log.Fatal(err)

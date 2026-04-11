@@ -1,5 +1,7 @@
 package ramune
 
+import "io"
+
 // GoFunc is a Go function that can be called from JavaScript.
 // Arguments are converted to Go types: bool, float64, string, nil,
 // map[string]any (for objects), []any (for arrays), or *JSFunc (for functions).
@@ -70,6 +72,8 @@ type config struct {
 	permissions  *Permissions
 	modules      []Module      // user-provided modules for require()
 	tickManagers []TickManager // custom event loop managers
+	stdout       io.Writer     // console.log output (default: os.Stdout)
+	stderr       io.Writer     // console.error output (default: os.Stderr)
 }
 
 // Option configures a Runtime.
@@ -85,6 +89,18 @@ func WithLibraryPath(path string) Option {
 // See GCConfig for details on each setting.
 func WithGC(gc GCConfig) Option {
 	return func(c *config) { c.gc = &gc }
+}
+
+// WithStdout sets the writer for console.log/info/debug output.
+// Defaults to os.Stdout if not set.
+func WithStdout(w io.Writer) Option {
+	return func(c *config) { c.stdout = w }
+}
+
+// WithStderr sets the writer for console.error/warn output.
+// Defaults to os.Stderr if not set.
+func WithStderr(w io.Writer) Option {
+	return func(c *config) { c.stderr = w }
 }
 
 // noCopy may be embedded into structs which must not be copied
