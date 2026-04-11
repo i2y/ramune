@@ -967,8 +967,7 @@ func bunCompatJSSource() string {
 			}
 			return p;
 		}
-		function _matchComponent(pattern, value, isPath) {
-			var compiled = _patternToRegex(pattern, isPath);
+		function _matchCompiled(compiled, value) {
 			var m = compiled.re.exec(value || '');
 			if (!m) return null;
 			var groups = {};
@@ -983,6 +982,14 @@ func bunCompatJSSource() string {
 			this.pathname = p.pathname;
 			this.search = p.search;
 			this.hash = p.hash;
+			this._compiled = {
+				protocol: _patternToRegex(p.protocol, false),
+				hostname: _patternToRegex(p.hostname, false),
+				port: _patternToRegex(p.port, false),
+				pathname: _patternToRegex(p.pathname, true),
+				search: _patternToRegex(p.search, false),
+				hash: _patternToRegex(p.hash, false)
+			};
 		};
 		globalThis.URLPattern.prototype.test = function(input) {
 			return this.exec(input) !== null;
@@ -994,18 +1001,18 @@ func bunCompatJSSource() string {
 			} else if (input && typeof input === 'object') {
 				try { url = new URL(input.pathname || '/', 'http://' + (input.hostname || 'localhost')); } catch(e) { return null; }
 			} else { return null; }
-			var result = {};
+			var result = {}, c = this._compiled;
 			var components = [
-				['protocol', url.protocol.replace(/:$/, ''), false],
-				['hostname', url.hostname, false],
-				['port', url.port, false],
-				['pathname', url.pathname, true],
-				['search', url.search.replace(/^\?/, ''), false],
-				['hash', url.hash.replace(/^#/, ''), false]
+				['protocol', url.protocol.replace(/:$/, '')],
+				['hostname', url.hostname],
+				['port', url.port],
+				['pathname', url.pathname],
+				['search', url.search.replace(/^\?/, '')],
+				['hash', url.hash.replace(/^#/, '')]
 			];
 			for (var i = 0; i < components.length; i++) {
-				var name = components[i][0], val = components[i][1], isP = components[i][2];
-				var m = _matchComponent(this[name], val, isP);
+				var name = components[i][0], val = components[i][1];
+				var m = _matchCompiled(c[name], val);
 				if (!m) return null;
 				result[name] = m;
 			}

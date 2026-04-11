@@ -6,8 +6,6 @@ import (
 	"net"
 )
 
-// goDNSLookup performs a DNS lookup for the given hostname and returns the
-// first address as a JSON object with "address" and "family" fields.
 func goDNSLookup(args []any) (any, error) {
 	if len(args) < 1 {
 		return nil, fmt.Errorf("dns.lookup: hostname required")
@@ -33,7 +31,6 @@ func goDNSLookup(args []any) (any, error) {
 	return string(out), nil
 }
 
-// goDNSResolve performs a DNS lookup and returns all addresses as a JSON array.
 func goDNSResolve(args []any) (any, error) {
 	if len(args) < 1 {
 		return nil, fmt.Errorf("dns.resolve: hostname required")
@@ -254,14 +251,7 @@ func dnsJSSource() string {
 		resolveSrv: function(hostname, cb) { _dnsCallback(__go_dns_resolve_srv, hostname, cb); },
 		reverse: function(ip, cb) { _dnsCallback(__go_dns_reverse, ip, cb); },
 		promises: {
-			lookup: function(hostname) {
-				return new Promise(function(resolve, reject) {
-					try {
-						var r = JSON.parse(__go_dns_lookup(hostname));
-						resolve(r);
-					} catch(e) { reject(e); }
-				});
-			},
+			lookup: function(hostname) { return _dnsPromise(__go_dns_lookup, hostname); },
 			resolve: function(hostname, rrtype) {
 				var fns = { A: __go_dns_resolve4, AAAA: __go_dns_resolve6, MX: __go_dns_resolve_mx,
 					TXT: __go_dns_resolve_txt, CNAME: __go_dns_resolve_cname, NS: __go_dns_resolve_ns,

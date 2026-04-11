@@ -2192,7 +2192,7 @@ func nodeCompatJSSource() string {
 										nodeReq.socket = { remoteAddress: '127.0.0.1', remotePort: 0, localAddress: '0.0.0.0', localPort: 0 };
 										nodeReq.connection = nodeReq.socket;
 
-										var resStatus = 200, resHeaders = {}, resBody = '', headersSent = false;
+										var resStatus = 200, resHeaders = {}, resBody = '';
 										var nodeRes = Object.create(EventEmitter.prototype);
 										EventEmitter.call(nodeRes);
 										nodeRes.statusCode = 200;
@@ -2211,10 +2211,10 @@ func nodeCompatJSSource() string {
 										nodeRes.getHeaders = function() { var o = {}; for (var k in resHeaders) o[k] = resHeaders[k]; return o; };
 										nodeRes.hasHeader = function(k) { return k in resHeaders; };
 										nodeRes.removeHeader = function(k) { delete resHeaders[k]; };
-										nodeRes.write = function(c) { headersSent = true; nodeRes.headersSent = true; resBody += String(c); return true; };
+										nodeRes.write = function(c) { nodeRes.headersSent = true; resBody += String(c); return true; };
 										nodeRes.end = function(d) {
 											if (d) resBody += String(d);
-											headersSent = true; nodeRes.headersSent = true;
+											nodeRes.headersSent = true;
 											resolve(new Response(resBody, { status: resStatus, headers: resHeaders }));
 											nodeRes.emit('finish');
 										};
