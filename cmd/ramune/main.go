@@ -338,6 +338,12 @@ func runCmd(args []string) {
 	fs.BoolVar(&sandbox, "sandbox", false, "deny all permissions by default")
 	fs.BoolVar(&docker, "docker", false, "run in Docker container sandbox")
 	fs.StringVar(&dockerImage, "docker-image", "ubuntu:24.04", "Docker image for sandbox")
+	var dockerNetwork string
+	var dockerMemory int
+	var dockerNoNet bool
+	fs.StringVar(&dockerNetwork, "docker-network", "", "Docker network for sandbox")
+	fs.IntVar(&dockerMemory, "docker-memory", 0, "memory limit in MB for sandbox")
+	fs.BoolVar(&dockerNoNet, "docker-no-network", false, "disable network in sandbox")
 	fs.StringVar(&allowRead, "allow-read", "", "allow file read (comma-separated paths, or empty for all)")
 	fs.StringVar(&allowWrite, "allow-write", "", "allow file write (comma-separated paths)")
 	fs.StringVar(&allowNet, "allow-net", "", "allow network access (comma-separated hosts)")
@@ -383,8 +389,11 @@ func runCmd(args []string) {
 			os.Exit(1)
 		}
 		result, err := ramune.SandboxRun(filename, ramune.SandboxConfig{
-			Image:   dockerImage,
-			Timeout: 10 * time.Minute,
+			Image:     dockerImage,
+			Timeout:   10 * time.Minute,
+			Network:   dockerNetwork,
+			MemoryMB:  dockerMemory,
+			NoNetwork: dockerNoNet,
 		})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)

@@ -23,6 +23,18 @@ type SandboxConfig struct {
 	Timeout time.Duration
 	// SocketPath overrides the Docker socket path.
 	SocketPath string
+	// Network is the Docker network to connect the container to.
+	// Use this to give the sandbox access to other services on the same network.
+	Network string
+	// ExtraHosts adds custom host-to-IP mappings (like --add-host).
+	// Format: "hostname:ip" (e.g. "api-server:192.168.1.100").
+	ExtraHosts []string
+	// MemoryMB sets the container memory limit in megabytes. 0 = unlimited.
+	MemoryMB int
+	// CPUs sets the CPU limit (e.g. 1.5 = 1.5 cores). 0 = unlimited.
+	CPUs float64
+	// NoNetwork disables all network access from the container.
+	NoNetwork bool
 }
 
 // SandboxResult holds the result of a sandboxed execution.
@@ -232,14 +244,31 @@ func sandboxExec(args []string, cfg SandboxConfig) (*SandboxResult, error) {
 		env = append(env, k+"="+v)
 	}
 
+	hostConfig := map[string]any{
+		"Binds":      binds,
+		"AutoRemove": false,
+	}
+	if cfg.Network != "" {
+		hostConfig["NetworkMode"] = cfg.Network
+	}
+	if cfg.NoNetwork {
+		hostConfig["NetworkMode"] = "none"
+	}
+	if len(cfg.ExtraHosts) > 0 {
+		hostConfig["ExtraHosts"] = cfg.ExtraHosts
+	}
+	if cfg.MemoryMB > 0 {
+		hostConfig["Memory"] = cfg.MemoryMB * 1024 * 1024
+	}
+	if cfg.CPUs > 0 {
+		hostConfig["NanoCpus"] = int64(cfg.CPUs * 1e9)
+	}
+
 	containerOpts := map[string]any{
-		"Image": cfg.Image,
-		"Cmd":   containerArgs,
-		"Env":   env,
-		"HostConfig": map[string]any{
-			"Binds":      binds,
-			"AutoRemove": false,
-		},
+		"Image":      cfg.Image,
+		"Cmd":        containerArgs,
+		"Env":        env,
+		"HostConfig": hostConfig,
 	}
 
 	containerID, err := dc.createContainer(containerOpts)
@@ -398,10 +427,10 @@ func prepareSandboxBinary() (binPath string, tmpFile string, err error) {
 			"Pre-build with: GOOS=linux go build -tags quickjs -o ramune-linux")
 	}
 
-	// Find the main package: try the directory of the executable source,
-	// then fall back to the module root (which handles `go run .` cases).
-	buildTarget := "."
-	fmt.Fprintf(os.Stderr, "sandbox: cross-compiling for linux/%s (first run only)...\n", goArch)
+	// Detect the main package to build. Use `go version -m` on the binary
+	// to extract the module path, then build from source.
+	buildTarget := detectBuildTarget(exe, modRoot)
+	fmt.Fprintf(os.Stderr, "sandbox: cross-compiling %s for linux/%s (first run only)...\n", buildTarget, goArch)
 	cmd := exec.Command("go", "build", "-tags", "quickjs", "-o", cachePath, buildTarget)
 	cmd.Dir = modRoot
 	cmd.Env = append(os.Environ(), "GOOS=linux", "GOARCH="+goArch, "CGO_ENABLED=0")
@@ -409,6 +438,7 @@ func prepareSandboxBinary() (binPath string, tmpFile string, err error) {
 		os.Remove(cachePath)
 		return "", "", fmt.Errorf("sandbox: cross-compile failed: %s\n%s", err, string(out))
 	}
+	os.Chmod(cachePath, 0o755)
 	fmt.Fprintf(os.Stderr, "sandbox: cross-compile done, cached at %s\n", cachePath)
 
 	return cachePath, "", nil
@@ -427,6 +457,45 @@ func findModRoot(startFrom string) string {
 		dir = parent
 	}
 	return ""
+}
+
+func detectBuildTarget(exe, modRoot string) string {
+	// Try `go version -m` to get the path from the binary's build info.
+	out, err := exec.Command("go", "version", "-m", exe).Output()
+	if err == nil {
+		for _, line := range strings.Split(string(out), "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "path") {
+				parts := strings.Fields(line)
+				if len(parts) >= 2 {
+					pkg := parts[1]
+					// Convert module path to relative: github.com/i2y/ramune/cmd/ramune → ./cmd/ramune
+					modPath := ""
+					if modData, err := os.ReadFile(modRoot + "/go.mod"); err == nil {
+						for _, ml := range strings.Split(string(modData), "\n") {
+							if strings.HasPrefix(ml, "module ") {
+								modPath = strings.TrimSpace(strings.TrimPrefix(ml, "module "))
+								break
+							}
+						}
+					}
+					if modPath != "" && strings.HasPrefix(pkg, modPath) {
+						rel := strings.TrimPrefix(pkg, modPath)
+						if rel == "" {
+							return "."
+						}
+						return "." + rel
+					}
+					return pkg
+				}
+			}
+		}
+	}
+	// Fallback: if exe is in a cmd/ subdirectory, use that.
+	if idx := strings.Index(exe, "/cmd/"); idx >= 0 {
+		return "." + exe[idx:]
+	}
+	return "."
 }
 
 // marshalResult encodes a SandboxResult as JSON for worker→host communication.
