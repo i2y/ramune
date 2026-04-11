@@ -1,6 +1,7 @@
 package ramune
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -31,9 +32,146 @@ type SandboxResult struct {
 	Stderr   string
 }
 
+// SandboxRuntime holds Go function registrations for sandbox execution.
+// When the binary is re-invoked inside Docker, the same functions are
+// available because they are compiled into the binary.
+type SandboxRuntime struct {
+	opts  []Option
+	funcs map[string]GoFunc
+}
+
+// NewSandboxRuntime creates a new SandboxRuntime with the given options.
+func NewSandboxRuntime(opts ...Option) *SandboxRuntime {
+	return &SandboxRuntime{
+		opts:  opts,
+		funcs: make(map[string]GoFunc),
+	}
+}
+
+// RegisterFunc registers a Go function that will be available to JS code
+// in the sandbox. The function is compiled into the binary, so it works
+// both on the host and inside the Docker container.
+func (s *SandboxRuntime) RegisterFunc(name string, fn GoFunc) {
+	s.funcs[name] = fn
+}
+
 // SandboxRun executes a ramune script inside a Docker container.
-// The current Go binary is mounted into the container and re-invoked
-// with the given script, preserving all compiled-in Go functions.
+func (s *SandboxRuntime) SandboxRun(scriptPath string, cfg SandboxConfig) (*SandboxResult, error) {
+	if isSandboxWorker() {
+		return s.runAsWorker([]string{"run", scriptPath})
+	}
+	return sandboxExec([]string{"run", scriptPath}, cfg)
+}
+
+// SandboxEval evaluates JS code inside a Docker container.
+func (s *SandboxRuntime) SandboxEval(code string, cfg SandboxConfig) (*SandboxResult, error) {
+	if isSandboxWorker() {
+		return s.runAsWorker([]string{"eval", code})
+	}
+	return sandboxExec([]string{"eval", code}, cfg)
+}
+
+// runAsWorker executes as the sandbox worker (inside Docker).
+// Creates a real Runtime, registers all functions, runs the script.
+func (s *SandboxRuntime) runAsWorker(args []string) (*SandboxResult, error) {
+	rt, err := New(s.opts...)
+	if err != nil {
+		return &SandboxResult{ExitCode: 1, Stderr: err.Error()}, nil
+	}
+	defer rt.Close()
+
+	// Bridge console.log/error to stdout/stderr.
+	rt.RegisterFunc("__sandbox_stdout", func(a []any) (any, error) {
+		parts := make([]string, len(a))
+		for i, v := range a {
+			parts[i] = fmt.Sprint(v)
+		}
+		fmt.Fprintln(os.Stdout, strings.Join(parts, " "))
+		return nil, nil
+	})
+	rt.RegisterFunc("__sandbox_stderr", func(a []any) (any, error) {
+		parts := make([]string, len(a))
+		for i, v := range a {
+			parts[i] = fmt.Sprint(v)
+		}
+		fmt.Fprintln(os.Stderr, strings.Join(parts, " "))
+		return nil, nil
+	})
+	rt.Exec(`
+		console.log = function() { __sandbox_stdout.apply(null, Array.prototype.slice.call(arguments)); };
+		console.info = console.log;
+		console.error = function() { __sandbox_stderr.apply(null, Array.prototype.slice.call(arguments)); };
+		console.warn = console.error;
+	`)
+
+	for name, fn := range s.funcs {
+		if err := rt.RegisterFunc(name, fn); err != nil {
+			return &SandboxResult{ExitCode: 1, Stderr: err.Error()}, nil
+		}
+	}
+
+	if args[0] == "eval" {
+		v, err := rt.Eval(args[1])
+		if err != nil {
+			return &SandboxResult{ExitCode: 1, Stderr: err.Error()}, nil
+		}
+		s := v.String()
+		v.Close()
+		return &SandboxResult{ExitCode: 0, Stdout: s}, nil
+	}
+
+	// Run file.
+	code, err := os.ReadFile(args[1])
+	if err != nil {
+		return &SandboxResult{ExitCode: 1, Stderr: err.Error()}, nil
+	}
+	if err := rt.Exec(string(code)); err != nil {
+		return &SandboxResult{ExitCode: 1, Stderr: err.Error()}, nil
+	}
+	rt.RunEventLoop()
+	return &SandboxResult{ExitCode: 0}, nil
+}
+
+const sandboxEnvKey = "RAMUNE_SANDBOX_WORKER"
+
+func isSandboxWorker() bool {
+	return os.Getenv(sandboxEnvKey) == "1"
+}
+
+// HandleSandboxWorker checks if the current process is a sandbox worker
+// and returns true if so. The caller should pass the SandboxRuntime
+// that was set up with RegisterFunc calls, then exit.
+//
+// Usage:
+//
+//	rt := ramune.NewSandboxRuntime(ramune.NodeCompat())
+//	rt.RegisterFunc("add", func(a, b float64) float64 { return a + b })
+//	if ramune.HandleSandboxWorker(rt) {
+//	    return
+//	}
+func HandleSandboxWorker(s *SandboxRuntime) bool {
+	if !isSandboxWorker() {
+		return false
+	}
+	args := os.Args[1:]
+	if len(args) < 2 {
+		fmt.Fprintf(os.Stderr, "sandbox worker: insufficient arguments\n")
+		os.Exit(1)
+	}
+	result, _ := s.runAsWorker(args)
+	if result.Stdout != "" {
+		os.Stdout.WriteString(result.Stdout)
+	}
+	if result.Stderr != "" {
+		os.Stderr.WriteString(result.Stderr)
+	}
+	os.Exit(result.ExitCode)
+	return true // unreachable
+}
+
+// Package-level functions for CLI usage (no Go function bindings).
+
+// SandboxRun executes a ramune script inside a Docker container.
 func SandboxRun(scriptPath string, cfg SandboxConfig) (*SandboxResult, error) {
 	return sandboxExec([]string{"run", scriptPath}, cfg)
 }
@@ -56,15 +194,12 @@ func sandboxExec(args []string, cfg SandboxConfig) (*SandboxResult, error) {
 		return nil, fmt.Errorf("sandbox: docker not reachable: %w", err)
 	}
 
-	// Ensure image exists, pull if needed.
 	if _, err := dc.imageInspect(cfg.Image); err != nil {
 		if err := dc.imagePull(cfg.Image); err != nil {
 			return nil, fmt.Errorf("sandbox: cannot pull image %s: %w", cfg.Image, err)
 		}
 	}
 
-	// Determine the binary to mount into the container.
-	// If host OS != linux, cross-compile a Linux binary.
 	exePath, tmpBin, err := prepareSandboxBinary()
 	if err != nil {
 		return nil, err
@@ -73,10 +208,8 @@ func sandboxExec(args []string, cfg SandboxConfig) (*SandboxResult, error) {
 		defer os.Remove(tmpBin)
 	}
 
-	// Build container config.
 	binds := []string{exePath + ":/usr/local/bin/ramune:ro"}
 
-	// Mount script file if running a file (not eval).
 	containerArgs := []string{"/usr/local/bin/ramune"}
 	if args[0] == "run" {
 		scriptAbs, err := absPath(args[1])
@@ -94,7 +227,7 @@ func sandboxExec(args []string, cfg SandboxConfig) (*SandboxResult, error) {
 		binds = append(binds, m)
 	}
 
-	env := make([]string, 0, len(cfg.Env))
+	env := []string{sandboxEnvKey + "=1"}
 	for k, v := range cfg.Env {
 		env = append(env, k+"="+v)
 	}
@@ -113,15 +246,12 @@ func sandboxExec(args []string, cfg SandboxConfig) (*SandboxResult, error) {
 	if err != nil {
 		return nil, fmt.Errorf("sandbox: create container: %w", err)
 	}
-
-	// Always clean up the container.
 	defer dc.removeContainer(containerID, true)
 
 	if err := dc.startContainer(containerID); err != nil {
 		return nil, fmt.Errorf("sandbox: start container: %w", err)
 	}
 
-	// Wait for completion with timeout.
 	type waitResult struct {
 		code int
 		err  error
@@ -144,7 +274,6 @@ func sandboxExec(args []string, cfg SandboxConfig) (*SandboxResult, error) {
 		return nil, fmt.Errorf("sandbox: timeout after %v", cfg.Timeout)
 	}
 
-	// Collect logs (stdout + stderr multiplexed).
 	stdout, stderr := collectLogs(dc, containerID)
 
 	return &SandboxResult{
@@ -155,50 +284,44 @@ func sandboxExec(args []string, cfg SandboxConfig) (*SandboxResult, error) {
 }
 
 func collectLogs(dc *dockerClient, containerID string) (string, string) {
-	reader, err := dc.containerLogs(containerID, false)
+	// Collect stdout.
+	stdoutReader, err := dc.containerLogStream(containerID, true, false)
 	if err != nil {
 		return "", ""
 	}
-	defer reader.Close()
+	stdoutData, _ := io.ReadAll(stdoutReader)
+	stdoutReader.Close()
 
-	// Docker multiplexed stream: 8-byte header per frame.
-	// header[0]: stream type (1=stdout, 2=stderr)
-	// header[4:8]: frame size (big-endian uint32)
-	var stdout, stderr strings.Builder
-	header := make([]byte, 8)
-	for {
-		if _, err := io.ReadFull(reader, header); err != nil {
-			break
-		}
-		size := int(header[4])<<24 | int(header[5])<<16 | int(header[6])<<8 | int(header[7])
-		if size <= 0 {
-			continue
-		}
-		frame := make([]byte, size)
-		if _, err := io.ReadFull(reader, frame); err != nil {
-			break
-		}
-		switch header[0] {
-		case 1:
-			stdout.Write(frame)
-		case 2:
-			stderr.Write(frame)
-		default:
-			stdout.Write(frame)
-		}
+	// Collect stderr.
+	stderrReader, err := dc.containerLogStream(containerID, false, true)
+	if err != nil {
+		return string(stdoutData), ""
 	}
-	return stdout.String(), stderr.String()
+	stderrData, _ := io.ReadAll(stderrReader)
+	stderrReader.Close()
+
+	return string(stdoutData), string(stderrData)
 }
 
-// Helper functions to avoid importing path/filepath in this file
-// (it's already used elsewhere, but keeping sandbox.go self-contained).
+func (c *dockerClient) containerLogStream(id string, stdout, stderr bool) (io.ReadCloser, error) {
+	path := fmt.Sprintf("/containers/%s/logs?follow=false&stdout=%v&stderr=%v", id, stdout, stderr)
+	resp, err := c.do("GET", path, nil)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode >= 400 {
+		data, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return nil, fmt.Errorf("docker logs %s: %s (status %d)", id, string(data), resp.StatusCode)
+	}
+	return resp.Body, nil
+}
+
 func evalSymlinks(p string) (string, error) {
-	// Resolve symlinks by reading /proc/self/exe on Linux
-	// or using os.Readlink chain on other platforms.
 	for i := 0; i < 10; i++ {
 		target, err := os.Readlink(p)
 		if err != nil {
-			return p, nil // not a symlink
+			return p, nil
 		}
 		if !isAbs(target) {
 			p = dirName(p) + "/" + target
@@ -220,25 +343,9 @@ func absPath(p string) (string, error) {
 	return wd + "/" + p, nil
 }
 
-func isAbs(p string) bool {
-	return len(p) > 0 && p[0] == '/'
-}
-
-func baseName(p string) string {
-	i := strings.LastIndex(p, "/")
-	if i >= 0 {
-		return p[i+1:]
-	}
-	return p
-}
-
-func dirName(p string) string {
-	i := strings.LastIndex(p, "/")
-	if i >= 0 {
-		return p[:i]
-	}
-	return "."
-}
+func isAbs(p string) bool    { return len(p) > 0 && p[0] == '/' }
+func baseName(p string) string { i := strings.LastIndex(p, "/"); if i >= 0 { return p[i+1:] }; return p }
+func dirName(p string) string  { i := strings.LastIndex(p, "/"); if i >= 0 { return p[:i] }; return "." }
 
 // SandboxAvailable checks whether Docker is reachable.
 func SandboxAvailable() bool {
@@ -249,10 +356,6 @@ func SandboxAvailable() bool {
 	return dc.ping() == nil
 }
 
-// prepareSandboxBinary returns the path to a Linux binary suitable for
-// mounting into a Docker container. If the host is already Linux, it
-// returns the current executable. Otherwise it cross-compiles a Linux
-// binary to a temp file and returns its path (caller must clean up).
 func prepareSandboxBinary() (binPath string, tmpFile string, err error) {
 	exe, err := os.Executable()
 	if err != nil {
@@ -272,29 +375,34 @@ func prepareSandboxBinary() (binPath string, tmpFile string, err error) {
 		goArch = "amd64"
 	}
 
-	// Check for cached cross-compiled binary.
 	cacheDir, _ := os.UserCacheDir()
 	if cacheDir == "" {
 		cacheDir = os.TempDir()
 	}
 	cachePath := cacheDir + "/ramune-sandbox-linux-" + goArch
 	if info, err := os.Stat(cachePath); err == nil && info.Size() > 0 {
-		// Check if cached binary is newer than the source executable.
 		exeInfo, _ := os.Stat(exe)
 		if exeInfo != nil && !exeInfo.ModTime().After(info.ModTime()) {
 			return cachePath, "", nil
 		}
 	}
 
-	// Find the Go module root by looking for go.mod.
+	// Find the Go module root for the current executable.
 	modRoot := findModRoot(exe)
 	if modRoot == "" {
+		wd, _ := os.Getwd()
+		modRoot = findModRoot(wd + "/.")
+	}
+	if modRoot == "" {
 		return "", "", fmt.Errorf("sandbox: cannot find go.mod for cross-compilation. " +
-			"Pre-build a Linux binary with: GOOS=linux go build -tags quickjs -o ramune-linux ./cmd/ramune/")
+			"Pre-build with: GOOS=linux go build -tags quickjs -o ramune-linux")
 	}
 
+	// Find the main package: try the directory of the executable source,
+	// then fall back to the module root (which handles `go run .` cases).
+	buildTarget := "."
 	fmt.Fprintf(os.Stderr, "sandbox: cross-compiling for linux/%s (first run only)...\n", goArch)
-	cmd := exec.Command("go", "build", "-tags", "quickjs", "-o", cachePath, "./cmd/ramune/")
+	cmd := exec.Command("go", "build", "-tags", "quickjs", "-o", cachePath, buildTarget)
 	cmd.Dir = modRoot
 	cmd.Env = append(os.Environ(), "GOOS=linux", "GOARCH="+goArch, "CGO_ENABLED=0")
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -303,7 +411,7 @@ func prepareSandboxBinary() (binPath string, tmpFile string, err error) {
 	}
 	fmt.Fprintf(os.Stderr, "sandbox: cross-compile done, cached at %s\n", cachePath)
 
-	return cachePath, "", nil // cached, no temp file to clean up
+	return cachePath, "", nil
 }
 
 func findModRoot(startFrom string) string {
@@ -319,4 +427,10 @@ func findModRoot(startFrom string) string {
 		dir = parent
 	}
 	return ""
+}
+
+// marshalResult encodes a SandboxResult as JSON for worker→host communication.
+func marshalResult(r *SandboxResult) string {
+	data, _ := json.Marshal(r)
+	return string(data)
 }
