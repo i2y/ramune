@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -19,13 +20,11 @@ var errInvalidDockerClient = fmt.Errorf("docker: invalid client")
 // dockerClient wraps Docker Engine API calls over Unix socket or TCP.
 type dockerClient struct {
 	httpClient *http.Client
-	baseURL    string // e.g. "http://localhost"
+	baseURL    string
 }
 
-// newDockerClient creates a client connected via Unix socket or TCP.
 func newDockerClient(socketPath string) *dockerClient {
 	if socketPath == "" {
-		// Check DOCKER_HOST env var.
 		host := os.Getenv("DOCKER_HOST")
 		if host != "" {
 			if strings.HasPrefix(host, "unix://") {
@@ -48,7 +47,6 @@ func newDockerClient(socketPath string) *dockerClient {
 					return net.Dial("unix", socketPath)
 				},
 			},
-			Timeout: 0, // no timeout for streaming operations
 		},
 		baseURL: "http://localhost",
 	}
@@ -142,7 +140,7 @@ func (c *dockerClient) removeNetwork(nameOrID string) error {
 
 func (c *dockerClient) createContainer(opts map[string]any) (string, error) {
 	name, _ := opts["name"].(string)
-	delete(opts, "name") // name is a query param, not body field
+	delete(opts, "name")
 
 	body, _ := json.Marshal(opts)
 	path := "/containers/create"
@@ -165,7 +163,7 @@ func (c *dockerClient) startContainer(id string) error {
 		return err
 	}
 	resp.Body.Close()
-	if resp.StatusCode >= 400 && resp.StatusCode != 304 { // 304 = already started
+	if resp.StatusCode >= 400 && resp.StatusCode != 304 {
 		return fmt.Errorf("docker start %s: status %d", id, resp.StatusCode)
 	}
 	return nil
@@ -178,7 +176,7 @@ func (c *dockerClient) stopContainer(id string, timeout int) error {
 		return err
 	}
 	resp.Body.Close()
-	if resp.StatusCode >= 400 && resp.StatusCode != 304 { // 304 = already stopped
+	if resp.StatusCode >= 400 && resp.StatusCode != 304 {
 		return fmt.Errorf("docker stop %s: status %d", id, resp.StatusCode)
 	}
 	return nil
@@ -216,7 +214,6 @@ func (c *dockerClient) inspectContainer(id string) (map[string]any, error) {
 	return c.doJSON("GET", "/containers/"+id+"/json", nil)
 }
 
-// containerLogs returns an io.ReadCloser for streaming container logs.
 func (c *dockerClient) containerLogs(id string, follow bool) (io.ReadCloser, error) {
 	followStr := "false"
 	if follow {
@@ -235,15 +232,102 @@ func (c *dockerClient) containerLogs(id string, follow bool) (io.ReadCloser, err
 	return resp.Body, nil
 }
 
-// dockerModuleState holds per-Runtime state for the Docker module.
-type dockerModuleState struct {
+// dockerAsyncResult holds the result of an async Docker operation.
+type dockerAsyncResult struct {
+	Value string // JSON-encoded result or raw string
+	Err   string // error message, empty on success
+}
+
+// dockerManager implements TickManager for async Docker operations.
+type dockerManager struct {
 	mu      sync.Mutex
 	clients map[int]*dockerClient
 	nextID  int
+	pending map[int]dockerAsyncResult
+	active  int
+	wakeFn  func()
+}
+
+func newDockerManager(wakeFn func()) *dockerManager {
+	return &dockerManager{
+		clients: make(map[int]*dockerClient),
+		nextID:  1,
+		pending: make(map[int]dockerAsyncResult),
+		wakeFn:  wakeFn,
+	}
+}
+
+func (m *dockerManager) ProcessEvents(r *Runtime) {
+	m.mu.Lock()
+	if len(m.pending) == 0 {
+		m.mu.Unlock()
+		return
+	}
+	results := m.pending
+	m.pending = make(map[int]dockerAsyncResult)
+	m.mu.Unlock()
+
+	data, _ := json.Marshal(results)
+	r.execLocked("if(typeof __dockerDeliverResults==='function')__dockerDeliverResults(" + string(data) + ")")
+}
+
+func (m *dockerManager) HasActive() bool {
+	m.mu.Lock()
+	n := m.active
+	m.mu.Unlock()
+	return n > 0
+}
+
+func (m *dockerManager) Close() {
+	m.mu.Lock()
+	m.clients = nil
+	m.mu.Unlock()
+}
+
+func (m *dockerManager) addClient(c *dockerClient) int {
+	m.mu.Lock()
+	id := m.nextID
+	m.nextID++
+	m.clients[id] = c
+	m.mu.Unlock()
+	return id
+}
+
+func (m *dockerManager) getClient(id int) *dockerClient {
+	m.mu.Lock()
+	c := m.clients[id]
+	m.mu.Unlock()
+	return c
+}
+
+// runAsync starts a goroutine to run fn and delivers the result via the event loop.
+func (m *dockerManager) runAsync(fn func() (string, error)) int {
+	m.mu.Lock()
+	id := m.nextID
+	m.nextID++
+	m.active++
+	m.mu.Unlock()
+
+	go func() {
+		val, err := fn()
+		errStr := ""
+		if err != nil {
+			errStr = err.Error()
+		}
+		m.mu.Lock()
+		m.pending[id] = dockerAsyncResult{Value: val, Err: errStr}
+		m.active--
+		m.mu.Unlock()
+		if m.wakeFn != nil {
+			m.wakeFn()
+		}
+	}()
+
+	return id
 }
 
 // DockerModule returns an Option that installs the Docker native module.
-// JS code can `require('dockerode')` to get the Docker client.
+// The module is lazy-initialized on first require('dockerode').
 func DockerModule() Option {
 	return func(c *config) {
 		c.modules = append(c.modules, Module{
@@ -254,168 +338,141 @@ func DockerModule() Option {
 }
 
 func installDockerModule(r *Runtime) error {
-	state := &dockerModuleState{
-		clients: make(map[int]*dockerClient),
-		nextID:  1,
+	var mgr *dockerManager
+	var initOnce sync.Once
+
+	ensureInit := func() {
+		initOnce.Do(func() {
+			mgr = newDockerManager(r.Wake)
+			r.customTickMgrs = append(r.customTickMgrs, mgr)
+		})
 	}
 
-	reg := func(name string, fn GoFunc) error {
-		return r.registerFuncLocked(name, fn)
-	}
-	withClient := func(args []any, fn func(*dockerClient) (any, error)) (any, error) {
-		c := state.getClient(args)
-		if c == nil {
-			return nil, errInvalidDockerClient
-		}
-		return fn(c)
-	}
-
-	if err := reg("__docker_connect", func(args []any) (any, error) {
+	// __docker_connect is the only synchronous callback (creates the client).
+	if err := r.registerFuncLocked("__docker_connect", func(args []any) (any, error) {
+		ensureInit()
 		socketPath := ""
 		if len(args) > 0 {
 			if s, ok := args[0].(string); ok {
 				socketPath = s
 			}
 		}
-		client := newDockerClient(socketPath)
-		state.mu.Lock()
-		id := state.nextID
-		state.nextID++
-		state.clients[id] = client
-		state.mu.Unlock()
+		id := mgr.addClient(newDockerClient(socketPath))
 		return float64(id), nil
 	}); err != nil {
 		return err
 	}
-	if err := reg("__docker_ping", func(args []any) (any, error) {
-		return withClient(args, func(c *dockerClient) (any, error) {
-			return nil, c.ping()
-		})
-	}); err != nil {
-		return err
-	}
-	if err := reg("__docker_image_inspect", func(args []any) (any, error) {
-		return withClient(args, func(c *dockerClient) (any, error) {
-			name, _ := args[1].(string)
-			result, err := c.imageInspect(name)
-			if err != nil {
-				return nil, err
+
+	// __docker_op dispatches all async Docker operations.
+	// args: [clientID, opName, ...opArgs]
+	// Returns: opID (float64) for Promise resolution via __dockerDeliverResults.
+	if err := r.registerFuncLocked("__docker_op", func(args []any) (any, error) {
+		if mgr == nil {
+			return nil, errInvalidDockerClient
+		}
+		if len(args) < 2 {
+			return nil, fmt.Errorf("docker: op requires clientID and opName")
+		}
+		clientID, _ := args[0].(float64)
+		opName, _ := args[1].(string)
+		c := mgr.getClient(int(clientID))
+		if c == nil {
+			return nil, errInvalidDockerClient
+		}
+
+		var opFn func() (string, error)
+
+		switch opName {
+		case "ping":
+			opFn = func() (string, error) { return "", c.ping() }
+		case "imageInspect":
+			name, _ := args[2].(string)
+			opFn = func() (string, error) {
+				r, err := c.imageInspect(name)
+				if err != nil {
+					return "", err
+				}
+				d, _ := json.Marshal(r)
+				return string(d), nil
 			}
-			data, _ := json.Marshal(result)
-			return string(data), nil
-		})
-	}); err != nil {
-		return err
-	}
-	if err := reg("__docker_image_pull", func(args []any) (any, error) {
-		return withClient(args, func(c *dockerClient) (any, error) {
-			name, _ := args[1].(string)
-			return nil, c.imagePull(name)
-		})
-	}); err != nil {
-		return err
-	}
-	if err := reg("__docker_network_create", func(args []any) (any, error) {
-		return withClient(args, func(c *dockerClient) (any, error) {
-			optsJSON, _ := args[1].(string)
-			var opts map[string]any
-			json.Unmarshal([]byte(optsJSON), &opts)
-			return c.createNetwork(opts)
-		})
-	}); err != nil {
-		return err
-	}
-	if err := reg("__docker_network_remove", func(args []any) (any, error) {
-		return withClient(args, func(c *dockerClient) (any, error) {
-			name, _ := args[1].(string)
-			return nil, c.removeNetwork(name)
-		})
-	}); err != nil {
-		return err
-	}
-	if err := reg("__docker_container_create", func(args []any) (any, error) {
-		return withClient(args, func(c *dockerClient) (any, error) {
-			optsJSON, _ := args[1].(string)
-			var opts map[string]any
-			json.Unmarshal([]byte(optsJSON), &opts)
-			return c.createContainer(opts)
-		})
-	}); err != nil {
-		return err
-	}
-	if err := reg("__docker_container_start", func(args []any) (any, error) {
-		return withClient(args, func(c *dockerClient) (any, error) {
-			id, _ := args[1].(string)
-			return nil, c.startContainer(id)
-		})
-	}); err != nil {
-		return err
-	}
-	if err := reg("__docker_container_stop", func(args []any) (any, error) {
-		return withClient(args, func(c *dockerClient) (any, error) {
-			id, _ := args[1].(string)
-			timeout := 10
-			if len(args) > 2 {
-				if t, ok := args[2].(float64); ok {
-					timeout = int(t)
+		case "imagePull":
+			name, _ := args[2].(string)
+			opFn = func() (string, error) { return "", c.imagePull(name) }
+		case "networkCreate":
+			optsJSON, _ := args[2].(string)
+			opFn = func() (string, error) {
+				var opts map[string]any
+				json.Unmarshal([]byte(optsJSON), &opts)
+				return c.createNetwork(opts)
+			}
+		case "networkRemove":
+			name, _ := args[2].(string)
+			opFn = func() (string, error) { return "", c.removeNetwork(name) }
+		case "containerCreate":
+			optsJSON, _ := args[2].(string)
+			opFn = func() (string, error) {
+				var opts map[string]any
+				json.Unmarshal([]byte(optsJSON), &opts)
+				return c.createContainer(opts)
+			}
+		case "containerStart":
+			id, _ := args[2].(string)
+			opFn = func() (string, error) { return "", c.startContainer(id) }
+		case "containerStop":
+			id, _ := args[2].(string)
+			t := 10
+			if len(args) > 3 {
+				if v, ok := args[3].(float64); ok {
+					t = int(v)
 				}
 			}
-			return nil, c.stopContainer(id, timeout)
-		})
-	}); err != nil {
-		return err
-	}
-	if err := reg("__docker_container_remove", func(args []any) (any, error) {
-		return withClient(args, func(c *dockerClient) (any, error) {
-			id, _ := args[1].(string)
+			opFn = func() (string, error) { return "", c.stopContainer(id, t) }
+		case "containerRemove":
+			id, _ := args[2].(string)
 			force := false
-			if len(args) > 2 {
-				force, _ = args[2].(bool)
+			if len(args) > 3 {
+				force, _ = args[3].(bool)
 			}
-			return nil, c.removeContainer(id, force)
-		})
-	}); err != nil {
-		return err
-	}
-	if err := reg("__docker_container_wait", func(args []any) (any, error) {
-		return withClient(args, func(c *dockerClient) (any, error) {
-			id, _ := args[1].(string)
-			code, err := c.waitContainer(id)
-			if err != nil {
-				return nil, err
+			opFn = func() (string, error) { return "", c.removeContainer(id, force) }
+		case "containerWait":
+			id, _ := args[2].(string)
+			opFn = func() (string, error) {
+				code, err := c.waitContainer(id)
+				if err != nil {
+					return "", err
+				}
+				return strconv.Itoa(code), nil
 			}
-			return float64(code), nil
-		})
-	}); err != nil {
-		return err
-	}
-	if err := reg("__docker_container_inspect", func(args []any) (any, error) {
-		return withClient(args, func(c *dockerClient) (any, error) {
-			id, _ := args[1].(string)
-			result, err := c.inspectContainer(id)
-			if err != nil {
-				return nil, err
+		case "containerInspect":
+			id, _ := args[2].(string)
+			opFn = func() (string, error) {
+				r, err := c.inspectContainer(id)
+				if err != nil {
+					return "", err
+				}
+				d, _ := json.Marshal(r)
+				return string(d), nil
 			}
-			data, _ := json.Marshal(result)
-			return string(data), nil
-		})
-	}); err != nil {
-		return err
-	}
-	if err := reg("__docker_container_logs", func(args []any) (any, error) {
-		return withClient(args, func(c *dockerClient) (any, error) {
-			id, _ := args[1].(string)
+		case "containerLogs":
+			id, _ := args[2].(string)
 			follow := false
-			if len(args) > 2 {
-				follow, _ = args[2].(bool)
+			if len(args) > 3 {
+				follow, _ = args[3].(bool)
 			}
-			reader, err := c.containerLogs(id, follow)
-			if err != nil {
-				return nil, err
+			opFn = func() (string, error) {
+				reader, err := c.containerLogs(id, follow)
+				if err != nil {
+					return "", err
+				}
+				streamID := r.streamMgr.createGoToJS(reader)
+				return strconv.Itoa(streamID), nil
 			}
-			streamID := r.streamMgr.createGoToJS(reader)
-			return float64(streamID), nil
-		})
+		default:
+			return nil, fmt.Errorf("docker: unknown op %q", opName)
+		}
+
+		opID := mgr.runAsync(opFn)
+		return float64(opID), nil
 	}); err != nil {
 		return err
 	}
@@ -423,63 +480,57 @@ func installDockerModule(r *Runtime) error {
 	return r.execLocked(dockerModuleJS())
 }
 
-func (s *dockerModuleState) getClient(args []any) *dockerClient {
-	if len(args) < 1 {
-		return nil
-	}
-	id, ok := args[0].(float64)
-	if !ok {
-		return nil
-	}
-	s.mu.Lock()
-	c := s.clients[int(id)]
-	s.mu.Unlock()
-	return c
-}
-
 func dockerModuleJS() string {
 	return `(function() {
+	var __dockerPending = {};
+
+	globalThis.__dockerDeliverResults = function(results) {
+		for (var id in results) {
+			var r = results[id];
+			var p = __dockerPending[id];
+			if (p) {
+				delete __dockerPending[id];
+				if (r.Err) p.reject(new Error(r.Err));
+				else p.resolve(r.Value);
+			}
+		}
+	};
+
+	function dockerAsync(clientId, op) {
+		var args = [clientId, op];
+		for (var i = 2; i < arguments.length; i++) args.push(arguments[i]);
+		var opId = __docker_op.apply(null, args);
+		return new Promise(function(resolve, reject) {
+			__dockerPending[opId] = { resolve: resolve, reject: reject };
+		});
+	}
+
 	function Docker(opts) {
 		opts = opts || {};
-		var socketPath = opts.socketPath || '';
-		this._id = __docker_connect(socketPath);
+		this._id = __docker_connect(opts.socketPath || '');
 	}
 
 	Docker.prototype.ping = function() {
-		var id = this._id;
-		return new Promise(function(resolve, reject) {
-			try { __docker_ping(id); resolve('OK'); }
-			catch(e) { reject(e); }
-		});
+		return dockerAsync(this._id, 'ping').then(function() { return 'OK'; });
 	};
 
 	Docker.prototype.getImage = function(name) {
 		var id = this._id;
 		return {
 			inspect: function() {
-				return new Promise(function(resolve, reject) {
-					try {
-						var data = __docker_image_inspect(id, name);
-						resolve(JSON.parse(data));
-					} catch(e) { reject(e); }
-				});
+				return dockerAsync(id, 'imageInspect', name).then(JSON.parse);
 			}
 		};
 	};
 
 	Docker.prototype.pull = function(image, callback) {
-		var id = this._id;
+		var p = dockerAsync(this._id, 'imagePull', image);
 		if (typeof callback === 'function') {
-			try {
-				__docker_image_pull(id, image);
-				callback(null, { on: function() {}, pipe: function() {} });
-			} catch(e) { callback(e); }
+			p.then(function() { callback(null, { on: function() {}, pipe: function() {} }); })
+			 .catch(function(e) { callback(e); });
 			return;
 		}
-		return new Promise(function(resolve, reject) {
-			try { __docker_image_pull(id, image); resolve(); }
-			catch(e) { reject(e); }
-		});
+		return p;
 	};
 
 	Docker.prototype.modem = {
@@ -490,38 +541,20 @@ func dockerModuleJS() string {
 
 	Docker.prototype.createNetwork = function(opts) {
 		var id = this._id;
-		return new Promise(function(resolve, reject) {
-			try {
-				var netId = __docker_network_create(id, JSON.stringify(opts));
-				resolve({ id: netId, remove: function() {
-					return new Promise(function(res, rej) {
-						try { __docker_network_remove(id, opts.Name || netId); res(); }
-						catch(e) { rej(e); }
-					});
-				}});
-			} catch(e) { reject(e); }
+		return dockerAsync(id, 'networkCreate', JSON.stringify(opts)).then(function(netId) {
+			return { id: netId, remove: function() { return dockerAsync(id, 'networkRemove', opts.Name || netId); } };
 		});
 	};
 
 	Docker.prototype.getNetwork = function(name) {
 		var id = this._id;
-		return {
-			remove: function() {
-				return new Promise(function(resolve, reject) {
-					try { __docker_network_remove(id, name); resolve(); }
-					catch(e) { reject(e); }
-				});
-			}
-		};
+		return { remove: function() { return dockerAsync(id, 'networkRemove', name); } };
 	};
 
 	Docker.prototype.createContainer = function(opts) {
 		var id = this._id;
-		return new Promise(function(resolve, reject) {
-			try {
-				var containerId = __docker_container_create(id, JSON.stringify(opts));
-				resolve(new Container(id, containerId));
-			} catch(e) { reject(e); }
+		return dockerAsync(id, 'containerCreate', JSON.stringify(opts)).then(function(cid) {
+			return new Container(id, cid);
 		});
 	};
 
@@ -535,60 +568,30 @@ func dockerModuleJS() string {
 	}
 
 	Container.prototype.start = function() {
-		var cid = this._clientId, id = this.id;
-		return new Promise(function(resolve, reject) {
-			try { __docker_container_start(cid, id); resolve(); }
-			catch(e) { reject(e); }
-		});
+		return dockerAsync(this._clientId, 'containerStart', this.id);
 	};
 
 	Container.prototype.stop = function(opts) {
-		var cid = this._clientId, id = this.id;
-		var t = (opts && opts.t) || 10;
-		return new Promise(function(resolve, reject) {
-			try { __docker_container_stop(cid, id, t); resolve(); }
-			catch(e) { reject(e); }
-		});
+		return dockerAsync(this._clientId, 'containerStop', this.id, (opts && opts.t) || 10);
 	};
 
 	Container.prototype.remove = function(opts) {
-		var cid = this._clientId, id = this.id;
-		var force = opts && opts.force;
-		return new Promise(function(resolve, reject) {
-			try { __docker_container_remove(cid, id, !!force); resolve(); }
-			catch(e) { reject(e); }
-		});
+		return dockerAsync(this._clientId, 'containerRemove', this.id, !!(opts && opts.force));
 	};
 
 	Container.prototype.wait = function() {
-		var cid = this._clientId, id = this.id;
-		return new Promise(function(resolve, reject) {
-			try {
-				var code = __docker_container_wait(cid, id);
-				resolve({ StatusCode: code });
-			} catch(e) { reject(e); }
+		return dockerAsync(this._clientId, 'containerWait', this.id).then(function(code) {
+			return { StatusCode: parseInt(code, 10) };
 		});
 	};
 
 	Container.prototype.inspect = function() {
-		var cid = this._clientId, id = this.id;
-		return new Promise(function(resolve, reject) {
-			try {
-				var data = __docker_container_inspect(cid, id);
-				resolve(JSON.parse(data));
-			} catch(e) { reject(e); }
-		});
+		return dockerAsync(this._clientId, 'containerInspect', this.id).then(JSON.parse);
 	};
 
 	Container.prototype.logs = function(opts) {
-		var cid = this._clientId, id = this.id;
-		var follow = opts && opts.follow;
-		return new Promise(function(resolve, reject) {
-			try {
-				var streamId = __docker_container_logs(cid, id, !!follow);
-				var stream = __streamCreateReadable(streamId);
-				resolve(stream);
-			} catch(e) { reject(e); }
+		return dockerAsync(this._clientId, 'containerLogs', this.id, !!(opts && opts.follow)).then(function(streamId) {
+			return __streamCreateReadable(parseInt(streamId, 10));
 		});
 	};
 
