@@ -2,26 +2,43 @@ package ramune
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
-	"runtime"
 	"sync"
 
 	"github.com/crgimenes/glaze"
-	_ "github.com/crgimenes/glaze/embedded"
 )
 
-// WebViewMainCh receives functions to execute on the main OS thread.
-// macOS requires all UI operations on thread 0. Call RunWebViewLoop()
-// from the main goroutine to process these.
-var WebViewMainCh = make(chan func(), 4)
+// webViewMainCh receives functions to execute on the main OS thread.
+// macOS requires all UI/WebKit operations on thread 0.
+// Only one WebView window can be active at a time (wv.Run blocks the main thread).
+var webViewMainCh chan func()
 
-// RunWebViewLoop processes webview operations on the main thread.
-// Must be called from the main goroutine (before any other goroutine
-// calls runtime.LockOSThread). Blocks until the channel is closed.
-func RunWebViewLoop() {
-	runtime.LockOSThread()
-	for fn := range WebViewMainCh {
-		fn()
+// InitWebViewMain enables WebView support by creating the main-thread
+// dispatch channel. Must be called before any WebView is created.
+// The caller must drain the channel on the main goroutine, e.g.:
+//
+//	ramune.InitWebViewMain()
+//	go func() { /* run engine */ }()
+//	ramune.DrainWebViewMain(done)
+func InitWebViewMain() {
+	webViewMainCh = make(chan func(), 4)
+}
+
+// DrainWebViewMain processes WebView operations on the main thread.
+// Blocks until done is closed or all work is complete.
+// Must be called from the main goroutine (pinned to thread 0 via
+// runtime.LockOSThread in init).
+func DrainWebViewMain(done <-chan struct{}) {
+	for {
+		select {
+		case fn, ok := <-webViewMainCh:
+			if ok {
+				fn()
+			}
+		case <-done:
+			return
+		}
 	}
 }
 
@@ -51,7 +68,13 @@ func newWebviewManager(wakeFn func()) *webviewManager {
 	}
 }
 
+var errWebViewNotEnabled = errors.New("WebView requires InitWebViewMain() and DrainWebViewMain() on the main goroutine")
+
 func (m *webviewManager) create(opts webviewCreateOpts) (int, error) {
+	if webViewMainCh == nil {
+		return 0, errWebViewNotEnabled
+	}
+
 	m.mu.Lock()
 	id := m.nextID
 	m.nextID++
@@ -62,8 +85,8 @@ func (m *webviewManager) create(opts webviewCreateOpts) (int, error) {
 	ready := make(chan error, 1)
 
 	// WebView must be created on the main OS thread (macOS requirement).
-	// Send the creation work to WebViewMainCh for the main goroutine to execute.
-	WebViewMainCh <- func() {
+	select {
+	case webViewMainCh <- func() {
 		wv, err := glaze.New(opts.Debug)
 		if err != nil {
 			ready <- err
@@ -86,7 +109,7 @@ func (m *webviewManager) create(opts webviewCreateOpts) (int, error) {
 
 		ready <- nil
 
-		wv.Run() // blocks until window closed
+		wv.Run()
 
 		m.mu.Lock()
 		inst.closed = true
@@ -99,6 +122,12 @@ func (m *webviewManager) create(opts webviewCreateOpts) (int, error) {
 		if m.wakeFn != nil {
 			m.wakeFn()
 		}
+	}:
+	default:
+		m.mu.Lock()
+		delete(m.views, id)
+		m.mu.Unlock()
+		return 0, errWebViewNotEnabled
 	}
 
 	if err := <-ready; err != nil {

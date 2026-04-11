@@ -35,6 +35,7 @@ import (
 	"context"
 
 	"github.com/charmbracelet/lipgloss"
+	_ "github.com/crgimenes/glaze/embedded"
 	"github.com/ergochat/readline"
 	"github.com/evanw/esbuild/pkg/api"
 	"github.com/fsnotify/fsnotify"
@@ -95,25 +96,15 @@ func init() {
 }
 
 func main() {
-	// Main goroutine is reserved for WebView UI operations (macOS requirement).
-	// Actual CLI logic runs in a background goroutine.
+	ramune.InitWebViewMain()
+
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		cliMain()
 	}()
 
-	// Process WebView requests on main thread, exit when CLI is done.
-	for {
-		select {
-		case fn, ok := <-ramune.WebViewMainCh:
-			if ok {
-				fn()
-			}
-		case <-done:
-			return
-		}
-	}
+	ramune.DrainWebViewMain(done)
 }
 
 func cliMain() {
