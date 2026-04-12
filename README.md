@@ -557,6 +557,25 @@ ramune.DrainWebViewMain(done)
 
 API: `navigate(url)`, `setHtml(html)`, `eval(js)`, `setTitle(title)`, `setSize(w, h)`, `init(js)`, `destroy()`, `onclose(fn)`.
 
+### WebView (Headless / Bun.WebView)
+
+Headless browser automation via Chrome DevTools Protocol, compatible with [Bun.WebView](https://bun.sh/docs/api/webview):
+
+```js
+const wv = new Bun.WebView({ headless: true });
+await wv.navigate("https://example.com");
+console.log(await wv.evaluate("document.title")); // "Example Domain"
+const screenshot = await wv.screenshot(); // PNG buffer
+await wv.click(100, 200);
+await wv.type("hello");
+wv.close();
+```
+
+Requires Chrome or Chromium installed (set `CHROME_PATH` to override detection).
+
+API: `navigate(url)`, `evaluate(expr)`, `screenshot(opts)`, `click(x, y)`, `type(text)`, `press(key)`, `scroll(dx, dy)`, `resize(w, h)`, `back()`, `forward()`, `reload()`, `cdp(method, params)`, `close()`.
+Properties: `url`, `title`, `loading`.
+
 ### Console Output
 
 `console.log`/`error`/`warn` work out of the box in both CLI and library mode. Output goes to `os.Stdout`/`os.Stderr` by default. Use `WithStdout`/`WithStderr` to redirect:
