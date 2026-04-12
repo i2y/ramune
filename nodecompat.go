@@ -2119,31 +2119,56 @@ func nodeCompatJSSource() string {
 			this.type = type;
 			this.bubbles = !!(opts && opts.bubbles);
 			this.cancelable = !!(opts && opts.cancelable);
+			this.composed = !!(opts && opts.composed);
 			this.defaultPrevented = false;
+			this._stopImmediate = false;
 			this.target = null;
 			this.currentTarget = null;
 		};
-		globalThis.Event.prototype.preventDefault = function() { this.defaultPrevented = true; };
+		globalThis.Event.prototype.preventDefault = function() {
+			if (this.cancelable) this.defaultPrevented = true;
+		};
 		globalThis.Event.prototype.stopPropagation = function() {};
-		globalThis.Event.prototype.stopImmediatePropagation = function() {};
+		globalThis.Event.prototype.stopImmediatePropagation = function() { this._stopImmediate = true; };
+	}
+	if (typeof globalThis.CustomEvent === 'undefined') {
+		globalThis.CustomEvent = function CustomEvent(type, opts) {
+			globalThis.Event.call(this, type, opts);
+			this.detail = (opts && opts.detail !== undefined) ? opts.detail : null;
+		};
+		globalThis.CustomEvent.prototype = Object.create(globalThis.Event.prototype);
+		globalThis.CustomEvent.prototype.constructor = globalThis.CustomEvent;
 	}
 	if (typeof globalThis.EventTarget === 'undefined') {
 		globalThis.EventTarget = function EventTarget() {
 			this._listeners = {};
 		};
-		globalThis.EventTarget.prototype.addEventListener = function(type, fn) {
+		globalThis.EventTarget.prototype.addEventListener = function(type, fn, opts) {
 			if (!this._listeners[type]) this._listeners[type] = [];
-			this._listeners[type].push(fn);
+			if (this._listeners[type].indexOf(fn) >= 0) return;
+			if (opts && opts.once) {
+				var self = this;
+				var wrapped = function(e) { self.removeEventListener(type, wrapped); fn.call(self, e); };
+				wrapped._orig = fn;
+				this._listeners[type].push(wrapped);
+			} else {
+				this._listeners[type].push(fn);
+			}
 		};
 		globalThis.EventTarget.prototype.removeEventListener = function(type, fn) {
 			if (!this._listeners[type]) return;
-			this._listeners[type] = this._listeners[type].filter(function(f) { return f !== fn; });
+			this._listeners[type] = this._listeners[type].filter(function(f) { return f !== fn && f._orig !== fn; });
 		};
 		globalThis.EventTarget.prototype.dispatchEvent = function(event) {
 			event.target = this;
 			event.currentTarget = this;
-			var fns = this._listeners[event.type];
-			if (fns) for (var i = 0; i < fns.length; i++) fns[i].call(this, event);
+			var fns = (this._listeners[event.type] || []).slice();
+			for (var i = 0; i < fns.length; i++) {
+				if (event._stopImmediate) break;
+				var f = fns[i];
+				if (typeof f === 'object' && f.handleEvent) f.handleEvent(event);
+				else f.call(this, event);
+			}
 			return !event.defaultPrevented;
 		};
 	}
