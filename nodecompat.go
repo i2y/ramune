@@ -2514,7 +2514,7 @@ func nodeCompatJSSource() string {
 										nodeReq.socket = { remoteAddress: '127.0.0.1', remotePort: 0, localAddress: '0.0.0.0', localPort: 0 };
 										nodeReq.connection = nodeReq.socket;
 
-										var resStatus = 200, resHeaders = {}, resBody = '';
+										var resStatus = 200, resHeaders = {}, resBody = '', streaming = false, streamCtrl = null;
 										var nodeRes = new EventEmitter();
 										nodeRes.statusCode = 200;
 										nodeRes.statusMessage = 'OK';
@@ -2536,13 +2536,33 @@ func nodeCompatJSSource() string {
 										nodeRes.removeHeader = function(k) { delete resHeaders[k]; };
 										nodeRes.cork = function() {};
 										nodeRes.uncork = function() {};
-										nodeRes.write = function(c) { nodeRes.headersSent = true; resBody += String(c); return true; };
-										nodeRes.end = function(d) {
-											if (d) resBody += String(d);
+										nodeRes.flushHeaders = function() { nodeRes.headersSent = true; };
+										nodeRes.write = function(c) {
 											nodeRes.headersSent = true;
+											if (!streaming && typeof ReadableStream !== 'undefined') {
+												streaming = true;
+												var rs = new ReadableStream({
+													start: function(ctrl) { streamCtrl = ctrl; ctrl.enqueue(new TextEncoder().encode(String(c))); }
+												});
+												resolve(new Response(rs, { status: resStatus, headers: resHeaders }));
+											} else if (streamCtrl) {
+												streamCtrl.enqueue(new TextEncoder().encode(String(c)));
+											} else {
+												resBody += String(c);
+											}
+											return true;
+										};
+										nodeRes.end = function(d) {
 											nodeRes.writableEnded = true;
+											if (streaming) {
+												if (d) streamCtrl.enqueue(new TextEncoder().encode(String(d)));
+												streamCtrl.close();
+											} else {
+												if (d) resBody += String(d);
+												nodeRes.headersSent = true;
+												resolve(new Response(resBody, { status: resStatus, headers: resHeaders }));
+											}
 											nodeRes.writableFinished = true;
-											resolve(new Response(resBody, { status: resStatus, headers: resHeaders }));
 											nodeRes.emit('prefinish');
 											nodeRes.emit('finish');
 										};

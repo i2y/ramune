@@ -190,3 +190,140 @@ func TestHTTP2Constants(t *testing.T) {
 		t.Fatalf("got %q, want %q", s, expected)
 	}
 }
+
+func TestHTTP2GRPCUnaryCall(t *testing.T) {
+	// Simulates a gRPC unary call pattern:
+	// POST /pkg.Service/Method, content-type: application/grpc
+	// Response body + trailers with grpc-status.
+	port, cleanup := startH2CServer(t, func(w http.ResponseWriter, r *http.Request) {
+		// Read the request body (gRPC frame).
+		body, _ := io.ReadAll(r.Body)
+
+		// Verify gRPC headers.
+		ct := r.Header.Get("Content-Type")
+		if ct != "application/grpc" {
+			w.WriteHeader(400)
+			return
+		}
+
+		// Send response with gRPC trailers.
+		w.Header().Set("Content-Type", "application/grpc")
+		w.Header().Set("Trailer", "grpc-status, grpc-message")
+		w.WriteHeader(200)
+		// Echo the body back as response.
+		w.Write(body)
+		// Set trailers.
+		w.Header().Set(http.TrailerPrefix+"Grpc-Status", "0")
+		w.Header().Set(http.TrailerPrefix+"Grpc-Message", "OK")
+	})
+	defer cleanup()
+
+	r, err := ramune.New(ramune.NodeCompat())
+	if err != nil {
+		t.Skipf("JSC not available: %v", err)
+	}
+	defer r.Close()
+
+	v, err := r.EvalAsync(fmt.Sprintf(`
+		new Promise(function(resolve, reject) {
+			var http2 = require('http2');
+			var session = http2.connect('http://127.0.0.1:%d');
+			session.on('connect', function() {
+				var req = session.request({
+					':method': 'POST',
+					':path': '/pkg.Service/Method',
+					'content-type': 'application/grpc',
+					'te': 'trailers'
+				});
+
+				var respHeaders = null;
+				var data = '';
+				var trailers = null;
+
+				req.on('response', function(h) { respHeaders = h; });
+				req.on('data', function(chunk) { data += chunk; });
+				req.on('trailers', function(t) { trailers = t; });
+				req.on('end', function() {
+					session.close();
+					resolve(JSON.stringify({
+						status: respHeaders[':status'],
+						contentType: respHeaders['content-type'],
+						body: data,
+						grpcStatus: trailers ? trailers['grpc-status'] : null,
+						grpcMessage: trailers ? trailers['grpc-message'] : null
+					}));
+				});
+
+				req.end('grpc-payload');
+			});
+			session.on('error', function(e) { reject(e); });
+		})
+	`, port))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	s, _ := v.GoString()
+
+	if !strings.Contains(s, `"status":"200"`) {
+		t.Fatalf("unexpected response: %s", s)
+	}
+	if !strings.Contains(s, `"body":"grpc-payload"`) {
+		t.Fatalf("body not echoed: %s", s)
+	}
+	if !strings.Contains(s, `"grpcStatus":"0"`) {
+		t.Fatalf("grpc-status missing: %s", s)
+	}
+}
+
+func TestHTTP2MultipleStreams(t *testing.T) {
+	// Verify multiplexing: multiple concurrent streams on one connection.
+	port, cleanup := startH2CServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+		w.Write([]byte(r.URL.Path))
+	})
+	defer cleanup()
+
+	r, err := ramune.New(ramune.NodeCompat())
+	if err != nil {
+		t.Skipf("JSC not available: %v", err)
+	}
+	defer r.Close()
+
+	v, err := r.EvalAsync(fmt.Sprintf(`
+		new Promise(function(resolve, reject) {
+			var http2 = require('http2');
+			var session = http2.connect('http://127.0.0.1:%d');
+			session.on('connect', function() {
+				var results = {};
+				var done = 0;
+				var paths = ['/a', '/b', '/c'];
+
+				paths.forEach(function(p) {
+					var req = session.request({':method': 'GET', ':path': p});
+					var data = '';
+					req.on('data', function(chunk) { data += chunk; });
+					req.on('end', function() {
+						results[p] = data;
+						done++;
+						if (done === paths.length) {
+							session.close();
+							resolve(JSON.stringify(results));
+						}
+					});
+					req.end();
+				});
+			});
+			session.on('error', function(e) { reject(e); });
+		})
+	`, port))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	s, _ := v.GoString()
+
+	if !strings.Contains(s, `"/a":"/a"`) || !strings.Contains(s, `"/b":"/b"`) || !strings.Contains(s, `"/c":"/c"`) {
+		t.Fatalf("multiplexing failed: %s", s)
+	}
+}
