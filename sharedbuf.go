@@ -187,7 +187,13 @@ func sabAtomicWait(sb *sharedBuffer, byteOffset int, value int32, timeoutMs floa
 		return "ok"
 	case <-timer.C:
 		sb.removeWaiter(index, w)
-		return "timed-out"
+		// If notify signaled the channel concurrently, honor it.
+		select {
+		case <-w.ch:
+			return "ok"
+		default:
+			return "timed-out"
+		}
 	}
 }
 
@@ -209,6 +215,7 @@ func sabAtomicNotify(sb *sharedBuffer, byteOffset int, count int) int {
 		case ws[i].ch <- struct{}{}:
 		default:
 		}
+		ws[i] = nil // allow GC
 	}
 	sb.waiters[index] = ws[n:]
 	sb.waitMu.Unlock()
