@@ -1302,7 +1302,8 @@ func bundleESM(filename string, code []byte) ([]byte, error) {
 		"child_process", "fs", "path", "os", "net", "http", "https", "tls",
 		"stream", "events", "util", "buffer", "crypto", "url", "querystring",
 		"zlib", "string_decoder", "assert", "readline", "dns", "worker_threads",
-		"bun:sqlite", "node:*", "native:*",
+		"dgram", "module", "process", "tty", "timers", "timers/promises",
+		"perf_hooks", "bun:sqlite", "node:*", "native:*",
 	}
 
 	result := api.Build(api.BuildOptions{
@@ -2627,7 +2628,8 @@ func compileCmd(args []string) {
 		"child_process", "fs", "path", "os", "net", "http", "https", "tls",
 		"stream", "events", "util", "buffer", "crypto", "url", "querystring",
 		"zlib", "string_decoder", "assert", "readline", "dns", "worker_threads",
-		"bun:sqlite", "node:*", "native:*",
+		"dgram", "module", "process", "tty", "timers", "timers/promises",
+		"perf_hooks", "bun:sqlite", "node:*", "native:*",
 	}
 	buildOpts := api.BuildOptions{
 		EntryPoints: []string{absPath},

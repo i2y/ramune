@@ -2501,6 +2501,17 @@ func nodeCompatJSSource() string {
 	if (typeof globalThis.exports === 'undefined') {
 		globalThis.exports = globalThis.module.exports;
 	}
+
+	// module.createRequire — used by ESM-to-CJS interop in many npm packages
+	globalThis.module.createRequire = function(_filename) {
+		return globalThis.require;
+	};
+
+	// Also register 'module' as a requireable module
+	_modules['module'] = {
+		createRequire: globalThis.module.createRequire,
+		Module: { createRequire: globalThis.module.createRequire }
+	};
 })();
 `
 	src = strings.Replace(src, "__PLATFORM__", guessPlatform(), 1)

@@ -188,7 +188,9 @@ func installPackages(dir string, pkgs []string) error {
 var nodeBuiltins = []string{
 	"child_process", "fs", "path", "os", "net", "http", "https", "tls",
 	"stream", "events", "util", "buffer", "crypto", "url", "querystring",
-	"zlib", "string_decoder", "assert", "node:*",
+	"zlib", "string_decoder", "assert", "readline", "dns", "worker_threads",
+	"dgram", "module", "process", "tty", "timers", "timers/promises",
+	"perf_hooks", "node:*",
 }
 
 func bundlePackages(dir string, pkgs []string, nodeCompat bool) (string, error) {
