@@ -235,6 +235,11 @@ func (r *Runtime) qjsLoop(ready chan<- error, cfg *config) {
 			ready <- fmt.Errorf("ramune: webview: %w", err)
 			return
 		}
+		if err := r.installCDP(); err != nil {
+			vm.Close()
+			ready <- fmt.Errorf("ramune: cdp: %w", err)
+			return
+		}
 		if err := r.installSQLite(); err != nil {
 			vm.Close()
 			ready <- fmt.Errorf("ramune: sqlite: %w", err)

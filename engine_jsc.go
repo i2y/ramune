@@ -473,6 +473,11 @@ func (r *Runtime) jscLoop(cfg config, initErr chan<- error) {
 			initErr <- fmt.Errorf("ramune: failed to install WebView: %w", err)
 			return
 		}
+		if err := r.installCDP(); err != nil {
+			releaseCtx()
+			initErr <- fmt.Errorf("ramune: failed to install CDP: %w", err)
+			return
+		}
 		if err := r.installSQLite(); err != nil {
 			releaseCtx()
 			initErr <- fmt.Errorf("ramune: failed to install bun:sqlite: %w", err)
