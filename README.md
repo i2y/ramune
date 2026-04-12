@@ -738,15 +738,60 @@ Linux does not need JIT setup.
 | fs | 90% (async + sync + watch) | | os | 85% |
 | child_process | 80% | | events | 85% |
 | crypto | 85% (+ crypto.subtle) | | url | 80% |
-| stream | 70% | | Buffer | 90% |
-| http/https | 70% | | assert | 80% |
-| net/tls | 70% (+ net.createServer) | | dns | basic |
-| worker_threads | 75% (+ SharedArrayBuffer) | | readline | 70% |
-| vm | 70% | | querystring | 80% |
-| timers/promises | 70% | | perf_hooks | basic |
-| util | 80% (types, promisify, format, debuglog) | | process | 85% (stdin, signals, exit, env, tty) |
-| tty | 70% (isatty, WriteStream) | | dgram | 70% (UDP) |
-| async_hooks | basic (AsyncLocalStorage) | | module | basic (createRequire) |
+| stream | 85% (class extends, asyncIterator, backpressure, cork/uncork) | | Buffer | 90% |
+| http/https | 80% (createServer with streaming response) | | assert | 80% |
+| http2 | 75% (connect, createServer, trailers, multiplexing) | | dns | basic |
+| net/tls | 70% (+ net.createServer) | | readline | 70% |
+| worker_threads | 80% (+ SharedArrayBuffer, Atomics.waitAsync) | | querystring | 80% |
+| vm | 70% | | perf_hooks | basic |
+| timers/promises | 70% | | process | 85% (stdin, signals, exit, env, tty) |
+| util | 80% (types, promisify, format, debuglog) | | tty | 70% (isatty, WriteStream) |
+| dgram | 70% (UDP) | | async_hooks | basic (AsyncLocalStorage) |
+| module | basic (createRequire) | | | |
+
+### Stream Classes
+
+Stream classes (`Readable`, `Writable`, `Duplex`, `Transform`, `PassThrough`) are ES6 classes that support `class extends`:
+
+```js
+const { Transform } = require('stream');
+
+class Upper extends Transform {
+  _transform(chunk, encoding, cb) {
+    this.push(String(chunk).toUpperCase());
+    cb();
+  }
+}
+```
+
+Key features: `Symbol.asyncIterator` (`for await...of`), backpressure-aware `pipe()`, `cork()`/`uncork()`, `unshift()`, `unpipe()`, `objectMode`, `readableFlowing`/`readableEnded`/`writableEnded`/`writableFinished` properties, `stream.pipeline()`, `stream.finished()`.
+
+`http.IncomingMessage` extends `Readable`, so request bodies support `pipe()`, `read()`, and `for await...of`.
+
+### HTTP/2
+
+```js
+const http2 = require('http2');
+
+// Client
+const session = http2.connect('http://localhost:8080');
+session.on('connect', () => {
+  const req = session.request({ ':method': 'POST', ':path': '/api' });
+  req.on('response', (headers) => { /* ... */ });
+  req.on('data', (chunk) => { /* ... */ });
+  req.on('trailers', (trailers) => { /* grpc-status, grpc-message */ });
+  req.end(body);
+});
+
+// Server (cleartext h2c)
+const server = http2.createServer((stream, headers) => {
+  stream.respond({ ':status': 200, 'content-type': 'text/plain' });
+  stream.end('hello');
+});
+server.listen(3000);
+```
+
+Supports `http2.connect()`, `createServer()`, `createSecureServer()`, stream multiplexing, trailers (for gRPC), and `http2.constants`.
 
 ## Web Platform APIs
 
@@ -765,7 +810,7 @@ Linux does not need JIT setup.
 | `URL` / `URLSearchParams` | Supported |
 | `WebSocket` | Supported (server-side via Ramune.serve) |
 | `performance.now` / `mark` / `measure` | Supported |
-| `SharedArrayBuffer` / `Atomics` | Supported (Go []byte backed, wait/notify, worker transfer) |
+| `SharedArrayBuffer` / `Atomics` | Supported (Go []byte backed, wait/notify/waitAsync, exact-N notify, worker transfer) |
 | `structuredClone` | Supported (circular refs, Map, Set, Date, RegExp, TypedArray) |
 | `setTimeout` / `setInterval` | Supported |
 | `navigator` | Supported (userAgent, platform, hardwareConcurrency) |
