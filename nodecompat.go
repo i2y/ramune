@@ -2503,14 +2503,11 @@ func nodeCompatJSSource() string {
 	}
 
 	// module.createRequire — used by ESM-to-CJS interop in many npm packages
-	globalThis.module.createRequire = function(_filename) {
-		return globalThis.require;
-	};
-
-	// Also register 'module' as a requireable module
+	var createRequire = function(_filename) { return globalThis.require; };
+	globalThis.module.createRequire = createRequire;
 	_modules['module'] = {
-		createRequire: globalThis.module.createRequire,
-		Module: { createRequire: globalThis.module.createRequire }
+		createRequire: createRequire,
+		Module: { createRequire: createRequire }
 	};
 })();
 `

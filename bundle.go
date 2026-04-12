@@ -183,9 +183,9 @@ func installPackages(dir string, pkgs []string) error {
 	return err
 }
 
-// nodeBuiltins lists Node.js built-in modules that are provided by the
+// NodeBuiltins lists Node.js built-in modules that are provided by the
 // NodeCompat polyfill layer and should be marked as external during bundling.
-var nodeBuiltins = []string{
+var NodeBuiltins = []string{
 	"child_process", "fs", "path", "os", "net", "http", "https", "tls",
 	"stream", "events", "util", "buffer", "crypto", "url", "querystring",
 	"zlib", "string_decoder", "assert", "readline", "dns", "worker_threads",
@@ -212,7 +212,7 @@ func bundlePackages(dir string, pkgs []string, nodeCompat bool) (string, error) 
 	var external []string
 	if nodeCompat {
 		platform = api.PlatformNode
-		external = nodeBuiltins
+		external = NodeBuiltins
 	}
 
 	result := api.Build(api.BuildOptions{

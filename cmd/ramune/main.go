@@ -1297,14 +1297,7 @@ func bundleESM(filename string, code []byte) ([]byte, error) {
 		os.WriteFile(entryPoint, code, 0o644)
 	}
 
-	// Node.js built-in modules that Ramune's NodeCompat provides.
-	external := []string{
-		"child_process", "fs", "path", "os", "net", "http", "https", "tls",
-		"stream", "events", "util", "buffer", "crypto", "url", "querystring",
-		"zlib", "string_decoder", "assert", "readline", "dns", "worker_threads",
-		"dgram", "module", "process", "tty", "timers", "timers/promises",
-		"perf_hooks", "bun:sqlite", "node:*", "native:*",
-	}
+	external := append(ramune.NodeBuiltins, "bun:sqlite", "native:*")
 
 	result := api.Build(api.BuildOptions{
 		EntryPoints: []string{entryPoint},
@@ -2624,13 +2617,7 @@ func compileCmd(args []string) {
 
 	// Bundle with esbuild.
 	absPath, _ := filepath.Abs(filename)
-	external := []string{
-		"child_process", "fs", "path", "os", "net", "http", "https", "tls",
-		"stream", "events", "util", "buffer", "crypto", "url", "querystring",
-		"zlib", "string_decoder", "assert", "readline", "dns", "worker_threads",
-		"dgram", "module", "process", "tty", "timers", "timers/promises",
-		"perf_hooks", "bun:sqlite", "node:*", "native:*",
-	}
+	external := append(ramune.NodeBuiltins, "bun:sqlite", "native:*")
 	buildOpts := api.BuildOptions{
 		EntryPoints: []string{absPath},
 		Bundle:      true,
