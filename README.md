@@ -534,6 +534,29 @@ Ramune provides its own API namespace. `Bun.*` is available as an alias for back
 | `bun:sqlite` | Supported (transactions, WAL, prepared stmt cache, pure Go) |
 | `Bun.*` | Alias for `Ramune.*` (partial Bun compatibility) |
 
+### WebView (Desktop)
+
+Open native desktop webview windows from JavaScript (macOS, via [glaze](https://github.com/nicois/glaze) + purego):
+
+```go
+// Go setup — must run on main thread (macOS requirement)
+ramune.InitWebViewMain()
+rt, _ := ramune.New(ramune.NodeCompat())
+done := make(chan struct{})
+go func() {
+    rt.Exec(`
+        var wv = new Ramune.WebView({ title: "My App", width: 800, height: 600 });
+        wv.navigate("https://example.com");
+        // or: wv.setHtml("<h1>Hello</h1>");
+    `)
+    rt.RunEventLoop()
+    close(done)
+}()
+ramune.DrainWebViewMain(done)
+```
+
+API: `navigate(url)`, `setHtml(html)`, `eval(js)`, `setTitle(title)`, `setSize(w, h)`, `init(js)`, `destroy()`, `onclose(fn)`.
+
 ### Console Output
 
 `console.log`/`error`/`warn` work out of the box in both CLI and library mode. Output goes to `os.Stdout`/`os.Stderr` by default. Use `WithStdout`/`WithStderr` to redirect:
