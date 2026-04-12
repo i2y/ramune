@@ -854,29 +854,68 @@ func nodeCompatJSSource() string {
 			super();
 			this._buffer = [];
 			this._ended = false;
-			this._flowing = false;
+			this._flowing = null;
+			this._readableEnded = false;
 			this.readable = true;
+			this.readableHighWaterMark = (opts && opts.highWaterMark) || 16384;
+			this.objectMode = !!(opts && opts.objectMode);
+			this._pipes = [];
+			this._destroyed = false;
 			if (opts && opts.read) this._read = opts.read;
+			if (opts && opts.destroy) this._destroy = opts.destroy;
+		}
+		get readableFlowing() { return this._flowing; }
+		get readableEnded() { return this._readableEnded; }
+		get readableLength() {
+			if (this.objectMode) return this._buffer.length;
+			var len = 0;
+			for (var i = 0; i < this._buffer.length; i++) {
+				var c = this._buffer[i];
+				len += typeof c === 'string' ? c.length : (c && c.length || 0);
+			}
+			return len;
 		}
 		_read() {}
 		push(chunk) {
 			if (chunk === null) {
 				this._ended = true;
-				this.emit('end');
+				this._readableEnded = true;
+				if (this._flowing !== false || this._buffer.length === 0) {
+					this.emit('end');
+				}
 				return false;
 			}
 			if (this._flowing) {
 				this.emit('data', chunk);
 			} else {
 				this._buffer.push(chunk);
+				this.emit('readable');
 			}
-			return true;
+			return this.readableLength < this.readableHighWaterMark;
 		}
 		read(size) {
-			if (this._buffer.length === 0) return null;
-			if (size === undefined) {
+			if (this._buffer.length === 0) {
+				if (this._ended && !this._readableEnded) {
+					this._readableEnded = true;
+					this.emit('end');
+				}
+				return null;
+			}
+			if (size === undefined || size === null || size === 0) {
+				if (this.objectMode) {
+					var item = this._buffer.shift();
+					if (this._buffer.length === 0 && this._ended) {
+						this._readableEnded = true;
+						setImmediate(this.emit.bind(this, 'end'));
+					}
+					return item;
+				}
 				var all = this._buffer.join('');
 				this._buffer = [];
+				if (this._ended) {
+					this._readableEnded = true;
+					setImmediate(this.emit.bind(this, 'end'));
+				}
 				return all;
 			}
 			var result = '';
@@ -885,17 +924,49 @@ func nodeCompatJSSource() string {
 			}
 			return result || null;
 		}
-		pipe(dest) {
+		unshift(chunk) {
+			if (chunk !== null && chunk !== undefined) {
+				this._buffer.unshift(chunk);
+			}
+		}
+		pipe(dest, opts) {
 			var self = this;
-			self.on('data', function(chunk) { dest.write(chunk); });
-			self.on('end', function() { dest.end(); });
+			self._pipes.push(dest);
+			function ondata(chunk) {
+				var ret = dest.write(chunk);
+				if (ret === false) self.pause();
+			}
+			function ondrain() { self.resume(); }
+			function onend() { if (!opts || opts.end !== false) dest.end(); }
+			function cleanup() {
+				dest.removeListener('drain', ondrain);
+				self.removeListener('data', ondata);
+				self.removeListener('end', onend);
+			}
+			self.on('data', ondata);
+			self.on('end', onend);
+			dest.on('drain', ondrain);
+			dest.on('close', cleanup);
 			self.resume();
+			dest.emit('pipe', self);
 			return dest;
+		}
+		unpipe(dest) {
+			if (dest) {
+				this._pipes = this._pipes.filter(function(d) { return d !== dest; });
+			} else {
+				this._pipes = [];
+			}
+			return this;
 		}
 		resume() {
 			this._flowing = true;
 			while (this._buffer.length > 0) {
 				this.emit('data', this._buffer.shift());
+			}
+			if (this._ended && !this._readableEnded) {
+				this._readableEnded = true;
+				this.emit('end');
 			}
 			this._read(0);
 			return this;
@@ -905,16 +976,55 @@ func nodeCompatJSSource() string {
 			return this;
 		}
 		setEncoding() { return this; }
-		destroy() {
+		destroy(err) {
+			if (this._destroyed) return this;
+			this._destroyed = true;
 			this._buffer = [];
 			this._ended = true;
-			this.emit('close');
+			var self = this;
+			if (this._destroy) {
+				this._destroy(err, function(e) {
+					if (e) self.emit('error', e);
+					self.emit('close');
+				});
+			} else {
+				if (err) this.emit('error', err);
+				this.emit('close');
+			}
 			return this;
 		}
 		on(event, fn) {
 			super.on(event, fn);
-			if (event === 'data' && !this._flowing) this.resume();
+			if (event === 'data' && this._flowing !== false) this.resume();
 			return this;
+		}
+		[Symbol.asyncIterator]() {
+			var self = this;
+			var ended = false;
+			var err = null;
+			var waiting = null;
+			self.on('error', function(e) { err = e; if (waiting) { waiting.reject(e); waiting = null; } });
+			self.on('end', function() { ended = true; if (waiting) { waiting.resolve({ value: undefined, done: true }); waiting = null; } });
+			return {
+				next: function() {
+					if (err) return Promise.reject(err);
+					var chunk = self.read();
+					if (chunk !== null) return Promise.resolve({ value: chunk, done: false });
+					if (ended || self._ended) return Promise.resolve({ value: undefined, done: true });
+					return new Promise(function(resolve, reject) {
+						waiting = { resolve: resolve, reject: reject };
+						function onData(c) {
+							self.removeListener('data', onData);
+							if (waiting) { waiting = null; resolve({ value: c, done: false }); }
+						}
+						self.on('data', onData);
+					});
+				},
+				return: function() {
+					self.destroy();
+					return Promise.resolve({ value: undefined, done: true });
+				}
+			};
 		}
 		static from(iter) {
 			var r = new Readable();
@@ -948,16 +1058,30 @@ func nodeCompatJSSource() string {
 			this._chunks = [];
 			this._finished = false;
 			this._writing = false;
+			this._ended = false;
+			this._destroyed = false;
+			this._corked = 0;
+			this._corkedChunks = [];
 			this.writable = true;
 			this.writableHighWaterMark = (opts && opts.highWaterMark) || 16384;
 			this.writableLength = 0;
 			if (opts && opts.write) this._write = opts.write;
+			if (opts && opts.writev) this._writev = opts.writev;
+			if (opts && opts.destroy) this.__destroyCb = opts.destroy;
+			if (opts && opts.final) this._final = opts.final;
+			this.objectMode = !!(opts && opts.objectMode);
 		}
+		get writableEnded() { return this._ended; }
+		get writableFinished() { return this._finished; }
 		_write(chunk, encoding, cb) { cb(); }
 		write(chunk, encoding, cb) {
 			if (typeof encoding === 'function') { cb = encoding; encoding = 'utf8'; }
+			if (this._corked > 0) {
+				this._corkedChunks.push({ chunk: chunk, encoding: encoding || 'utf8', cb: cb });
+				return false;
+			}
 			this._chunks.push(chunk);
-			var clen = typeof chunk === 'string' ? chunk.length : (chunk && chunk.length || 0);
+			var clen = this.objectMode ? 1 : (typeof chunk === 'string' ? chunk.length : (chunk && chunk.length || 0));
 			this.writableLength += clen;
 			var self = this;
 			this._writing = true;
@@ -970,18 +1094,51 @@ func nodeCompatJSSource() string {
 			});
 			return this.writableLength < this.writableHighWaterMark;
 		}
+		cork() { this._corked++; }
+		uncork() {
+			this._corked--;
+			if (this._corked <= 0) {
+				this._corked = 0;
+				var chunks = this._corkedChunks;
+				this._corkedChunks = [];
+				for (var i = 0; i < chunks.length; i++) {
+					this.write(chunks[i].chunk, chunks[i].encoding, chunks[i].cb);
+				}
+			}
+		}
 		end(chunk, encoding, cb) {
 			if (typeof chunk === 'function') { cb = chunk; chunk = undefined; }
 			if (typeof encoding === 'function') { cb = encoding; encoding = undefined; }
 			if (chunk !== undefined && chunk !== null) this.write(chunk, encoding);
-			this._finished = true;
-			this.emit('finish');
-			if (cb) cb();
+			this._ended = true;
+			var self = this;
+			function doFinish() {
+				self._finished = true;
+				self.emit('prefinish');
+				self.emit('finish');
+				if (cb) cb();
+			}
+			if (this._final) {
+				this._final(function(err) { if (err) self.emit('error', err); doFinish(); });
+			} else {
+				doFinish();
+			}
 			return this;
 		}
-		destroy() {
+		destroy(err) {
+			if (this._destroyed) return this;
+			this._destroyed = true;
 			this._finished = true;
-			this.emit('close');
+			var self = this;
+			if (this.__destroyCb) {
+				this.__destroyCb(err, function(e) {
+					if (e) self.emit('error', e);
+					self.emit('close');
+				});
+			} else {
+				if (err) this.emit('error', err);
+				this.emit('close');
+			}
 			return this;
 		}
 	}
@@ -992,10 +1149,17 @@ func nodeCompatJSSource() string {
 			this._chunks = [];
 			this._finished = false;
 			this._writing = false;
+			this._ended = false;
+			this._destroyed = false;
+			this._corked = 0;
+			this._corkedChunks = [];
 			this.writable = true;
 			this.writableHighWaterMark = (opts && opts.highWaterMark) || 16384;
 			this.writableLength = 0;
+			this.allowHalfOpen = opts && opts.allowHalfOpen !== undefined ? opts.allowHalfOpen : true;
 			if (opts && opts.write) this._write = opts.write;
+			if (opts && opts.writev) this._writev = opts.writev;
+			if (opts && opts.final) this._final = opts.final;
 		}
 	}
 	// Mixin Writable methods (ES6 class methods are non-enumerable, so use getOwnPropertyNames).
@@ -2255,7 +2419,7 @@ func nodeCompatJSSource() string {
 			createServer: function() { throw new Error('net.createServer is not supported in ramune'); }
 		},
 		'http': (function() {
-			class IncomingMessage extends EventEmitter {
+			class IncomingMessage extends Readable {
 				constructor(raw) {
 					super();
 					this.statusCode = raw.status;
@@ -2265,16 +2429,18 @@ func nodeCompatJSSource() string {
 					this.httpVersion = '1.1';
 					this.method = null;
 					this.url = '';
+					this.complete = false;
 				}
-				setEncoding() { return this; }
 				_deliver() {
 					var self = this;
 					if (self._body) {
 						var lines = self._body.match(/.{1,4096}/g) || [];
-						for (var i = 0; i < lines.length; i++) self.emit('data', lines[i]);
+						for (var i = 0; i < lines.length; i++) self.push(lines[i]);
 					}
-					self.emit('end');
+					self.push(null);
+					self.complete = true;
 				}
+				setTimeout(ms, cb) { if (cb) this.on('timeout', cb); return this; }
 			}
 
 			class ClientRequest extends EventEmitter {
@@ -2353,6 +2519,8 @@ func nodeCompatJSSource() string {
 										nodeRes.statusCode = 200;
 										nodeRes.statusMessage = 'OK';
 										nodeRes.headersSent = false;
+										nodeRes.writableEnded = false;
+										nodeRes.writableFinished = false;
 										nodeRes.writeHead = function(s, msg, h) {
 											if (typeof msg === 'object') { h = msg; msg = undefined; }
 											resStatus = s; this.statusCode = s;
@@ -2366,18 +2534,23 @@ func nodeCompatJSSource() string {
 										nodeRes.getHeaders = function() { var o = {}; for (var k in resHeaders) o[k] = resHeaders[k]; return o; };
 										nodeRes.hasHeader = function(k) { return k in resHeaders; };
 										nodeRes.removeHeader = function(k) { delete resHeaders[k]; };
+										nodeRes.cork = function() {};
+										nodeRes.uncork = function() {};
 										nodeRes.write = function(c) { nodeRes.headersSent = true; resBody += String(c); return true; };
 										nodeRes.end = function(d) {
 											if (d) resBody += String(d);
 											nodeRes.headersSent = true;
+											nodeRes.writableEnded = true;
+											nodeRes.writableFinished = true;
 											resolve(new Response(resBody, { status: resStatus, headers: resHeaders }));
+											nodeRes.emit('prefinish');
 											nodeRes.emit('finish');
 										};
 
 										self._handler(nodeReq, nodeRes);
 										var body = req._body || '';
-										if (body) { nodeReq.emit('data', body); }
-										nodeReq.emit('end');
+										if (body) { nodeReq.push(body); }
+										nodeReq.push(null);
 									});
 								}
 							});

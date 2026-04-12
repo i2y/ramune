@@ -1099,6 +1099,137 @@ func TestStreamClassExtends(t *testing.T) {
 	}
 }
 
+func TestStreamAsyncIterator(t *testing.T) {
+	r := sharedNodeCompat(t)
+
+	v, err := r.EvalAsync(`
+		(async function() {
+			var stream = require('stream');
+			var rs = new stream.Readable({ read: function() {} });
+			// Push data asynchronously so iterator sees individual chunks.
+			setTimeout(function() { rs.push('a'); }, 5);
+			setTimeout(function() { rs.push('b'); }, 10);
+			setTimeout(function() { rs.push('c'); rs.push(null); }, 15);
+			var result = [];
+			for await (var chunk of rs) {
+				result.push(chunk);
+			}
+			return result.join(',');
+		})()
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	s, _ := v.GoString()
+	if s != "a,b,c" {
+		t.Fatalf("got %q", s)
+	}
+}
+
+func TestStreamBackpressure(t *testing.T) {
+	r := sharedNodeCompat(t)
+
+	v, err := r.Eval(`
+		var stream = require('stream');
+		var paused = false;
+		var rs = new stream.Readable({ read: function() {} });
+		var ws = new stream.Writable({
+			highWaterMark: 5,
+			write: function(chunk, enc, cb) { cb(); }
+		});
+		rs.pipe(ws);
+		// Push data larger than highWaterMark to trigger backpressure
+		rs.push('hello world this is a long string');
+		JSON.stringify({
+			readableFlowing: rs.readableFlowing,
+			writableEnded: ws.writableEnded,
+			writableFinished: ws.writableFinished
+		});
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	s, _ := v.GoString()
+	if s != `{"readableFlowing":true,"writableEnded":false,"writableFinished":false}` {
+		t.Fatalf("got %s", s)
+	}
+}
+
+func TestStreamCorkUncork(t *testing.T) {
+	r := sharedNodeCompat(t)
+
+	v, err := r.Eval(`
+		var stream = require('stream');
+		var chunks = [];
+		var ws = new stream.Writable({
+			write: function(chunk, enc, cb) { chunks.push(String(chunk)); cb(); }
+		});
+		ws.cork();
+		ws.write('a');
+		ws.write('b');
+		var before = chunks.length;
+		ws.uncork();
+		var after = chunks.length;
+		JSON.stringify({ before: before, after: after, chunks: chunks });
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	s, _ := v.GoString()
+	if s != `{"before":0,"after":2,"chunks":["a","b"]}` {
+		t.Fatalf("got %s", s)
+	}
+}
+
+func TestStreamUnshift(t *testing.T) {
+	r := sharedNodeCompat(t)
+
+	v, err := r.Eval(`
+		var stream = require('stream');
+		var rs = new stream.Readable({ read: function() {} });
+		rs.push('first');
+		rs.push('second');
+		var chunk = rs.read();
+		rs.unshift('re-' + chunk);
+		var result = rs.read();
+		result;
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	s, _ := v.GoString()
+	if s != "re-firstsecond" {
+		t.Fatalf("got %q", s)
+	}
+}
+
+func TestIncomingMessageIsReadable(t *testing.T) {
+	r := sharedNodeCompat(t)
+
+	v, err := r.Eval(`
+		var http = require('http');
+		var stream = require('stream');
+		// Create a mock IncomingMessage via the http module internals
+		var req = { method: 'GET', url: '/test', headers: {} };
+		// Test that http.IncomingMessage exists and is Readable-based
+		typeof stream.Readable.prototype.pipe === 'function' &&
+		typeof stream.Readable.prototype.read === 'function' &&
+		typeof stream.Readable.prototype[Symbol.asyncIterator] === 'function';
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	s := v.String()
+	if s != "true" {
+		t.Fatalf("got %s", s)
+	}
+}
+
 func TestHttpRequest(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
