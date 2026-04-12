@@ -402,7 +402,10 @@ func asyncSpawnJSSource() string {
 		try {
 			pid = __go_async_spawn(cmd, argsJSON, optsJSON);
 		} catch(e) {
-			// Fall back to sync spawn if async spawn fails.
+			// Fall back to deferred sync spawn if async spawn fails.
+			if (typeof console !== 'undefined' && console.error) {
+				console.error('[ramune] async spawn failed for ' + cmd + ': ' + e.message + ', falling back to sync');
+			}
 			return origSpawn(cmd, args, opts);
 		}
 
