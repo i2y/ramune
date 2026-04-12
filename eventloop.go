@@ -77,6 +77,9 @@ func (r *Runtime) tickManagers() {
 	if r.workerMgr != nil {
 		r.workerMgr.processEvents(r)
 	}
+	if r.http2Mgr != nil {
+		r.http2Mgr.processEvents(r)
+	}
 	// Process fetch events before stream events so ReadableStream
 	// controllers are registered before chunks arrive.
 	if r.fetchMgr != nil {
@@ -480,6 +483,10 @@ func (r *Runtime) hasPendingLocked() bool {
 	}
 	// Check for active workers.
 	if r.workerMgr != nil && r.workerMgr.hasActive() {
+		return true
+	}
+	// Check for active HTTP/2 sessions.
+	if r.http2Mgr != nil && r.http2Mgr.hasActive() {
 		return true
 	}
 	// Check for pending async fs operations.

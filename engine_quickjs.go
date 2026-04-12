@@ -43,6 +43,7 @@ type Runtime struct {
 	udpMgr          *udpManager
 	webviewMgr      *webviewManager
 	workerMgr       *workerManager
+	http2Mgr        *http2Manager
 	sqliteMgr       *sqliteManager
 	streamMgr       *streamManager
 	fetchMgr        *fetchManager
@@ -183,6 +184,11 @@ func (r *Runtime) qjsLoop(ready chan<- error, cfg *config) {
 		if err := r.installWorkerThreads(); err != nil {
 			vm.Close()
 			ready <- fmt.Errorf("ramune: worker_threads: %w", err)
+			return
+		}
+		if err := r.installHTTP2(); err != nil {
+			vm.Close()
+			ready <- fmt.Errorf("ramune: http2: %w", err)
 			return
 		}
 		if err := r.installSharedArrayBuffer(); err != nil {
@@ -357,6 +363,9 @@ func (r *Runtime) Close() error {
 		}
 		if r.udpMgr != nil {
 			r.udpMgr.closeAll()
+		}
+		if r.http2Mgr != nil {
+			r.http2Mgr.closeAll()
 		}
 		if r.webviewMgr != nil {
 			r.webviewMgr.closeAll()

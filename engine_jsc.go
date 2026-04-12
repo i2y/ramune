@@ -189,6 +189,7 @@ type Runtime struct {
 	udpMgr          *udpManager         // UDP/dgram manager
 	webviewMgr      *webviewManager     // WebView manager
 	workerMgr       *workerManager      // worker threads manager
+	http2Mgr        *http2Manager       // HTTP/2 session manager
 	sqliteMgr       *sqliteManager      // bun:sqlite database manager
 	streamMgr       *streamManager      // bidirectional stream bridge
 	fetchMgr        *fetchManager       // streaming fetch request manager
@@ -423,6 +424,11 @@ func (r *Runtime) jscLoop(cfg config, initErr chan<- error) {
 			initErr <- fmt.Errorf("ramune: failed to install worker_threads: %w", err)
 			return
 		}
+		if err := r.installHTTP2(); err != nil {
+			releaseCtx()
+			initErr <- fmt.Errorf("ramune: failed to install http2: %w", err)
+			return
+		}
 		if err := r.installSharedArrayBuffer(); err != nil {
 			releaseCtx()
 			initErr <- fmt.Errorf("ramune: failed to install SharedArrayBuffer: %w", err)
@@ -579,6 +585,9 @@ func (r *Runtime) Close() error {
 		}
 		if r.udpMgr != nil {
 			r.udpMgr.closeAll()
+		}
+		if r.http2Mgr != nil {
+			r.http2Mgr.closeAll()
 		}
 		if r.webviewMgr != nil {
 			r.webviewMgr.closeAll()
