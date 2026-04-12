@@ -48,9 +48,10 @@ type h2Stream struct {
 	pipeR  *io.PipeReader
 	resp   *http.Response
 	// server-side
-	serverReq  *http.Request
-	serverW    http.ResponseWriter
-	serverDone chan struct{}
+	serverReq      *http.Request
+	serverW        http.ResponseWriter
+	serverDone     chan struct{}
+	serverDoneOnce sync.Once
 }
 
 // h2Session represents one HTTP/2 connection (client or server).
@@ -98,6 +99,17 @@ func (m *http2Manager) closeAll() {
 	for id, sess := range m.sessions {
 		sess.mu.Lock()
 		sess.closed = true
+		for _, st := range sess.streams {
+			if st.pipeW != nil {
+				st.pipeW.Close()
+			}
+			if st.pipeR != nil {
+				st.pipeR.Close()
+			}
+			if st.serverDone != nil {
+				st.serverDoneOnce.Do(func() { close(st.serverDone) })
+			}
+		}
 		if sess.rawConn != nil {
 			sess.rawConn.Close()
 		}
@@ -110,6 +122,23 @@ func (m *http2Manager) closeAll() {
 		sess.mu.Unlock()
 		delete(m.sessions, id)
 	}
+}
+
+// getStream looks up a session and stream by ID.
+func (m *http2Manager) getStream(sessID, streamID int) (*h2Stream, error) {
+	m.mu.Lock()
+	sess, ok := m.sessions[sessID]
+	m.mu.Unlock()
+	if !ok {
+		return nil, fmt.Errorf("h2: session %d not found", sessID)
+	}
+	sess.mu.Lock()
+	st, ok := sess.streams[streamID]
+	sess.mu.Unlock()
+	if !ok {
+		return nil, fmt.Errorf("h2: stream %d not found", streamID)
+	}
+	return st, nil
 }
 
 func (m *http2Manager) processEvents(r *Runtime) {
@@ -138,10 +167,12 @@ func (m *http2Manager) processEvents(r *Runtime) {
 			se.events = sess.events
 			sess.events = nil
 		}
-		se.streamEvents = make(map[int][]h2Event)
 		for _, st := range sess.streams {
 			st.mu.Lock()
 			if len(st.events) > 0 {
+				if se.streamEvents == nil {
+					se.streamEvents = make(map[int][]h2Event)
+				}
 				se.streamEvents[st.id] = st.events
 				st.events = nil
 			}
@@ -201,7 +232,7 @@ func (m *http2Manager) allocStreamID() int {
 }
 
 // goH2Connect implements http2.connect(authority, optsJSON) → sessionID.
-func goH2Connect(m *http2Manager) func(args []any) (any, error) {
+func goH2Connect(m *http2Manager) GoFunc {
 	return func(args []any) (any, error) {
 		if len(args) < 1 {
 			return nil, fmt.Errorf("http2.connect: authority required")
@@ -312,7 +343,7 @@ func goH2Connect(m *http2Manager) func(args []any) (any, error) {
 }
 
 // goH2Request implements session.request(headers) → streamID.
-func goH2Request(m *http2Manager) func(args []any) (any, error) {
+func goH2Request(m *http2Manager) GoFunc {
 	return func(args []any) (any, error) {
 		if len(args) < 2 {
 			return nil, fmt.Errorf("h2 request: sessionId and headersJSON required")
@@ -388,9 +419,6 @@ func goH2Request(m *http2Manager) func(args []any) (any, error) {
 				req.Header.Set(k, v)
 			}
 		}
-		// Announce trailers if needed.
-		req.Trailer = make(http.Header)
-
 		go func() {
 			resp, err := h2cc.RoundTrip(req)
 			if err != nil {
@@ -403,6 +431,7 @@ func goH2Request(m *http2Manager) func(args []any) (any, error) {
 				}
 				return
 			}
+			defer resp.Body.Close()
 
 			// Deliver response headers.
 			respHeaders := make(map[string]string)
@@ -464,32 +493,18 @@ func goH2Request(m *http2Manager) func(args []any) (any, error) {
 }
 
 // goH2StreamWrite writes data to an HTTP/2 stream's request body.
-func goH2StreamWrite(m *http2Manager) func(args []any) (any, error) {
+func goH2StreamWrite(m *http2Manager) GoFunc {
 	return func(args []any) (any, error) {
 		if len(args) < 3 {
 			return nil, fmt.Errorf("h2 stream write: sessionId, streamId, data required")
 		}
-		sessID := int(args[0].(float64))
-		streamID := int(args[1].(float64))
+		st, err := m.getStream(int(args[0].(float64)), int(args[1].(float64)))
+		if err != nil {
+			return nil, err
+		}
 		data, _ := args[2].(string)
-
-		m.mu.Lock()
-		sess, ok := m.sessions[sessID]
-		m.mu.Unlock()
-		if !ok {
-			return nil, fmt.Errorf("h2 stream write: session %d not found", sessID)
-		}
-
-		sess.mu.Lock()
-		st, ok := sess.streams[streamID]
-		sess.mu.Unlock()
-		if !ok {
-			return nil, fmt.Errorf("h2 stream write: stream %d not found", streamID)
-		}
-
 		if st.pipeW != nil {
-			_, err := st.pipeW.Write([]byte(data))
-			if err != nil {
+			if _, err := st.pipeW.Write([]byte(data)); err != nil {
 				return nil, err
 			}
 		}
@@ -498,28 +513,15 @@ func goH2StreamWrite(m *http2Manager) func(args []any) (any, error) {
 }
 
 // goH2StreamEnd closes the write side of an HTTP/2 stream.
-func goH2StreamEnd(m *http2Manager) func(args []any) (any, error) {
+func goH2StreamEnd(m *http2Manager) GoFunc {
 	return func(args []any) (any, error) {
 		if len(args) < 2 {
 			return nil, fmt.Errorf("h2 stream end: sessionId, streamId required")
 		}
-		sessID := int(args[0].(float64))
-		streamID := int(args[1].(float64))
-
-		m.mu.Lock()
-		sess, ok := m.sessions[sessID]
-		m.mu.Unlock()
-		if !ok {
-			return nil, fmt.Errorf("h2 stream end: session %d not found", sessID)
+		st, err := m.getStream(int(args[0].(float64)), int(args[1].(float64)))
+		if err != nil {
+			return nil, err
 		}
-
-		sess.mu.Lock()
-		st, ok := sess.streams[streamID]
-		sess.mu.Unlock()
-		if !ok {
-			return nil, fmt.Errorf("h2 stream end: stream %d not found", streamID)
-		}
-
 		if st.pipeW != nil {
 			st.pipeW.Close()
 		}
@@ -528,7 +530,7 @@ func goH2StreamEnd(m *http2Manager) func(args []any) (any, error) {
 }
 
 // goH2SessionClose closes an HTTP/2 session.
-func goH2SessionClose(m *http2Manager) func(args []any) (any, error) {
+func goH2SessionClose(m *http2Manager) GoFunc {
 	return func(args []any) (any, error) {
 		if len(args) < 1 {
 			return nil, fmt.Errorf("h2 session close: sessionId required")
@@ -556,10 +558,15 @@ func goH2SessionClose(m *http2Manager) func(args []any) (any, error) {
 		if sess.server != nil {
 			sess.server.Close()
 		}
-		// Close all streams.
 		for _, st := range sess.streams {
 			if st.pipeW != nil {
 				st.pipeW.Close()
+			}
+			if st.pipeR != nil {
+				st.pipeR.Close()
+			}
+			if st.serverDone != nil {
+				st.serverDoneOnce.Do(func() { close(st.serverDone) })
 			}
 		}
 		sess.mu.Unlock()
@@ -568,7 +575,7 @@ func goH2SessionClose(m *http2Manager) func(args []any) (any, error) {
 }
 
 // goH2CreateServer creates an HTTP/2 server.
-func goH2CreateServer(m *http2Manager, useTLS bool) func(args []any) (any, error) {
+func goH2CreateServer(m *http2Manager, useTLS bool) GoFunc {
 	return func(args []any) (any, error) {
 		if len(args) < 1 {
 			return nil, fmt.Errorf("h2 createServer: optsJSON required")
@@ -723,32 +730,20 @@ func goH2CreateServer(m *http2Manager, useTLS bool) func(args []any) (any, error
 }
 
 // goH2StreamRespond sends response headers on a server stream.
-func goH2StreamRespond(m *http2Manager) func(args []any) (any, error) {
+func goH2StreamRespond(m *http2Manager) GoFunc {
 	return func(args []any) (any, error) {
 		if len(args) < 3 {
 			return nil, fmt.Errorf("h2 respond: sessionId, streamId, headersJSON required")
 		}
-		sessID := int(args[0].(float64))
-		streamID := int(args[1].(float64))
+		st, err := m.getStream(int(args[0].(float64)), int(args[1].(float64)))
+		if err != nil {
+			return nil, err
+		}
 		headersJSON, _ := args[2].(string)
 
 		var headers map[string]string
 		if err := json.Unmarshal([]byte(headersJSON), &headers); err != nil {
 			return nil, fmt.Errorf("h2 respond: invalid headers: %w", err)
-		}
-
-		m.mu.Lock()
-		sess, ok := m.sessions[sessID]
-		m.mu.Unlock()
-		if !ok {
-			return nil, fmt.Errorf("h2 respond: session %d not found", sessID)
-		}
-
-		sess.mu.Lock()
-		st, ok := sess.streams[streamID]
-		sess.mu.Unlock()
-		if !ok {
-			return nil, fmt.Errorf("h2 respond: stream %d not found", streamID)
 		}
 
 		if st.serverW == nil {
@@ -777,31 +772,17 @@ func goH2StreamRespond(m *http2Manager) func(args []any) (any, error) {
 }
 
 // goH2ServerStreamWrite writes data to a server stream response.
-func goH2ServerStreamWrite(m *http2Manager) func(args []any) (any, error) {
+func goH2ServerStreamWrite(m *http2Manager) GoFunc {
 	return func(args []any) (any, error) {
 		if len(args) < 3 {
 			return nil, fmt.Errorf("h2 server write: sessionId, streamId, data required")
 		}
-		sessID := int(args[0].(float64))
-		streamID := int(args[1].(float64))
-		data, _ := args[2].(string)
-
-		m.mu.Lock()
-		sess, ok := m.sessions[sessID]
-		m.mu.Unlock()
-		if !ok {
-			return nil, fmt.Errorf("h2 server write: session %d not found", sessID)
+		st, err := m.getStream(int(args[0].(float64)), int(args[1].(float64)))
+		if err != nil {
+			return nil, err
 		}
-
-		sess.mu.Lock()
-		st, ok := sess.streams[streamID]
-		sess.mu.Unlock()
-		if !ok {
-			return nil, fmt.Errorf("h2 server write: stream %d not found", streamID)
-		}
-
 		if st.serverW != nil {
-			st.serverW.Write([]byte(data))
+			st.serverW.Write([]byte(args[2].(string)))
 			if f, ok := st.serverW.(http.Flusher); ok {
 				f.Flush()
 			}
@@ -811,68 +792,41 @@ func goH2ServerStreamWrite(m *http2Manager) func(args []any) (any, error) {
 }
 
 // goH2ServerStreamEnd ends a server stream.
-func goH2ServerStreamEnd(m *http2Manager) func(args []any) (any, error) {
+func goH2ServerStreamEnd(m *http2Manager) GoFunc {
 	return func(args []any) (any, error) {
 		if len(args) < 2 {
 			return nil, fmt.Errorf("h2 server end: sessionId, streamId required")
 		}
-		sessID := int(args[0].(float64))
-		streamID := int(args[1].(float64))
-
-		m.mu.Lock()
-		sess, ok := m.sessions[sessID]
-		m.mu.Unlock()
-		if !ok {
+		st, err := m.getStream(int(args[0].(float64)), int(args[1].(float64)))
+		if err != nil {
 			return nil, nil
 		}
-
-		sess.mu.Lock()
-		st, ok := sess.streams[streamID]
-		sess.mu.Unlock()
-		if !ok {
-			return nil, nil
-		}
-
-		if st.serverDone != nil {
-			close(st.serverDone)
-		}
-
 		st.mu.Lock()
 		st.closed = true
 		st.mu.Unlock()
+		if st.serverDone != nil {
+			st.serverDoneOnce.Do(func() { close(st.serverDone) })
+		}
 		return nil, nil
 	}
 }
 
 // goH2SendTrailers sends trailing headers on a server stream.
-func goH2SendTrailers(m *http2Manager) func(args []any) (any, error) {
+func goH2SendTrailers(m *http2Manager) GoFunc {
 	return func(args []any) (any, error) {
 		if len(args) < 3 {
 			return nil, fmt.Errorf("h2 sendTrailers: sessionId, streamId, headersJSON required")
 		}
-		sessID := int(args[0].(float64))
-		streamID := int(args[1].(float64))
+		st, err := m.getStream(int(args[0].(float64)), int(args[1].(float64)))
+		if err != nil {
+			return nil, nil
+		}
 		headersJSON, _ := args[2].(string)
 
 		var trailers map[string]string
 		if err := json.Unmarshal([]byte(headersJSON), &trailers); err != nil {
 			return nil, fmt.Errorf("h2 sendTrailers: invalid headers: %w", err)
 		}
-
-		m.mu.Lock()
-		sess, ok := m.sessions[sessID]
-		m.mu.Unlock()
-		if !ok {
-			return nil, nil
-		}
-
-		sess.mu.Lock()
-		st, ok := sess.streams[streamID]
-		sess.mu.Unlock()
-		if !ok {
-			return nil, nil
-		}
-
 		if st.serverW != nil {
 			for k, v := range trailers {
 				st.serverW.Header().Set(http.TrailerPrefix+k, v)
@@ -889,7 +843,7 @@ func (r *Runtime) installHTTP2() error {
 	m.wakeFn = r.Wake
 	r.http2Mgr = m
 
-	for name, fn := range map[string]func([]any) (any, error){
+	for name, fn := range map[string]GoFunc{
 		"__go_h2_connect":              goH2Connect(m),
 		"__go_h2_request":              goH2Request(m),
 		"__go_h2_stream_write":         goH2StreamWrite(m),
@@ -1127,7 +1081,24 @@ func http2JSSource() string {
 		}
 	};
 
-	// --- http2 module API ---
+	function _createServerSession(goFn, opts, handler) {
+		if (typeof opts === 'function') { handler = opts; opts = {}; }
+		opts = opts || {};
+		var result = JSON.parse(goFn(JSON.stringify(opts)));
+		var session = new ServerHttp2Session(result.sessionId);
+		session._port = result.port;
+		__activeSessions[String(result.sessionId)] = session;
+		if (typeof handler === 'function') session.on('stream', handler);
+		session.listen = function(port, host, cb) {
+			if (typeof host === 'function') { cb = host; host = undefined; }
+			if (typeof cb === 'function') cb();
+			return session;
+		};
+		session.address = function() { return { port: session._port, family: 'IPv4', address: opts.host || '0.0.0.0' }; };
+		session.close = function(cb) { Http2Session.prototype.close.call(session, cb); };
+		return session;
+	}
+
 	var http2Module = {
 		connect: function(authority, opts, cb) {
 			if (typeof opts === 'function') { cb = opts; opts = undefined; }
@@ -1139,42 +1110,10 @@ func http2JSSource() string {
 			return session;
 		},
 		createServer: function(opts, handler) {
-			if (typeof opts === 'function') { handler = opts; opts = {}; }
-			opts = opts || {};
-			var result = JSON.parse(__go_h2_create_server(JSON.stringify(opts)));
-			var session = new ServerHttp2Session(result.sessionId);
-			session._port = result.port;
-			__activeSessions[String(result.sessionId)] = session;
-			if (typeof handler === 'function') session.on('stream', handler);
-			session.listen = function(port, host, cb) {
-				if (typeof host === 'function') { cb = host; host = undefined; }
-				if (typeof cb === 'function') cb();
-				return session;
-			};
-			session.address = function() { return { port: session._port, family: 'IPv4', address: opts.host || '0.0.0.0' }; };
-			session.close = function(cb) {
-				Http2Session.prototype.close.call(session, cb);
-			};
-			return session;
+			return _createServerSession(__go_h2_create_server, opts, handler);
 		},
 		createSecureServer: function(opts, handler) {
-			if (typeof opts === 'function') { handler = opts; opts = {}; }
-			opts = opts || {};
-			var result = JSON.parse(__go_h2_create_secure_server(JSON.stringify(opts)));
-			var session = new ServerHttp2Session(result.sessionId);
-			session._port = result.port;
-			__activeSessions[String(result.sessionId)] = session;
-			if (typeof handler === 'function') session.on('stream', handler);
-			session.listen = function(port, host, cb) {
-				if (typeof host === 'function') { cb = host; host = undefined; }
-				if (typeof cb === 'function') cb();
-				return session;
-			};
-			session.address = function() { return { port: session._port, family: 'IPv4', address: opts.host || '0.0.0.0' }; };
-			session.close = function(cb) {
-				Http2Session.prototype.close.call(session, cb);
-			};
-			return session;
+			return _createServerSession(__go_h2_create_secure_server, opts, handler);
 		},
 		constants: {
 			NGHTTP2_SESSION_SERVER: 0,
