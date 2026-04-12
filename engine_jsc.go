@@ -522,11 +522,15 @@ func (r *Runtime) jscLoop(cfg config, initErr chan<- error) {
 
 	// If Dependencies were specified, bundle and evaluate them.
 	if len(cfg.dependencies) > 0 {
-		bundle, err := ensureBundle(cfg.dependencies, cfg.nodeCompat)
+		bundle, nodeModulesDir, err := ensureBundle(cfg.dependencies, cfg.nodeCompat)
 		if err != nil {
 			releaseCtx()
 			initErr <- err
 			return
+		}
+		if nodeModulesDir != "" {
+			r.execLocked(fmt.Sprintf("globalThis.__nodeModulesDir = %q;", nodeModulesDir))
+			r.execLocked(fmt.Sprintf("if (globalThis.process && globalThis.process.env) { globalThis.process.env.PATH = %q + ':' + (globalThis.process.env.PATH || ''); }", nodeModulesDir+"/.bin"))
 		}
 		if err := r.execLocked(bundle); err != nil {
 			releaseCtx()

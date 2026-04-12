@@ -2480,7 +2480,34 @@ func nodeCompatJSSource() string {
 		if (globalThis[varName]) return globalThis[varName];
 		return {};
 	};
-	globalThis.require.resolve = function(mod) { return mod; };
+	globalThis.require.resolve = function(mod) {
+		if (globalThis.__nodeModulesDir) {
+			var resolved = globalThis.__nodeModulesDir + '/' + mod;
+			if (__go_file_exists(resolved)) return resolved;
+			var exts = ['.js', '.json', '.node'];
+			for (var i = 0; i < exts.length; i++) {
+				var p = resolved + exts[i];
+				if (__go_file_exists(p)) return p;
+			}
+			// Try package.json main/bin field.
+			var pkgPath = resolved + '/package.json';
+			if (__go_file_exists(pkgPath)) {
+				try {
+					var pkg = JSON.parse(__go_read_file(pkgPath));
+					if (pkg.main) {
+						var mainPath = resolved + '/' + pkg.main;
+						if (__go_file_exists(mainPath)) return mainPath;
+					}
+					if (pkg.bin) {
+						if (typeof pkg.bin === 'string') return resolved + '/' + pkg.bin;
+						var binKeys = Object.keys(pkg.bin);
+						if (binKeys.length > 0) return resolved + '/' + pkg.bin[binKeys[0]];
+					}
+				} catch(e) {}
+			}
+		}
+		throw new Error("Cannot find module '" + mod + "'");
+	};
 	// Expose _modules so later-installed modules (e.g. bun:sqlite) can register.
 	globalThis.require._modules = _modules;
 
@@ -2503,7 +2530,52 @@ func nodeCompatJSSource() string {
 	}
 
 	// module.createRequire — used by ESM-to-CJS interop in many npm packages
-	var createRequire = function(_filename) { return globalThis.require; };
+	var createRequire = function(filename) {
+		var dir = '';
+		if (filename) {
+			var idx = String(filename).lastIndexOf('/');
+			dir = idx >= 0 ? String(filename).substring(0, idx) : '.';
+		}
+		var cr = function(mod) { return globalThis.require(mod); };
+		cr.resolve = function(mod) {
+			// Relative path: resolve from dir first
+			if (mod.charAt(0) === '.') {
+				var rel = dir + '/' + mod;
+				if (__go_file_exists(rel)) return rel;
+				var exts = ['.js', '.json', '.node'];
+				for (var i = 0; i < exts.length; i++) {
+					if (__go_file_exists(rel + exts[i])) return rel + exts[i];
+				}
+				// Fallback: search __nodeModulesDir packages for the relative file.
+				// Needed when import.meta.url is unavailable in bundled IIFE code.
+				if (globalThis.__nodeModulesDir) {
+					var base = mod.replace(/^\.\//, '');
+					try {
+						var entries = JSON.parse(__go_readdir(globalThis.__nodeModulesDir, 'false'));
+						for (var e = 0; e < entries.length; e++) {
+							var entry = entries[e];
+							if (entry.charAt(0) === '@') {
+								try {
+									var scoped = JSON.parse(__go_readdir(globalThis.__nodeModulesDir + '/' + entry, 'false'));
+									for (var s = 0; s < scoped.length; s++) {
+										var candidate = globalThis.__nodeModulesDir + '/' + entry + '/' + scoped[s] + '/' + base;
+										if (__go_file_exists(candidate)) return candidate;
+									}
+								} catch(ex) {}
+							} else {
+								var candidate = globalThis.__nodeModulesDir + '/' + entry + '/' + base;
+								if (__go_file_exists(candidate)) return candidate;
+							}
+						}
+					} catch(ex) {}
+				}
+				throw new Error("Cannot find module '" + mod + "'");
+			}
+			return globalThis.require.resolve(mod);
+		};
+		cr.resolve.paths = function() { return null; };
+		return cr;
+	};
 	globalThis.module.createRequire = createRequire;
 	_modules['module'] = {
 		createRequire: createRequire,

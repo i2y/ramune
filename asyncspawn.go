@@ -46,7 +46,17 @@ func newProcessManager() *processManager {
 }
 
 // spawnProcess starts a new async subprocess.
+// If the command is `node` running a JS file, it uses ramune's own engine.
 func (pm *processManager) spawnProcess(command string, args []string, cwd string, env map[string]string) (int, error) {
+	// Intercept `node` commands — try running in ramune first, fall back to exec
+	if scriptPath, scriptArgs, ok := isNodeCommand(command, args); ok {
+		id, err := pm.spawnNodeInProcess(scriptPath, scriptArgs, cwd, env)
+		if err == nil {
+			return id, nil
+		}
+		// Fall back to external node
+	}
+
 	cmd := exec.Command(command, args...)
 	if cwd != "" {
 		cmd.Dir = cwd
@@ -217,6 +227,89 @@ func (pm *processManager) hasActive() bool {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 	return len(pm.processes) > 0
+}
+
+// spawnNodeInProcess runs a node script using ramune's engine instead of exec.
+func (pm *processManager) spawnNodeInProcess(scriptPath string, scriptArgs []string, cwd string, env map[string]string) (int, error) {
+	nr, err := spawnNodeRunner(scriptPath, scriptArgs, cwd, env)
+	if err != nil {
+		return 0, fmt.Errorf("node runner: %w", err)
+	}
+
+	proc := &asyncProcess{
+		stdin:  nr.stdin,
+		stdout: nr.stdout,
+		stderr: nr.stderr,
+	}
+
+	pm.mu.Lock()
+	id := pm.nextID
+	pm.nextID++
+	pm.processes[id] = proc
+	pm.mu.Unlock()
+
+	var ioWg sync.WaitGroup
+	ioWg.Add(2)
+
+	go func() {
+		defer ioWg.Done()
+		scanner := bufio.NewScanner(nr.stdout)
+		scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+		for scanner.Scan() {
+			line := scanner.Text()
+			proc.mu.Lock()
+			proc.events = append(proc.events, processEvent{Kind: "stdout", Data: line + "\n"})
+			proc.mu.Unlock()
+			if pm.wakeFn != nil {
+				pm.wakeFn()
+			}
+		}
+	}()
+
+	go func() {
+		defer ioWg.Done()
+		scanner := bufio.NewScanner(nr.stderr)
+		for scanner.Scan() {
+			line := scanner.Text()
+			proc.mu.Lock()
+			proc.events = append(proc.events, processEvent{Kind: "stderr", Data: line + "\n"})
+			proc.mu.Unlock()
+			if pm.wakeFn != nil {
+				pm.wakeFn()
+			}
+		}
+	}()
+
+	// Wait for the node runner to finish
+	go func() {
+		// Poll until the runner exits
+		for {
+			nr.mu.Lock()
+			exited := nr.exited
+			exitCode := nr.exitCode
+			nr.mu.Unlock()
+			if exited {
+				nr.Close()
+				ioWg.Wait()
+				proc.mu.Lock()
+				proc.exited = true
+				proc.exitCode = exitCode
+				proc.events = append(proc.events, processEvent{Kind: "exit", Code: exitCode})
+				proc.mu.Unlock()
+				if pm.wakeFn != nil {
+					pm.wakeFn()
+				}
+				return
+			}
+			// Small sleep to avoid busy loop
+			select {
+			case <-make(chan struct{}):
+			default:
+			}
+		}
+	}()
+
+	return id, nil
 }
 
 // processEvents drains events from all processes and delivers them to JS.

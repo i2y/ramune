@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -29,9 +30,12 @@ type registryMetadata struct {
 }
 
 type registryVersionInfo struct {
-	Version      string            `json:"version"`
-	Dependencies map[string]string `json:"dependencies"`
-	Dist         registryDist      `json:"dist"`
+	Version              string            `json:"version"`
+	Dependencies         map[string]string `json:"dependencies"`
+	OptionalDependencies map[string]string `json:"optionalDependencies"`
+	OS                   []string          `json:"os"`
+	CPU                  []string          `json:"cpu"`
+	Dist                 registryDist      `json:"dist"`
 }
 
 type registryDist struct {
@@ -42,11 +46,13 @@ type registryDist struct {
 
 // ResolvedPackage is the result of resolving a package name + version range.
 type ResolvedPackage struct {
-	Name         string
-	Version      string
-	Integrity    string
-	Tarball      string
-	Dependencies map[string]string
+	Name                 string
+	Version              string
+	Integrity            string
+	Tarball              string
+	Dependencies         map[string]string
+	OptionalDependencies map[string]string
+	Optional             bool // true if this was resolved as an optional dependency
 }
 
 func fetchRegistryMetadata(name string) (*registryMetadata, error) {
@@ -101,42 +107,103 @@ func ResolvePackage(name, versionRange string) (*ResolvedPackage, error) {
 	}
 
 	info := meta.Versions[matched]
+
+	// Check platform compatibility (os/cpu fields).
+	if !platformMatch(info.OS, info.CPU) {
+		return nil, fmt.Errorf("ramune: package %s@%s is not compatible with %s/%s", name, info.Version, runtime.GOOS, runtime.GOARCH)
+	}
+
 	return &ResolvedPackage{
-		Name:         name,
-		Version:      info.Version,
-		Integrity:    info.Dist.Integrity,
-		Tarball:      info.Dist.Tarball,
-		Dependencies: info.Dependencies,
+		Name:                 name,
+		Version:              info.Version,
+		Integrity:            info.Dist.Integrity,
+		Tarball:              info.Dist.Tarball,
+		Dependencies:         info.Dependencies,
+		OptionalDependencies: info.OptionalDependencies,
 	}, nil
+}
+
+// platformMatch checks if the package's os/cpu constraints match the current platform.
+// Empty os/cpu means the package is compatible with all platforms.
+func platformMatch(osField, cpuField []string) bool {
+	if len(osField) > 0 {
+		npmOS := runtime.GOOS
+		if npmOS == "windows" {
+			npmOS = "win32"
+		}
+		found := false
+		for _, o := range osField {
+			if o == npmOS {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	if len(cpuField) > 0 {
+		npmCPU := runtime.GOARCH
+		switch npmCPU {
+		case "amd64":
+			npmCPU = "x64"
+		case "386":
+			npmCPU = "ia32"
+		}
+		found := false
+		for _, c := range cpuField {
+			if c == npmCPU {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+type queueItem struct {
+	name, rng string
+	optional  bool
 }
 
 // resolveAll resolves all transitive dependencies via BFS.
 func resolveAll(specs map[string]string) (map[string]*ResolvedPackage, error) {
 	resolved := make(map[string]*ResolvedPackage)
-	queue := make([][2]string, 0)
+	var queue []queueItem
 
 	for name, rng := range specs {
-		queue = append(queue, [2]string{name, rng})
+		queue = append(queue, queueItem{name, rng, false})
 	}
 
 	for len(queue) > 0 {
 		item := queue[0]
 		queue = queue[1:]
 
-		name, rng := item[0], item[1]
-		if _, exists := resolved[name]; exists {
+		if _, exists := resolved[item.name]; exists {
 			continue
 		}
 
-		pkg, err := ResolvePackage(name, rng)
+		pkg, err := ResolvePackage(item.name, item.rng)
 		if err != nil {
+			if item.optional {
+				continue // skip optional deps that fail (wrong platform, not found, etc.)
+			}
 			return nil, err
 		}
-		resolved[name] = pkg
+		pkg.Optional = item.optional
+		resolved[item.name] = pkg
 
 		for depName, depRange := range pkg.Dependencies {
 			if _, exists := resolved[depName]; !exists {
-				queue = append(queue, [2]string{depName, depRange})
+				queue = append(queue, queueItem{depName, depRange, item.optional})
+			}
+		}
+		for depName, depRange := range pkg.OptionalDependencies {
+			if _, exists := resolved[depName]; !exists {
+				queue = append(queue, queueItem{depName, depRange, true})
 			}
 		}
 	}
@@ -200,6 +267,9 @@ func downloadAll(pkgs []*ResolvedPackage, nodeModulesDir string) error {
 			defer func() { <-sem }()
 
 			if err := downloadAndExtractPackage(p, nodeModulesDir); err != nil {
+				if p.Optional {
+					return // skip failed optional deps silently
+				}
 				mu.Lock()
 				if firstErr == nil {
 					firstErr = err

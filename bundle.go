@@ -37,40 +37,51 @@ func PreloadJS(code string) Option {
 
 // ensureBundle returns the bundled JS source for the given packages,
 // using a cached bundle if available.
-func ensureBundle(pkgs []string, nodeCompat bool) (string, error) {
+func ensureBundle(pkgs []string, nodeCompat bool) (string, string, error) {
 	hash := hashPkgs(pkgs, nodeCompat)
 	bundlePath := filepath.Join(jsCacheDir(hash), "bundle.js")
+	nodeModulesDir := filepath.Join(jsCacheDir(hash), "node_modules")
 
 	// Cache hit.
 	if data, err := os.ReadFile(bundlePath); err == nil {
-		return string(data), nil
+		nmDir := ""
+		if fi, err := os.Stat(nodeModulesDir); err == nil && fi.IsDir() {
+			nmDir = nodeModulesDir
+		}
+		return string(data), nmDir, nil
 	}
 
 	// Cache miss: install from npm registry + bundle with esbuild.
 	workDir := filepath.Join(jsCacheDir(hash), "work")
 	if err := os.MkdirAll(workDir, 0o755); err != nil {
-		return "", fmt.Errorf("ramune: failed to create work dir: %w", err)
+		return "", "", fmt.Errorf("ramune: failed to create work dir: %w", err)
 	}
 
 	if err := installPackages(workDir, pkgs); err != nil {
 		os.RemoveAll(jsCacheDir(hash))
-		return "", err
+		return "", "", err
 	}
 
 	bundle, err := bundlePackages(workDir, pkgs, nodeCompat)
 	if err != nil {
 		os.RemoveAll(jsCacheDir(hash))
-		return "", err
+		return "", "", err
 	}
 
 	if err := os.WriteFile(bundlePath, []byte(bundle), 0o644); err != nil {
-		return "", fmt.Errorf("ramune: failed to write bundle cache: %w", err)
+		return "", "", fmt.Errorf("ramune: failed to write bundle cache: %w", err)
 	}
 
-	// Remove work dir, keep only bundle.js.
+	// Move node_modules to cache dir (preserves native binaries),
+	// then remove remaining work files.
+	os.Rename(filepath.Join(workDir, "node_modules"), nodeModulesDir)
 	os.RemoveAll(workDir)
 
-	return bundle, nil
+	nmDir := ""
+	if fi, err := os.Stat(nodeModulesDir); err == nil && fi.IsDir() {
+		nmDir = nodeModulesDir
+	}
+	return bundle, nmDir, nil
 }
 
 // ClearCache removes all cached JS bundles created by Dependencies().
