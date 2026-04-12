@@ -3,7 +3,6 @@ package ramune
 import (
 	"bufio"
 	"crypto/rand"
-	"crypto/sha1"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
@@ -274,13 +273,6 @@ func wsClientConnect(wsURL string) (net.Conn, error) {
 		}
 	}
 
-	// Validate Sec-WebSocket-Accept.
-	magic := "258EAFA5-E914-47DA-95CA-5AB4085B9188"
-	h := sha1.New()
-	h.Write([]byte(key + magic))
-	// We skip strict validation — Chrome always sends the correct accept header.
-	_ = h
-
 	return conn, nil
 }
 
@@ -379,9 +371,14 @@ func readWSFrameClient(r *bufio.Reader) (opcode byte, payload []byte, err error)
 
 func (inst *cdpInstance) sendCDP(method string, params any) int {
 	inst.mu.Lock()
+	defer inst.mu.Unlock()
+
 	id := inst.nextCmdID
 	inst.nextCmdID++
-	inst.mu.Unlock()
+
+	if inst.closed {
+		return id
+	}
 
 	msg := struct {
 		ID     int    `json:"id"`
@@ -390,12 +387,6 @@ func (inst *cdpInstance) sendCDP(method string, params any) int {
 	}{ID: id, Method: method, Params: params}
 
 	data, _ := json.Marshal(msg)
-
-	inst.mu.Lock()
-	defer inst.mu.Unlock()
-	if inst.closed {
-		return id
-	}
 	writeWSFrameClient(inst.bufw, 1, data) // opcode 1 = text
 	return id
 }
@@ -404,6 +395,7 @@ func (m *cdpManager) readLoop(inst *cdpInstance) {
 	defer func() {
 		m.mu.Lock()
 		m.events = append(m.events, cdpEvent{InstanceID: inst.id, Kind: "close"})
+		delete(m.instances, inst.id)
 		m.mu.Unlock()
 		if m.wakeFn != nil {
 			m.wakeFn()
@@ -593,7 +585,6 @@ func (r *Runtime) installCDP() error {
 
 func cdpJSSource() string {
 	return `(function() {
-	var __cdpPending = {};
 	var __cdpInstances = {};
 
 	function WebViewCDP(opts) {
@@ -602,6 +593,7 @@ func cdpJSSource() string {
 		this._url = '';
 		this._title = '';
 		this._loading = false;
+		this._pending = {};
 		this.onNavigated = null;
 		this.onNavigationFailed = null;
 		__cdpInstances[String(this._id)] = this;
@@ -610,8 +602,9 @@ func cdpJSSource() string {
 	WebViewCDP.prototype._send = function(method, params) {
 		if (this._closed) return Promise.reject(new Error('WebView is closed'));
 		var cmdId = __go_cdp_send(this._id, method, params ? JSON.stringify(params) : '{}');
+		var self = this;
 		return new Promise(function(resolve, reject) {
-			__cdpPending[String(cmdId)] = {resolve: resolve, reject: reject};
+			self._pending[String(cmdId)] = {resolve: resolve, reject: reject};
 		});
 	};
 
@@ -629,11 +622,11 @@ func cdpJSSource() string {
 			// Wait for load event
 			return new Promise(function(resolve) {
 				self._onLoadResolve = resolve;
-				// Timeout fallback
-				setTimeout(function() {
+				self._loadTimer = setTimeout(function() {
 					if (self._onLoadResolve) {
 						self._onLoadResolve();
 						self._onLoadResolve = null;
+						self._loadTimer = null;
 					}
 				}, 30000);
 			});
@@ -737,22 +730,22 @@ func cdpJSSource() string {
 	globalThis.__cdpDeliverEvents = function(events) {
 		for (var i = 0; i < events.length; i++) {
 			var ev = events[i];
-			if (ev.kind === 'response') {
-				var pending = __cdpPending[String(ev.cmdId)];
+			var inst = __cdpInstances[String(ev.instanceId)];
+			if (ev.kind === 'response' && inst) {
+				var pending = inst._pending[String(ev.cmdId)];
 				if (pending) {
-					delete __cdpPending[String(ev.cmdId)];
+					delete inst._pending[String(ev.cmdId)];
 					if (ev.error) pending.reject(new Error(ev.error));
 					else pending.resolve(ev.data ? JSON.parse(ev.data) : null);
 				}
-			} else if (ev.kind === 'event') {
-				var inst = __cdpInstances[String(ev.instanceId)];
-				if (!inst) continue;
+			} else if (ev.kind === 'event' && inst) {
 				var params = ev.params ? JSON.parse(ev.params) : {};
 				if (ev.method === 'Page.loadEventFired') {
 					inst._loading = false;
 					if (inst._onLoadResolve) {
 						inst._onLoadResolve();
 						inst._onLoadResolve = null;
+						if (inst._loadTimer) { clearTimeout(inst._loadTimer); inst._loadTimer = null; }
 					}
 				} else if (ev.method === 'Page.frameNavigated' && params.frame && !params.frame.parentId) {
 					inst._url = params.frame.url || inst._url;
@@ -760,17 +753,14 @@ func cdpJSSource() string {
 					if (inst.onNavigated) inst.onNavigated(inst._url, inst._title);
 				}
 			} else if (ev.kind === 'close' || ev.kind === 'error') {
-				var inst = __cdpInstances[String(ev.instanceId)];
 				if (inst) {
 					inst._closed = true;
 					delete __cdpInstances[String(ev.instanceId)];
-				}
-				// Reject all pending commands
-				var keys = Object.keys(__cdpPending);
-				for (var j = 0; j < keys.length; j++) {
-					var p = __cdpPending[keys[j]];
-					delete __cdpPending[keys[j]];
-					p.reject(new Error(ev.error || 'WebView closed'));
+					var keys = Object.keys(inst._pending);
+					for (var j = 0; j < keys.length; j++) {
+						inst._pending[keys[j]].reject(new Error(ev.error || 'WebView closed'));
+					}
+					inst._pending = {};
 				}
 			}
 		}
