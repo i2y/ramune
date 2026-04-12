@@ -2113,6 +2113,41 @@ func nodeCompatJSSource() string {
 		globalThis.FormData = FormData;
 	}
 
+	// --- EventTarget / Event (DOM-like, needed by many npm packages) ---
+	if (typeof globalThis.Event === 'undefined') {
+		globalThis.Event = function Event(type, opts) {
+			this.type = type;
+			this.bubbles = !!(opts && opts.bubbles);
+			this.cancelable = !!(opts && opts.cancelable);
+			this.defaultPrevented = false;
+			this.target = null;
+			this.currentTarget = null;
+		};
+		globalThis.Event.prototype.preventDefault = function() { this.defaultPrevented = true; };
+		globalThis.Event.prototype.stopPropagation = function() {};
+		globalThis.Event.prototype.stopImmediatePropagation = function() {};
+	}
+	if (typeof globalThis.EventTarget === 'undefined') {
+		globalThis.EventTarget = function EventTarget() {
+			this._listeners = {};
+		};
+		globalThis.EventTarget.prototype.addEventListener = function(type, fn) {
+			if (!this._listeners[type]) this._listeners[type] = [];
+			this._listeners[type].push(fn);
+		};
+		globalThis.EventTarget.prototype.removeEventListener = function(type, fn) {
+			if (!this._listeners[type]) return;
+			this._listeners[type] = this._listeners[type].filter(function(f) { return f !== fn; });
+		};
+		globalThis.EventTarget.prototype.dispatchEvent = function(event) {
+			event.target = this;
+			event.currentTarget = this;
+			var fns = this._listeners[event.type];
+			if (fns) for (var i = 0; i < fns.length; i++) fns[i].call(this, event);
+			return !event.defaultPrevented;
+		};
+	}
+
 	// --- async_hooks: AsyncLocalStorage ---
 	function AsyncLocalStorage() {
 		this._store = undefined;
