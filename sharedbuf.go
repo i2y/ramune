@@ -12,23 +12,37 @@ import (
 	"unsafe"
 )
 
+// waiter represents a single goroutine blocked on Atomics.wait.
+type waiter struct {
+	ch chan struct{}
+}
+
 // sharedBuffer is a Go []byte backed shared memory buffer.
 type sharedBuffer struct {
 	data []byte
-	// Per-int32-index wait queues for Atomics.wait/notify.
-	waitMu    sync.Mutex
-	waitConds map[int]*sync.Cond
+	// Per-int32-index FIFO wait queues for Atomics.wait/notify.
+	waitMu  sync.Mutex
+	waiters map[int][]*waiter
 }
 
-func (sb *sharedBuffer) getCond(index int) *sync.Cond {
+func (sb *sharedBuffer) addWaiter(index int) *waiter {
+	w := &waiter{ch: make(chan struct{}, 1)}
 	sb.waitMu.Lock()
-	c, ok := sb.waitConds[index]
-	if !ok {
-		c = sync.NewCond(&sb.waitMu)
-		sb.waitConds[index] = c
+	sb.waiters[index] = append(sb.waiters[index], w)
+	sb.waitMu.Unlock()
+	return w
+}
+
+func (sb *sharedBuffer) removeWaiter(index int, w *waiter) {
+	sb.waitMu.Lock()
+	ws := sb.waiters[index]
+	for i, ww := range ws {
+		if ww == w {
+			sb.waiters[index] = append(ws[:i], ws[i+1:]...)
+			break
+		}
 	}
 	sb.waitMu.Unlock()
-	return c
 }
 
 // sharedBufferManager is a global registry of shared buffers.
@@ -46,8 +60,8 @@ var globalSABManager = &sharedBufferManager{
 
 func (m *sharedBufferManager) create(byteLength int) int {
 	sb := &sharedBuffer{
-		data:      make([]byte, byteLength),
-		waitConds: make(map[int]*sync.Cond),
+		data:    make([]byte, byteLength),
+		waiters: make(map[int][]*waiter),
 	}
 	m.mu.Lock()
 	id := m.nextID
@@ -90,8 +104,8 @@ func (m *sharedBufferManager) sliceBuf(id int, begin, end int) (int, error) {
 	copied := make([]byte, end-begin)
 	copy(copied, sb.data[begin:end])
 	newSB := &sharedBuffer{
-		data:      copied,
-		waitConds: make(map[int]*sync.Cond),
+		data:    copied,
+		waiters: make(map[int][]*waiter),
 	}
 	m.mu.Lock()
 	newID := m.nextID
@@ -154,52 +168,51 @@ func sabAtomicWait(sb *sharedBuffer, byteOffset int, value int32, timeoutMs floa
 		return "not-equal"
 	}
 
-	index := byteOffset / 4
-	cond := sb.getCond(index)
-
 	if timeoutMs == 0 {
 		return "timed-out"
 	}
 
-	var cancelled int32
-	done := make(chan string, 1)
-	go func() {
-		cond.L.Lock()
-		for atomic.LoadInt32(int32Ptr(sb.data, byteOffset)) == value && atomic.LoadInt32(&cancelled) == 0 {
-			cond.Wait()
-		}
-		cond.L.Unlock()
-		if atomic.LoadInt32(&cancelled) != 0 {
-			return
-		}
-		done <- "ok"
-	}()
+	index := byteOffset / 4
+	w := sb.addWaiter(index)
 
 	if timeoutMs < 0 || math.IsInf(timeoutMs, 1) {
-		return <-done
+		<-w.ch
+		return "ok"
 	}
 
+	timer := time.NewTimer(time.Duration(timeoutMs) * time.Millisecond)
+	defer timer.Stop()
 	select {
-	case result := <-done:
-		return result
-	case <-time.After(time.Duration(timeoutMs) * time.Millisecond):
-		atomic.StoreInt32(&cancelled, 1)
-		cond.Broadcast()
+	case <-w.ch:
+		return "ok"
+	case <-timer.C:
+		sb.removeWaiter(index, w)
 		return "timed-out"
 	}
 }
 
 // sabAtomicNotify wakes up to count waiters on the int32 at byteOffset.
+// Returns the actual number of waiters woken.
 func sabAtomicNotify(sb *sharedBuffer, byteOffset int, count int) int {
-	index := byteOffset / 4
-	cond := sb.getCond(index)
 	if count <= 0 {
 		return 0
 	}
-	// Broadcast wakes all waiters; we can't selectively wake N.
-	// This is a simplification — real engines track individual waiters.
-	cond.Broadcast()
-	return count
+	index := byteOffset / 4
+	sb.waitMu.Lock()
+	ws := sb.waiters[index]
+	n := count
+	if n > len(ws) {
+		n = len(ws)
+	}
+	for i := 0; i < n; i++ {
+		select {
+		case ws[i].ch <- struct{}{}:
+		default:
+		}
+	}
+	sb.waiters[index] = ws[n:]
+	sb.waitMu.Unlock()
+	return n
 }
 
 // installSharedArrayBuffer registers SharedArrayBuffer and Atomics polyfills.
@@ -336,6 +349,54 @@ func (r *Runtime) installSharedArrayBuffer() error {
 
 		n := sabAtomicNotify(sb, off, int(count))
 		return float64(n), nil
+	}); err != nil {
+		return err
+	}
+
+	// Atomics.waitAsync — non-blocking async wait. Returns async ID.
+	// The Go goroutine waits then calls __atomicsWaitAsyncResolve(id, result).
+	if err := r.registerFuncLocked("__go_atomics_wait_async", func(args []any) (any, error) {
+		if len(args) < 4 {
+			return nil, fmt.Errorf("Atomics.waitAsync: sabId, byteOffset, value, timeout required")
+		}
+		sabID, _ := args[0].(float64)
+		byteOffset, _ := args[1].(float64)
+		value, _ := args[2].(float64)
+		timeout, _ := args[3].(float64)
+
+		sb, err := mgr.get(int(sabID))
+		if err != nil {
+			return nil, err
+		}
+
+		off := int(byteOffset)
+		if off < 0 || off+4 > len(sb.data) {
+			return nil, fmt.Errorf("Atomics.waitAsync: index out of range")
+		}
+
+		// Check value synchronously first.
+		current := atomic.LoadInt32(int32Ptr(sb.data, off))
+		if current != int32(value) {
+			return "not-equal", nil
+		}
+
+		// Allocate async ID.
+		mgr.mu.Lock()
+		asyncID := mgr.nextID
+		mgr.nextID++
+		mgr.mu.Unlock()
+
+		r.waitAsyncCount.Add(1)
+		go func() {
+			result := sabAtomicWait(sb, off, int32(value), timeout)
+			r.Wake()
+			r.dispatch(func() {
+				r.execLocked(fmt.Sprintf("if(typeof __atomicsWaitAsyncResolve==='function')__atomicsWaitAsyncResolve(%d,'%s')", asyncID, result))
+				r.waitAsyncCount.Add(-1)
+			})
+		}()
+
+		return float64(asyncID), nil
 	}); err != nil {
 		return err
 	}
@@ -571,6 +632,20 @@ func sharedArrayBufferJSSource() string {
 			if (timeout === undefined) timeout = -1;
 			return __go_atomics_wait(ta._sabId, ta.byteOffset + index * ta.BYTES_PER_ELEMENT, value, timeout);
 		},
+		waitAsync: function(ta, index, value, timeout) {
+			if (!ta._sabId && ta._sabId !== 0) throw new TypeError('Atomics.waitAsync: not a shared typed array');
+			if (timeout === undefined) timeout = -1;
+			var result = __go_atomics_wait_async(ta._sabId, ta.byteOffset + index * ta.BYTES_PER_ELEMENT, value, timeout);
+			if (result === 'not-equal') {
+				return { async: false, value: 'not-equal' };
+			}
+			var asyncId = result;
+			var p = new Promise(function(resolve) {
+				if (!globalThis.__atomicsWaitAsyncPending) globalThis.__atomicsWaitAsyncPending = {};
+				globalThis.__atomicsWaitAsyncPending[String(asyncId)] = resolve;
+			});
+			return { async: true, value: p };
+		},
 		notify: function(ta, index, count) {
 			if (!ta._sabId && ta._sabId !== 0) throw new TypeError('Atomics.notify: not a shared typed array');
 			if (count === undefined) count = Infinity;
@@ -578,6 +653,16 @@ func sharedArrayBufferJSSource() string {
 		},
 		isLockFree: function(size) {
 			return size === 1 || size === 2 || size === 4 || size === 8;
+		}
+	};
+
+	globalThis.__atomicsWaitAsyncResolve = function(asyncId, result) {
+		var pending = globalThis.__atomicsWaitAsyncPending;
+		if (!pending) return;
+		var resolve = pending[String(asyncId)];
+		if (resolve) {
+			delete pending[String(asyncId)];
+			resolve({ value: result });
 		}
 	};
 })();

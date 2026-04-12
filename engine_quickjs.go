@@ -44,6 +44,7 @@ type Runtime struct {
 	webviewMgr      *webviewManager
 	workerMgr       *workerManager
 	http2Mgr        *http2Manager
+	waitAsyncCount  atomic.Int32
 	sqliteMgr       *sqliteManager
 	streamMgr       *streamManager
 	fetchMgr        *fetchManager

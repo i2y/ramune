@@ -215,3 +215,59 @@ func TestSharedArrayBufferSlice(t *testing.T) {
 		t.Errorf("got %s, want %s", got, expected)
 	}
 }
+
+func TestAtomicsWaitAsync(t *testing.T) {
+	r := newNodeCompatOrSkip(t)
+	defer r.Close()
+
+	v, err := r.EvalAsync(`
+		new Promise(function(resolve) {
+			var sab = new SharedArrayBuffer(4);
+			var view = new Int32Array(sab);
+			Atomics.store(view, 0, 0);
+
+			var result = Atomics.waitAsync(view, 0, 0);
+			if (!result.async) { resolve('not async'); return; }
+
+			result.value.then(function(r) {
+				resolve(r.value);
+			});
+
+			setTimeout(function() {
+				Atomics.store(view, 0, 1);
+				Atomics.notify(view, 0, 1);
+			}, 10);
+		})
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	s, _ := v.GoString()
+	if s != "ok" {
+		t.Fatalf("got %q, want ok", s)
+	}
+}
+
+func TestAtomicsNotifyCount(t *testing.T) {
+	r := newNodeCompatOrSkip(t)
+	defer r.Close()
+
+	v, err := r.Eval(`
+		(function() {
+			var sab = new SharedArrayBuffer(4);
+			var view = new Int32Array(sab);
+			// No waiters, so notify should return 0.
+			var n = Atomics.notify(view, 0, 5);
+			return n;
+		})()
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	f, _ := v.Float64()
+	if f != 0 {
+		t.Fatalf("got %v, want 0 (no waiters)", f)
+	}
+}

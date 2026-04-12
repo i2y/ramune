@@ -489,6 +489,10 @@ func (r *Runtime) hasPendingLocked() bool {
 	if r.http2Mgr != nil && r.http2Mgr.hasActive() {
 		return true
 	}
+	// Check for pending Atomics.waitAsync operations.
+	if r.waitAsyncCount.Load() > 0 {
+		return true
+	}
 	// Check for pending async fs operations.
 	if r.fsMgr != nil && r.fsMgr.hasActive() {
 		return true

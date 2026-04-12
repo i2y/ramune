@@ -190,6 +190,7 @@ type Runtime struct {
 	webviewMgr      *webviewManager     // WebView manager
 	workerMgr       *workerManager      // worker threads manager
 	http2Mgr        *http2Manager       // HTTP/2 session manager
+	waitAsyncCount  atomic.Int32        // pending Atomics.waitAsync operations
 	sqliteMgr       *sqliteManager      // bun:sqlite database manager
 	streamMgr       *streamManager      // bidirectional stream bridge
 	fetchMgr        *fetchManager       // streaming fetch request manager
