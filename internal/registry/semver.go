@@ -98,14 +98,15 @@ func matchSemverRange(version semVersion, rangeStr string) bool {
 	}
 
 	// Handle AND ranges (space-separated): ">= 2.1.2 < 3.0.0"
-	// Split on spaces, group tokens into comparators, check all match.
-	if parts := splitComparators(rangeStr); len(parts) > 1 {
-		for _, part := range parts {
-			if !matchSemverRange(version, part) {
-				return false
+	if strings.ContainsRune(rangeStr, ' ') {
+		if parts := splitComparators(rangeStr); len(parts) > 1 {
+			for _, part := range parts {
+				if !matchSemverRange(version, part) {
+					return false
+				}
 			}
+			return true
 		}
-		return true
 	}
 
 	if rangeStr == "" || rangeStr == "*" || rangeStr == "latest" {
@@ -204,14 +205,8 @@ func matchSemverRange(version semVersion, rangeStr string) bool {
 // individual comparators: [">=2.1.2", "<3.0.0"]. Returns a single-element
 // slice for non-compound ranges.
 func splitComparators(s string) []string {
-	s = strings.TrimSpace(s)
 	var parts []string
-	for len(s) > 0 {
-		// Find the start of a comparator (operator or version number)
-		s = strings.TrimSpace(s)
-		if len(s) == 0 {
-			break
-		}
+	for s = strings.TrimSpace(s); len(s) > 0; s = strings.TrimSpace(s) {
 		// Determine if this token starts with an operator
 		var end int
 		if strings.HasPrefix(s, ">=") || strings.HasPrefix(s, "<=") {
