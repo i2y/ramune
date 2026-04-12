@@ -82,9 +82,32 @@ func compareSemver(a, b semVersion) int {
 
 // matchSemverRange checks if version matches a range string.
 // Supported: "*", "4.17.21" (exact), "^4.17.21", "~4.17.21",
-// ">=4.0.0", "4" (= ^4.0.0), "4.17" (= ~4.17.0), "4.x", "4.x.x".
+// ">=4.0.0", "4" (= ^4.0.0), "4.17" (= ~4.17.0), "4.x", "4.x.x",
+// "^3.25 || ^4.0" (OR ranges).
 func matchSemverRange(version semVersion, rangeStr string) bool {
 	rangeStr = strings.TrimSpace(rangeStr)
+
+	// Handle OR ranges: "^3.25 || ^4.0"
+	if strings.Contains(rangeStr, "||") {
+		for _, part := range strings.Split(rangeStr, "||") {
+			if matchSemverRange(version, strings.TrimSpace(part)) {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Handle AND ranges (space-separated): ">= 2.1.2 < 3.0.0"
+	// Split on spaces, group tokens into comparators, check all match.
+	if parts := splitComparators(rangeStr); len(parts) > 1 {
+		for _, part := range parts {
+			if !matchSemverRange(version, part) {
+				return false
+			}
+		}
+		return true
+	}
+
 	if rangeStr == "" || rangeStr == "*" || rangeStr == "latest" {
 		return version.Prerelease == "" // skip prereleases for wildcard
 	}
@@ -99,11 +122,35 @@ func matchSemverRange(version semVersion, rangeStr string) bool {
 	rangeStr = strings.ReplaceAll(rangeStr, ".*", "")
 
 	if strings.HasPrefix(rangeStr, ">=") {
-		min, err := parseSemver(rangeStr[2:])
+		min, err := parseSemver(strings.TrimSpace(rangeStr[2:]))
 		if err != nil {
 			return false
 		}
 		return compareSemver(version, min) >= 0
+	}
+
+	if strings.HasPrefix(rangeStr, "<=") {
+		max, err := parseSemver(strings.TrimSpace(rangeStr[2:]))
+		if err != nil {
+			return false
+		}
+		return compareSemver(version, max) <= 0
+	}
+
+	if strings.HasPrefix(rangeStr, ">") {
+		min, err := parseSemver(strings.TrimSpace(rangeStr[1:]))
+		if err != nil {
+			return false
+		}
+		return compareSemver(version, min) > 0
+	}
+
+	if strings.HasPrefix(rangeStr, "<") {
+		max, err := parseSemver(strings.TrimSpace(rangeStr[1:]))
+		if err != nil {
+			return false
+		}
+		return compareSemver(version, max) < 0
 	}
 
 	if strings.HasPrefix(rangeStr, "^") {
@@ -151,6 +198,41 @@ func matchSemverRange(version semVersion, rangeStr string) bool {
 		// Exact match.
 		return compareSemver(version, base) == 0
 	}
+}
+
+// splitComparators splits a range string like ">= 2.1.2 < 3.0.0" into
+// individual comparators: [">=2.1.2", "<3.0.0"]. Returns a single-element
+// slice for non-compound ranges.
+func splitComparators(s string) []string {
+	s = strings.TrimSpace(s)
+	var parts []string
+	for len(s) > 0 {
+		// Find the start of a comparator (operator or version number)
+		s = strings.TrimSpace(s)
+		if len(s) == 0 {
+			break
+		}
+		// Determine if this token starts with an operator
+		var end int
+		if strings.HasPrefix(s, ">=") || strings.HasPrefix(s, "<=") {
+			end = 2
+		} else if s[0] == '>' || s[0] == '<' || s[0] == '=' {
+			end = 1
+		} else if s[0] == '^' || s[0] == '~' {
+			end = 1
+		}
+		// Skip any space between operator and version
+		for end < len(s) && s[end] == ' ' {
+			end++
+		}
+		// Consume the version string (digits, dots, hyphens, alphanumeric)
+		for end < len(s) && s[end] != ' ' {
+			end++
+		}
+		parts = append(parts, strings.ReplaceAll(s[:end], " ", ""))
+		s = s[end:]
+	}
+	return parts
 }
 
 // bestMatch finds the highest version matching the range from a list.

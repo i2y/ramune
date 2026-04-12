@@ -675,6 +675,11 @@ func nodeCompatJSSource() string {
 		}
 	};
 
+	// Node.js compat: global === globalThis
+	if (typeof globalThis.global === 'undefined') {
+		globalThis.global = globalThis;
+	}
+
 	// --- process ---
 	var _platform = '__PLATFORM__';
 	globalThis.process = globalThis.process || {};
@@ -733,6 +738,21 @@ func nodeCompatJSSource() string {
 	p.stderr = {
 		write: function(s) { __go_stderr_raw(String(s)); return true; },
 		isTTY: __go_tty_isatty(2)
+	};
+	p.stdin = new EventEmitter();
+	p.stdin.isTTY = __go_tty_isatty(0);
+	p.stdin.readable = true;
+	p.stdin.setEncoding = function() { return p.stdin; };
+	p.stdin.resume = function() { return p.stdin; };
+	p.stdin.pause = function() { return p.stdin; };
+	p.stdin.read = function() { return null; };
+	p.stdin.destroy = function() { return p.stdin; };
+	p.stdin.unref = function() { return p.stdin; };
+	p.stdin.ref = function() { return p.stdin; };
+	p.stdin.pipe = function(dest) {
+		p.stdin.on('data', function(chunk) { dest.write(chunk); });
+		p.stdin.on('end', function() { dest.end(); });
+		return dest;
 	};
 	p.nextTick = function(fn) { queueMicrotask(fn); };
 	p.hrtime = function(prev) {
@@ -1210,7 +1230,19 @@ func nodeCompatJSSource() string {
 		userInfo: function() { return JSON.parse(__go_os_userinfo()); },
 		networkInterfaces: function() { return {}; },
 		endianness: function() { return 'LE'; },
-		EOL: '\n'
+		EOL: '\n',
+		constants: {
+			signals: {
+				SIGHUP: 1, SIGINT: 2, SIGQUIT: 3, SIGILL: 4, SIGTRAP: 5,
+				SIGABRT: 6, SIGIOT: 6, SIGBUS: 7, SIGFPE: 8, SIGKILL: 9,
+				SIGUSR1: 10, SIGSEGV: 11, SIGUSR2: 12, SIGPIPE: 13, SIGALRM: 14,
+				SIGTERM: 15, SIGCHLD: 17, SIGCONT: 18, SIGSTOP: 19, SIGTSTP: 20,
+				SIGTTIN: 21, SIGTTOU: 22, SIGURG: 23, SIGXCPU: 24, SIGXFSZ: 25,
+				SIGVTALRM: 26, SIGPROF: 27, SIGWINCH: 28, SIGIO: 29, SIGSYS: 31
+			},
+			errno: {},
+			priority: { PRIORITY_LOW: 19, PRIORITY_BELOW_NORMAL: 10, PRIORITY_NORMAL: 0, PRIORITY_ABOVE_NORMAL: -7, PRIORITY_HIGH: -14, PRIORITY_HIGHEST: -20 }
+		}
 	};
 
 	// --- util ---
@@ -1255,6 +1287,13 @@ func nodeCompatJSSource() string {
 			return args.map(String).join(' ');
 		},
 		deprecate: function(fn) { return fn; },
+		debuglog: function(section) {
+			var enabled = (typeof process !== 'undefined' && process.env && process.env.NODE_DEBUG || '').split(',').indexOf(section) >= 0;
+			return function() { if (enabled) console.error.apply(console, [section.toUpperCase() + ':'].concat(Array.prototype.slice.call(arguments))); };
+		},
+		debug: function(section) {
+			return util.debuglog(section);
+		},
 		types: {
 			isDate: function(v) { return v instanceof Date; },
 			isRegExp: function(v) { return v instanceof RegExp; },
@@ -2080,8 +2119,72 @@ func nodeCompatJSSource() string {
 		globalThis.FormData = FormData;
 	}
 
+	// --- async_hooks: AsyncLocalStorage ---
+	function AsyncLocalStorage() {
+		this._store = undefined;
+		this._enabled = true;
+	}
+	AsyncLocalStorage.prototype.getStore = function() {
+		return this._enabled ? this._store : undefined;
+	};
+	AsyncLocalStorage.prototype.run = function(store, callback) {
+		var prev = this._store;
+		this._store = store;
+		var args = Array.prototype.slice.call(arguments, 2);
+		var result;
+		try {
+			result = callback.apply(null, args);
+		} catch(e) {
+			this._store = prev;
+			throw e;
+		}
+		if (result && typeof result.then === 'function') {
+			var self = this;
+			var restore = function() { self._store = prev; };
+			return result.then(function(v) { restore(); return v; }, function(e) { restore(); throw e; });
+		}
+		this._store = prev;
+		return result;
+	};
+	AsyncLocalStorage.prototype.exit = function(callback) {
+		var args = [undefined, callback].concat(Array.prototype.slice.call(arguments, 1));
+		return this.run.apply(this, args);
+	};
+	AsyncLocalStorage.prototype.enterWith = function(store) {
+		this._store = store;
+	};
+	AsyncLocalStorage.prototype.disable = function() {
+		this._enabled = false;
+		this._store = undefined;
+	};
+	AsyncLocalStorage.snapshot = function() {
+		return function(fn) {
+			return fn.apply(null, Array.prototype.slice.call(arguments, 1));
+		};
+	};
+	AsyncLocalStorage.bind = function(fn) { return fn; };
+
+	function AsyncResource(type) { this.type = type; }
+	AsyncResource.prototype.runInAsyncScope = function(fn, thisArg) {
+		return fn.apply(thisArg, Array.prototype.slice.call(arguments, 2));
+	};
+	AsyncResource.prototype.emitDestroy = function() { return this; };
+	AsyncResource.prototype.asyncId = function() { return 0; };
+	AsyncResource.prototype.triggerAsyncId = function() { return 0; };
+	AsyncResource.bind = function(fn) { return fn; };
+
+	var async_hooks = {
+		AsyncLocalStorage: AsyncLocalStorage,
+		AsyncResource: AsyncResource,
+		executionAsyncId: function() { return 0; },
+		triggerAsyncId: function() { return 0; },
+		createHook: function() { return { enable: function() {}, disable: function() {} }; },
+		executionAsyncResource: function() { return {}; }
+	};
+
 	// --- Module registry ---
 	var _modules = {
+		'async_hooks': async_hooks,
 		'path': path,
 		'fs': fs,
 		'child_process': child_process,
@@ -2249,6 +2352,16 @@ func nodeCompatJSSource() string {
 			createServer: function() { throw new Error('tls.createServer: use installTCPServer'); }
 		},
 		'zlib': {
+			constants: {
+				Z_NO_FLUSH: 0, Z_PARTIAL_FLUSH: 1, Z_SYNC_FLUSH: 2, Z_FULL_FLUSH: 3,
+				Z_FINISH: 4, Z_BLOCK: 5, Z_TREES: 6,
+				Z_OK: 0, Z_STREAM_END: 1, Z_NEED_DICT: 2, Z_ERRNO: -1,
+				Z_STREAM_ERROR: -2, Z_DATA_ERROR: -3, Z_MEM_ERROR: -4,
+				Z_BUF_ERROR: -5, Z_VERSION_ERROR: -6,
+				Z_NO_COMPRESSION: 0, Z_BEST_SPEED: 1, Z_BEST_COMPRESSION: 9, Z_DEFAULT_COMPRESSION: -1,
+				Z_FILTERED: 1, Z_HUFFMAN_ONLY: 2, Z_RLE: 3, Z_FIXED: 4, Z_DEFAULT_STRATEGY: 0,
+				BROTLI_OPERATION_PROCESS: 0, BROTLI_OPERATION_FLUSH: 1, BROTLI_OPERATION_FINISH: 2
+			},
 			gzipSync: function(data) {
 				var s = typeof data === 'string' ? data : data.toString();
 				return globalThis.Buffer.from(__go_zlib_gzip(s), 'hex');
