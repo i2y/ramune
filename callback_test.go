@@ -1063,6 +1063,42 @@ func TestStreamTransformFlush(t *testing.T) {
 	}
 }
 
+func TestStreamClassExtends(t *testing.T) {
+	r := sharedNodeCompat(t)
+
+	// Test: class MyTransform extends stream.Transform works
+	v, err := r.Eval(`
+		var stream = require('stream');
+		class Upper extends stream.Transform {
+			_transform(chunk, encoding, cb) {
+				this.push(String(chunk).toUpperCase());
+				cb();
+			}
+		}
+		var result = [];
+		var upper = new Upper();
+		upper.on('data', function(d) { result.push(d); });
+		upper.write('hello');
+		upper.write('world');
+		upper.end();
+		JSON.stringify({
+			data: result,
+			isTransform: upper instanceof stream.Transform,
+			isDuplex: upper instanceof stream.Duplex,
+			isReadable: upper instanceof stream.Readable,
+			isEventEmitter: upper instanceof (require('events').EventEmitter)
+		});
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	s, _ := v.GoString()
+	if s != `{"data":["HELLO","WORLD"],"isTransform":true,"isDuplex":true,"isReadable":true,"isEventEmitter":true}` {
+		t.Fatalf("got %s", s)
+	}
+}
+
 func TestHttpRequest(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

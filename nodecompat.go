@@ -740,21 +740,7 @@ func nodeCompatJSSource() string {
 		write: function(s) { __go_stderr_raw(String(s)); return true; },
 		isTTY: __go_tty_isatty(2)
 	};
-	p.stdin = new EventEmitter();
-	p.stdin.isTTY = __go_tty_isatty(0);
-	p.stdin.readable = true;
-	p.stdin.setEncoding = function() { return p.stdin; };
-	p.stdin.resume = function() { return p.stdin; };
-	p.stdin.pause = function() { return p.stdin; };
-	p.stdin.read = function() { return null; };
-	p.stdin.destroy = function() { return p.stdin; };
-	p.stdin.unref = function() { return p.stdin; };
-	p.stdin.ref = function() { return p.stdin; };
-	p.stdin.pipe = function(dest) {
-		p.stdin.on('data', function(chunk) { dest.write(chunk); });
-		p.stdin.on('end', function() { dest.end(); });
-		return dest;
-	};
+	// p.stdin is set up after EventEmitter class is defined (see below).
 	p.nextTick = function(fn) { queueMicrotask(fn); };
 	p.hrtime = function(prev) {
 		var raw = JSON.parse(__go_hrtime());
@@ -783,45 +769,47 @@ func nodeCompatJSSource() string {
 	}
 
 	// --- events ---
-	function EventEmitter() {
-		this._events = {};
-	}
-	EventEmitter.prototype.on = function(event, fn) {
-		if (!this._events[event]) this._events[event] = [];
-		this._events[event].push(fn);
-		return this;
-	};
-	EventEmitter.prototype.addListener = EventEmitter.prototype.on;
-	EventEmitter.prototype.once = function(event, fn) {
-		var self = this;
-		function wrapper() {
-			fn.apply(this, arguments);
-			self.removeListener(event, wrapper);
+	class EventEmitter {
+		constructor() {
+			this._events = {};
 		}
-		return this.on(event, wrapper);
-	};
-	EventEmitter.prototype.emit = function(event) {
-		var args = Array.prototype.slice.call(arguments, 1);
-		var fns = this._events[event] || [];
-		for (var i = 0; i < fns.length; i++) fns[i].apply(this, args);
-		return fns.length > 0;
-	};
-	EventEmitter.prototype.removeListener = function(event, fn) {
-		var fns = this._events[event] || [];
-		this._events[event] = fns.filter(function(f) { return f !== fn; });
-		return this;
-	};
-	EventEmitter.prototype.removeAllListeners = function(event) {
-		if (event) delete this._events[event];
-		else this._events = {};
-		return this;
-	};
-	EventEmitter.prototype.listeners = function(event) {
-		return (this._events[event] || []).slice();
-	};
-	EventEmitter.prototype.listenerCount = function(event) {
-		return (this._events[event] || []).length;
-	};
+		on(event, fn) {
+			if (!this._events[event]) this._events[event] = [];
+			this._events[event].push(fn);
+			return this;
+		}
+		once(event, fn) {
+			var self = this;
+			function wrapper() {
+				fn.apply(this, arguments);
+				self.removeListener(event, wrapper);
+			}
+			return this.on(event, wrapper);
+		}
+		emit(event) {
+			var args = Array.prototype.slice.call(arguments, 1);
+			var fns = this._events[event] || [];
+			for (var i = 0; i < fns.length; i++) fns[i].apply(this, args);
+			return fns.length > 0;
+		}
+		removeListener(event, fn) {
+			var fns = this._events[event] || [];
+			this._events[event] = fns.filter(function(f) { return f !== fn; });
+			return this;
+		}
+		removeAllListeners(event) {
+			if (event) delete this._events[event];
+			else this._events = {};
+			return this;
+		}
+		listeners(event) {
+			return (this._events[event] || []).slice();
+		}
+		listenerCount(event) {
+			return (this._events[event] || []).length;
+		}
+	}
+	EventEmitter.prototype.addListener = EventEmitter.prototype.on;
 
 	var events = {
 		EventEmitter: EventEmitter,
@@ -833,7 +821,7 @@ func nodeCompatJSSource() string {
 	};
 
 	// Patch process to use EventEmitter (process is defined before EventEmitter).
-	EventEmitter.call(p);
+	p._events = {};
 	p.on = EventEmitter.prototype.on;
 	p.addListener = EventEmitter.prototype.addListener;
 	p.once = EventEmitter.prototype.once;
@@ -845,197 +833,215 @@ func nodeCompatJSSource() string {
 	p.listenerCount = EventEmitter.prototype.listenerCount;
 	p.setMaxListeners = function() { return p; };
 	p.getMaxListeners = function() { return 10; };
-
-	// --- stream ---
-	function Readable(opts) {
-		EventEmitter.call(this);
-		this._buffer = [];
-		this._ended = false;
-		this._flowing = false;
-		this.readable = true;
-		if (opts && opts.read) this._read = opts.read;
-	}
-	Readable.prototype = Object.create(EventEmitter.prototype);
-	Readable.prototype.constructor = Readable;
-	Readable.prototype._read = function() {};
-	Readable.prototype.push = function(chunk) {
-		if (chunk === null) {
-			this._ended = true;
-			this.emit('end');
-			return false;
-		}
-		if (this._flowing) {
-			this.emit('data', chunk);
-		} else {
-			this._buffer.push(chunk);
-		}
-		return true;
-	};
-	Readable.prototype.read = function(size) {
-		if (this._buffer.length === 0) return null;
-		if (size === undefined) {
-			var all = this._buffer.join('');
-			this._buffer = [];
-			return all;
-		}
-		var result = '';
-		while (result.length < size && this._buffer.length > 0) {
-			result += this._buffer.shift();
-		}
-		return result || null;
-	};
-	Readable.prototype.pipe = function(dest) {
-		var self = this;
-		self.on('data', function(chunk) { dest.write(chunk); });
-		self.on('end', function() { dest.end(); });
-		self.resume();
+	p.stdin = new EventEmitter();
+	p.stdin.isTTY = __go_tty_isatty(0);
+	p.stdin.readable = true;
+	p.stdin.setEncoding = function() { return p.stdin; };
+	p.stdin.resume = function() { return p.stdin; };
+	p.stdin.pause = function() { return p.stdin; };
+	p.stdin.read = function() { return null; };
+	p.stdin.destroy = function() { return p.stdin; };
+	p.stdin.unref = function() { return p.stdin; };
+	p.stdin.ref = function() { return p.stdin; };
+	p.stdin.pipe = function(dest) {
+		p.stdin.on('data', function(chunk) { dest.write(chunk); });
+		p.stdin.on('end', function() { dest.end(); });
 		return dest;
 	};
-	Readable.prototype.resume = function() {
-		this._flowing = true;
-		while (this._buffer.length > 0) {
-			this.emit('data', this._buffer.shift());
+
+	// --- stream ---
+	class Readable extends EventEmitter {
+		constructor(opts) {
+			super();
+			this._buffer = [];
+			this._ended = false;
+			this._flowing = false;
+			this.readable = true;
+			if (opts && opts.read) this._read = opts.read;
 		}
-		this._read(0);
-		return this;
-	};
-	Readable.prototype.pause = function() {
-		this._flowing = false;
-		return this;
-	};
-	Readable.prototype.setEncoding = function() { return this; };
-	Readable.prototype.destroy = function() {
-		this._buffer = [];
-		this._ended = true;
-		this.emit('close');
-		return this;
-	};
-	// Override on() to auto-resume when 'data' listener is added.
-	var _readableOn = Readable.prototype.on;
-	Readable.prototype.on = function(event, fn) {
-		_readableOn.call(this, event, fn);
-		if (event === 'data' && !this._flowing) this.resume();
-		return this;
-	};
-
-	function Writable(opts) {
-		EventEmitter.call(this);
-		this._chunks = [];
-		this._finished = false;
-		this._writing = false;
-		this.writable = true;
-		this.writableHighWaterMark = (opts && opts.highWaterMark) || 16384;
-		this.writableLength = 0;
-		if (opts && opts.write) this._write = opts.write;
-	}
-	Writable.prototype = Object.create(EventEmitter.prototype);
-	Writable.prototype.constructor = Writable;
-	Writable.prototype._write = function(chunk, encoding, cb) { cb(); };
-	Writable.prototype.write = function(chunk, encoding, cb) {
-		if (typeof encoding === 'function') { cb = encoding; encoding = 'utf8'; }
-		this._chunks.push(chunk);
-		var clen = typeof chunk === 'string' ? chunk.length : (chunk && chunk.length || 0);
-		this.writableLength += clen;
-		var self = this;
-		this._writing = true;
-		this._write(chunk, encoding || 'utf8', function(err) {
-			self._writing = false;
-			self.writableLength -= clen;
-			if (err) self.emit('error', err);
-			else self.emit('drain');
-			if (cb) cb(err);
-		});
-		return this.writableLength < this.writableHighWaterMark;
-	};
-	Writable.prototype.end = function(chunk, encoding, cb) {
-		if (typeof chunk === 'function') { cb = chunk; chunk = undefined; }
-		if (typeof encoding === 'function') { cb = encoding; encoding = undefined; }
-		if (chunk !== undefined && chunk !== null) this.write(chunk, encoding);
-		this._finished = true;
-		this.emit('finish');
-		if (cb) cb();
-		return this;
-	};
-	Writable.prototype.destroy = function() {
-		this._finished = true;
-		this.emit('close');
-		return this;
-	};
-
-	function Duplex(opts) {
-		Readable.call(this, opts);
-		Writable.call(this, opts);
-		this.readable = true;
-		this.writable = true;
-	}
-	Duplex.prototype = Object.create(Readable.prototype);
-	// Mixin Writable methods.
-	Object.keys(Writable.prototype).forEach(function(k) {
-		if (!Duplex.prototype[k]) Duplex.prototype[k] = Writable.prototype[k];
-	});
-	Duplex.prototype.constructor = Duplex;
-
-	function Transform(opts) {
-		Duplex.call(this, opts);
-		if (opts && opts.transform) this._transform = opts.transform;
-		if (opts && opts.flush) this._flush = opts.flush;
-	}
-	Transform.prototype = Object.create(Duplex.prototype);
-	Transform.prototype.constructor = Transform;
-	Transform.prototype._transform = function(chunk, encoding, cb) { cb(null, chunk); };
-	Transform.prototype._write = function(chunk, encoding, cb) {
-		var self = this;
-		this._transform(chunk, encoding, function(err, data) {
-			if (data !== undefined && data !== null) self.push(data);
-			cb(err);
-		});
-	};
-	Transform.prototype._flush = function(cb) { cb(); };
-	var _transformEnd = Transform.prototype.end;
-	Transform.prototype.end = function(chunk, encoding, cb) {
-		if (typeof chunk === 'function') { cb = chunk; chunk = undefined; }
-		if (typeof encoding === 'function') { cb = encoding; encoding = undefined; }
-		if (chunk !== undefined && chunk !== null) this.write(chunk, encoding);
-		var self = this;
-		this._flush(function(err, data) {
-			if (data !== undefined && data !== null) self.push(data);
-			self.push(null);
-			self._finished = true;
-			self.emit('finish');
-			if (cb) cb(err);
-		});
-		return this;
-	};
-
-	function PassThrough(opts) { Transform.call(this, opts); }
-	PassThrough.prototype = Object.create(Transform.prototype);
-	PassThrough.prototype.constructor = PassThrough;
-	PassThrough.prototype._transform = function(chunk, encoding, cb) { cb(null, chunk); };
-
-	Readable.from = function(iter) {
-		var r = new Readable();
-		var started = false;
-		r._read = function() {
-			if (started) return;
-			started = true;
-			if (iter && typeof iter[Symbol.asyncIterator] === 'function') {
-				var ai = iter[Symbol.asyncIterator]();
-				(function next() {
-					ai.next().then(function(res) {
-						if (res.done) { r.push(null); } else { r.push(res.value); next(); }
-					}).catch(function(e) { r.destroy(); r.emit('error', e); });
-				})();
-			} else {
-				try {
-					var it = iter[Symbol.iterator] ? iter[Symbol.iterator]() : iter;
-					var res;
-					while (!(res = it.next()).done) r.push(res.value);
-					r.push(null);
-				} catch(e) { r.destroy(); r.emit('error', e); }
+		_read() {}
+		push(chunk) {
+			if (chunk === null) {
+				this._ended = true;
+				this.emit('end');
+				return false;
 			}
-		};
-		return r;
-	};
+			if (this._flowing) {
+				this.emit('data', chunk);
+			} else {
+				this._buffer.push(chunk);
+			}
+			return true;
+		}
+		read(size) {
+			if (this._buffer.length === 0) return null;
+			if (size === undefined) {
+				var all = this._buffer.join('');
+				this._buffer = [];
+				return all;
+			}
+			var result = '';
+			while (result.length < size && this._buffer.length > 0) {
+				result += this._buffer.shift();
+			}
+			return result || null;
+		}
+		pipe(dest) {
+			var self = this;
+			self.on('data', function(chunk) { dest.write(chunk); });
+			self.on('end', function() { dest.end(); });
+			self.resume();
+			return dest;
+		}
+		resume() {
+			this._flowing = true;
+			while (this._buffer.length > 0) {
+				this.emit('data', this._buffer.shift());
+			}
+			this._read(0);
+			return this;
+		}
+		pause() {
+			this._flowing = false;
+			return this;
+		}
+		setEncoding() { return this; }
+		destroy() {
+			this._buffer = [];
+			this._ended = true;
+			this.emit('close');
+			return this;
+		}
+		on(event, fn) {
+			super.on(event, fn);
+			if (event === 'data' && !this._flowing) this.resume();
+			return this;
+		}
+		static from(iter) {
+			var r = new Readable();
+			var started = false;
+			r._read = function() {
+				if (started) return;
+				started = true;
+				if (iter && typeof iter[Symbol.asyncIterator] === 'function') {
+					var ai = iter[Symbol.asyncIterator]();
+					(function next() {
+						ai.next().then(function(res) {
+							if (res.done) { r.push(null); } else { r.push(res.value); next(); }
+						}).catch(function(e) { r.destroy(); r.emit('error', e); });
+					})();
+				} else {
+					try {
+						var it = iter[Symbol.iterator] ? iter[Symbol.iterator]() : iter;
+						var res;
+						while (!(res = it.next()).done) r.push(res.value);
+						r.push(null);
+					} catch(e) { r.destroy(); r.emit('error', e); }
+				}
+			};
+			return r;
+		}
+	}
+	Readable.prototype.addListener = Readable.prototype.on;
+
+	class Writable extends EventEmitter {
+		constructor(opts) {
+			super();
+			this._chunks = [];
+			this._finished = false;
+			this._writing = false;
+			this.writable = true;
+			this.writableHighWaterMark = (opts && opts.highWaterMark) || 16384;
+			this.writableLength = 0;
+			if (opts && opts.write) this._write = opts.write;
+		}
+		_write(chunk, encoding, cb) { cb(); }
+		write(chunk, encoding, cb) {
+			if (typeof encoding === 'function') { cb = encoding; encoding = 'utf8'; }
+			this._chunks.push(chunk);
+			var clen = typeof chunk === 'string' ? chunk.length : (chunk && chunk.length || 0);
+			this.writableLength += clen;
+			var self = this;
+			this._writing = true;
+			this._write(chunk, encoding || 'utf8', function(err) {
+				self._writing = false;
+				self.writableLength -= clen;
+				if (err) self.emit('error', err);
+				else self.emit('drain');
+				if (cb) cb(err);
+			});
+			return this.writableLength < this.writableHighWaterMark;
+		}
+		end(chunk, encoding, cb) {
+			if (typeof chunk === 'function') { cb = chunk; chunk = undefined; }
+			if (typeof encoding === 'function') { cb = encoding; encoding = undefined; }
+			if (chunk !== undefined && chunk !== null) this.write(chunk, encoding);
+			this._finished = true;
+			this.emit('finish');
+			if (cb) cb();
+			return this;
+		}
+		destroy() {
+			this._finished = true;
+			this.emit('close');
+			return this;
+		}
+	}
+
+	class Duplex extends Readable {
+		constructor(opts) {
+			super(opts);
+			// Writable instance properties (mixin - single inheritance constraint)
+			this._chunks = [];
+			this._finished = false;
+			this._writing = false;
+			this.writable = true;
+			this.writableHighWaterMark = (opts && opts.highWaterMark) || 16384;
+			this.writableLength = 0;
+			if (opts && opts.write) this._write = opts.write;
+		}
+	}
+	// Mixin Writable methods (ES6 class methods are non-enumerable, so use getOwnPropertyNames).
+	Object.getOwnPropertyNames(Writable.prototype).forEach(function(k) {
+		if (k !== 'constructor' && !Duplex.prototype.hasOwnProperty(k)) {
+			Object.defineProperty(Duplex.prototype, k, Object.getOwnPropertyDescriptor(Writable.prototype, k));
+		}
+	});
+
+	class Transform extends Duplex {
+		constructor(opts) {
+			super(opts);
+			if (opts && opts.transform) this._transform = opts.transform;
+			if (opts && opts.flush) this._flush = opts.flush;
+		}
+		_transform(chunk, encoding, cb) { cb(null, chunk); }
+		_flush(cb) { cb(); }
+		_write(chunk, encoding, cb) {
+			var self = this;
+			this._transform(chunk, encoding, function(err, data) {
+				if (data !== undefined && data !== null) self.push(data);
+				cb(err);
+			});
+		}
+		end(chunk, encoding, cb) {
+			if (typeof chunk === 'function') { cb = chunk; chunk = undefined; }
+			if (typeof encoding === 'function') { cb = encoding; encoding = undefined; }
+			if (chunk !== undefined && chunk !== null) this.write(chunk, encoding);
+			var self = this;
+			this._flush(function(err, data) {
+				if (data !== undefined && data !== null) self.push(data);
+				self.push(null);
+				self._finished = true;
+				self.emit('finish');
+				if (cb) cb(err);
+			});
+			return this;
+		}
+	}
+
+	class PassThrough extends Transform {
+		_transform(chunk, encoding, cb) { cb(null, chunk); }
+	}
 
 	function _streamFinished(s, cb) {
 		if (s._ended || s._finished) { cb(); return function() {}; }
@@ -1841,29 +1847,25 @@ func nodeCompatJSSource() string {
 
 	// --- AbortController ---
 	if (typeof globalThis.AbortController === 'undefined') {
-		function AbortSignal() {
-			EventEmitter.call(this);
-			this.aborted = false;
-			this.reason = undefined;
+		class AbortSignal extends EventEmitter {
+			constructor() {
+				super();
+				this.aborted = false;
+				this.reason = undefined;
+			}
+			addEventListener(event, fn) { this.on(event, fn); }
+			removeEventListener(event, fn) { this.removeListener(event, fn); }
+			throwIfAborted() { if (this.aborted) throw this.reason; }
+			static timeout(ms) { var s = new AbortSignal(); setTimeout(function() { s.aborted = true; s.reason = new Error('TimeoutError'); s.emit('abort'); }, ms); return s; }
 		}
-		AbortSignal.prototype = Object.create(EventEmitter.prototype);
-		AbortSignal.prototype.constructor = AbortSignal;
-		AbortSignal.prototype.addEventListener = function(event, fn) { this.on(event, fn); };
-		AbortSignal.prototype.removeEventListener = function(event, fn) { this.removeListener(event, fn); };
-		AbortSignal.prototype.once = EventEmitter.prototype.once;
-		AbortSignal.prototype.on = EventEmitter.prototype.on;
-		AbortSignal.prototype.emit = EventEmitter.prototype.emit;
-		AbortSignal.prototype.removeListener = EventEmitter.prototype.removeListener;
-		AbortSignal.prototype.throwIfAborted = function() { if (this.aborted) throw this.reason; };
-		AbortSignal.timeout = function(ms) { var s = new AbortSignal(); setTimeout(function() { s.aborted = true; s.reason = new Error('TimeoutError'); s.emit('abort'); }, ms); return s; };
 
-		globalThis.AbortController = function() {
-			this.signal = new AbortSignal();
-		};
-		globalThis.AbortController.prototype.abort = function(reason) {
-			this.signal.aborted = true;
-			this.signal.reason = reason || new Error('AbortError');
-			this.signal.emit('abort');
+		globalThis.AbortController = class AbortController {
+			constructor() { this.signal = new AbortSignal(); }
+			abort(reason) {
+				this.signal.aborted = true;
+				this.signal.reason = reason || new Error('AbortError');
+				this.signal.emit('abort');
+			}
 		};
 		globalThis.AbortSignal = AbortSignal;
 	}
@@ -2251,61 +2253,61 @@ func nodeCompatJSSource() string {
 		'buffer': { Buffer: globalThis.Buffer },
 		'process': globalThis.process,
 		'net': {
-			Socket: function() { EventEmitter.call(this); this.connect = function() { return this; }; this.write = function() { return true; }; this.end = function() {}; this.destroy = function() {}; this.on = function(e,f) { return this; }; },
+			Socket: function() { this._events = {}; this.connect = function() { return this; }; this.write = function() { return true; }; this.end = function() {}; this.destroy = function() {}; this.on = function(e,f) { return this; }; },
 			createConnection: function() { return new (_modules['net'].Socket)(); },
 			createServer: function() { throw new Error('net.createServer is not supported in ramune'); }
 		},
 		'http': (function() {
-			function IncomingMessage(raw) {
-				EventEmitter.call(this);
-				this.statusCode = raw.status;
-				this.statusMessage = raw.statusText || '';
-				this.headers = raw.headers || {};
-				this._body = raw.body || '';
-				this.httpVersion = '1.1';
-				this.method = null;
-				this.url = '';
-			}
-			IncomingMessage.prototype = Object.create(EventEmitter.prototype);
-			IncomingMessage.prototype.constructor = IncomingMessage;
-			IncomingMessage.prototype.setEncoding = function() { return this; };
-			IncomingMessage.prototype._deliver = function() {
-				var self = this;
-				if (self._body) {
-					var lines = self._body.match(/.{1,4096}/g) || [];
-					for (var i = 0; i < lines.length; i++) self.emit('data', lines[i]);
+			class IncomingMessage extends EventEmitter {
+				constructor(raw) {
+					super();
+					this.statusCode = raw.status;
+					this.statusMessage = raw.statusText || '';
+					this.headers = raw.headers || {};
+					this._body = raw.body || '';
+					this.httpVersion = '1.1';
+					this.method = null;
+					this.url = '';
 				}
-				self.emit('end');
-			};
+				setEncoding() { return this; }
+				_deliver() {
+					var self = this;
+					if (self._body) {
+						var lines = self._body.match(/.{1,4096}/g) || [];
+						for (var i = 0; i < lines.length; i++) self.emit('data', lines[i]);
+					}
+					self.emit('end');
+				}
+			}
 
-			function ClientRequest(opts, cb) {
-				EventEmitter.call(this);
-				this._opts = opts;
-				this._body = '';
-				this._callback = cb;
-			}
-			ClientRequest.prototype = Object.create(EventEmitter.prototype);
-			ClientRequest.prototype.constructor = ClientRequest;
-			ClientRequest.prototype.write = function(data) { this._body += String(data); return true; };
-			ClientRequest.prototype.end = function(data) {
-				if (data) this._body += String(data);
-				var o = this._opts;
-				var url = (o.protocol || 'http:') + '//' + (o.hostname || o.host || 'localhost') + (o.port ? ':' + o.port : '') + (o.path || o.pathname || '/');
-				var optsJSON = JSON.stringify({ method: o.method || 'GET', headers: o.headers || {}, body: this._body });
-				try {
-					var raw = JSON.parse(__go_http_request(url, optsJSON));
-					var res = new IncomingMessage(raw);
-					if (this._callback) this._callback(res);
-					this.emit('response', res);
-					res._deliver();
-				} catch(e) {
-					this.emit('error', e);
+			class ClientRequest extends EventEmitter {
+				constructor(opts, cb) {
+					super();
+					this._opts = opts;
+					this._body = '';
+					this._callback = cb;
 				}
-				return this;
-			};
-			ClientRequest.prototype.setTimeout = function(ms, cb) { if (cb) this.on('timeout', cb); return this; };
-			ClientRequest.prototype.abort = function() {};
-			ClientRequest.prototype.destroy = function() {};
+				write(data) { this._body += String(data); return true; }
+				end(data) {
+					if (data) this._body += String(data);
+					var o = this._opts;
+					var url = (o.protocol || 'http:') + '//' + (o.hostname || o.host || 'localhost') + (o.port ? ':' + o.port : '') + (o.path || o.pathname || '/');
+					var optsJSON = JSON.stringify({ method: o.method || 'GET', headers: o.headers || {}, body: this._body });
+					try {
+						var raw = JSON.parse(__go_http_request(url, optsJSON));
+						var res = new IncomingMessage(raw);
+						if (this._callback) this._callback(res);
+						this.emit('response', res);
+						res._deliver();
+					} catch(e) {
+						this.emit('error', e);
+					}
+					return this;
+				}
+				setTimeout(ms, cb) { if (cb) this.on('timeout', cb); return this; }
+				abort() {}
+				destroy() {}
+			}
 
 			var httpModule = {
 				request: function(urlOrOpts, optsOrCb, cb) {
@@ -2350,8 +2352,7 @@ func nodeCompatJSSource() string {
 										nodeReq.connection = nodeReq.socket;
 
 										var resStatus = 200, resHeaders = {}, resBody = '';
-										var nodeRes = Object.create(EventEmitter.prototype);
-										EventEmitter.call(nodeRes);
+										var nodeRes = new EventEmitter();
 										nodeRes.statusCode = 200;
 										nodeRes.statusMessage = 'OK';
 										nodeRes.headersSent = false;

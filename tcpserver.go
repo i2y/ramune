@@ -271,57 +271,53 @@ func tcpServerJSSource() string {
 
 	var __activeServers = {};
 
-	function Server(connectionListener) {
-		EventEmitter.call(this);
-		this._id = null;
-		this._port = 0;
-		this._host = '0.0.0.0';
-		this._listening = false;
-		if (typeof connectionListener === 'function') {
-			this.on('connection', connectionListener);
-		}
-	}
-	Server.prototype = Object.create(EventEmitter.prototype);
-	Server.prototype.constructor = Server;
-
-	Server.prototype.listen = function(port, host, cb) {
-		if (typeof port === 'object') {
-			var opts = port;
-			port = opts.port || 0;
-			host = opts.host || '0.0.0.0';
-			cb = host;
-		}
-		if (typeof host === 'function') { cb = host; host = '0.0.0.0'; }
-		host = host || '0.0.0.0';
-		if (typeof cb === 'function') this.once('listening', cb);
-
-		var result = JSON.parse(__go_tcp_listen(host, port || 0));
-		this._id = result.serverId;
-		this._port = result.port;
-		this._host = host;
-		__activeServers[String(this._id)] = this;
-		return this;
-	};
-
-	Server.prototype.close = function(cb) {
-		if (this._id != null) {
-			__go_tcp_server_close(this._id);
-			this._listening = false;
-			delete __activeServers[String(this._id)];
+	class Server extends EventEmitter {
+		constructor(connectionListener) {
+			super();
 			this._id = null;
+			this._port = 0;
+			this._host = '0.0.0.0';
+			this._listening = false;
+			if (typeof connectionListener === 'function') {
+				this.on('connection', connectionListener);
+			}
 		}
-		if (typeof cb === 'function') this.once('close', cb);
-		var self = this;
-		setImmediate(function() { self.emit('close'); });
-		return this;
-	};
+		listen(port, host, cb) {
+			if (typeof port === 'object') {
+				var opts = port;
+				port = opts.port || 0;
+				host = opts.host || '0.0.0.0';
+				cb = host;
+			}
+			if (typeof host === 'function') { cb = host; host = '0.0.0.0'; }
+			host = host || '0.0.0.0';
+			if (typeof cb === 'function') this.once('listening', cb);
 
-	Server.prototype.address = function() {
-		return { port: this._port, family: 'IPv4', address: this._host };
-	};
-
-	Server.prototype.ref = function() { return this; };
-	Server.prototype.unref = function() { return this; };
+			var result = JSON.parse(__go_tcp_listen(host, port || 0));
+			this._id = result.serverId;
+			this._port = result.port;
+			this._host = host;
+			__activeServers[String(this._id)] = this;
+			return this;
+		}
+		close(cb) {
+			if (this._id != null) {
+				__go_tcp_server_close(this._id);
+				this._listening = false;
+				delete __activeServers[String(this._id)];
+				this._id = null;
+			}
+			if (typeof cb === 'function') this.once('close', cb);
+			var self = this;
+			setImmediate(function() { self.emit('close'); });
+			return this;
+		}
+		address() {
+			return { port: this._port, family: 'IPv4', address: this._host };
+		}
+		ref() { return this; }
+		unref() { return this; }
+	}
 
 	globalThis.__tcpServerDeliverEvents = function(eventsMap) {
 		var ids = Object.keys(eventsMap);
@@ -366,26 +362,25 @@ func tcpServerJSSource() string {
 	// --- tls.createServer ---
 	var tlsModule = globalThis.require('tls');
 
-	function TLSServer(opts, connectionListener) {
-		Server.call(this, connectionListener);
-		this._cert = opts.cert || '';
-		this._key = opts.key || '';
+	class TLSServer extends Server {
+		constructor(opts, connectionListener) {
+			super(connectionListener);
+			this._cert = opts.cert || '';
+			this._key = opts.key || '';
+		}
+		listen(port, host, cb) {
+			if (typeof host === 'function') { cb = host; host = '0.0.0.0'; }
+			host = host || '0.0.0.0';
+			if (typeof cb === 'function') this.once('listening', cb);
+
+			var result = JSON.parse(__go_tls_listen(host, port || 0, this._cert, this._key));
+			this._id = result.serverId;
+			this._port = result.port;
+			this._host = host;
+			__activeServers[String(this._id)] = this;
+			return this;
+		}
 	}
-	TLSServer.prototype = Object.create(Server.prototype);
-	TLSServer.prototype.constructor = TLSServer;
-
-	TLSServer.prototype.listen = function(port, host, cb) {
-		if (typeof host === 'function') { cb = host; host = '0.0.0.0'; }
-		host = host || '0.0.0.0';
-		if (typeof cb === 'function') this.once('listening', cb);
-
-		var result = JSON.parse(__go_tls_listen(host, port || 0, this._cert, this._key));
-		this._id = result.serverId;
-		this._port = result.port;
-		this._host = host;
-		__activeServers[String(this._id)] = this;
-		return this;
-	};
 
 	tlsModule.createServer = function(opts, connectionListener) {
 		if (typeof opts === 'function') {

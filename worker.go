@@ -294,34 +294,32 @@ func workerThreadsJSSource() string {
 (function() {
 	var EventEmitter = globalThis.require('events').EventEmitter;
 
-	function Worker(filename, opts) {
-		EventEmitter.call(this);
-		var self = this;
-		opts = opts || {};
-		var workerDataJSON = opts.workerData !== undefined ? JSON.stringify(opts.workerData) : 'null';
+	class Worker extends EventEmitter {
+		constructor(filename, opts) {
+			super();
+			var self = this;
+			opts = opts || {};
+			var workerDataJSON = opts.workerData !== undefined ? JSON.stringify(opts.workerData) : 'null';
 
-		try {
-			self.threadId = __go_worker_create(filename, workerDataJSON);
-		} catch(e) {
-			setImmediate(function() { self.emit('error', e); });
-			return;
+			try {
+				self.threadId = __go_worker_create(filename, workerDataJSON);
+			} catch(e) {
+				setImmediate(function() { self.emit('error', e); });
+				return;
+			}
+
+			// Register in worker registry for event delivery by Go.
+			__activeWorkers[String(self.threadId)] = self;
 		}
-
-		// Register in worker registry for event delivery by Go.
-		__activeWorkers[String(self.threadId)] = self;
+		postMessage(msg) {
+			__go_worker_post(this.threadId, JSON.stringify(msg, __sabReplacer));
+		}
+		terminate() {
+			delete __activeWorkers[String(this.threadId)];
+			__go_worker_terminate(this.threadId);
+			this.emit('exit', 0);
+		}
 	}
-	Worker.prototype = Object.create(EventEmitter.prototype);
-	Worker.prototype.constructor = Worker;
-
-	Worker.prototype.postMessage = function(msg) {
-		__go_worker_post(this.threadId, JSON.stringify(msg, __sabReplacer));
-	};
-
-	Worker.prototype.terminate = function() {
-		delete __activeWorkers[String(this.threadId)];
-		__go_worker_terminate(this.threadId);
-		this.emit('exit', 0);
-	};
 
 	// Structured clone helpers for SharedArrayBuffer transfer via JSON.
 	function __sabReplacer(key, value) {

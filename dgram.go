@@ -274,68 +274,63 @@ func dgramJSSource() string {
 	var EventEmitter = globalThis.require('events').EventEmitter;
 	var __activeDgramSockets = {};
 
-	function Socket(type) {
-		EventEmitter.call(this);
-		this._type = type || 'udp4';
-		this._id = __go_dgram_create(this._type);
-		this._bound = false;
-		__activeDgramSockets[String(this._id)] = this;
+	class Socket extends EventEmitter {
+		constructor(type) {
+			super();
+			this._type = type || 'udp4';
+			this._id = __go_dgram_create(this._type);
+			this._bound = false;
+			__activeDgramSockets[String(this._id)] = this;
+		}
+		bind(port, address, cb) {
+			if (typeof port === 'object') {
+				var opts = port;
+				cb = address;
+				port = opts.port || 0;
+				address = opts.address || '';
+			}
+			if (typeof address === 'function') { cb = address; address = ''; }
+			if (typeof cb === 'function') this.once('listening', cb);
+			var actualPort = __go_dgram_bind(this._id, port || 0, address || '');
+			this._port = actualPort;
+			this._bound = true;
+			return this;
+		}
+		send(msg) {
+			var args = Array.prototype.slice.call(arguments, 1);
+			var cb, address, port;
+			if (typeof args[args.length - 1] === 'function') cb = args.pop();
+			if (args.length >= 4 && typeof args[0] === 'number' && typeof args[1] === 'number') {
+				msg = msg.slice(args[0], args[0] + args[1]);
+				port = args[2];
+				address = args[3];
+			} else {
+				port = args[0];
+				address = args[1];
+			}
+			if (typeof msg !== 'string') msg = String(msg);
+			try {
+				__go_dgram_send(this._id, msg, port, address || '127.0.0.1');
+				if (cb) cb(null);
+			} catch(e) {
+				if (cb) cb(e);
+				else this.emit('error', e);
+			}
+		}
+		close(cb) {
+			if (typeof cb === 'function') this.once('close', cb);
+			try { __go_dgram_close(this._id); } catch(e) {}
+			delete __activeDgramSockets[String(this._id)];
+			return this;
+		}
+		address() {
+			return { port: this._port || 0, family: this._type === 'udp6' ? 'IPv6' : 'IPv4', address: '0.0.0.0' };
+		}
+		ref() { return this; }
+		unref() { return this; }
+		setRecvBufferSize() {}
+		setSendBufferSize() {}
 	}
-	Socket.prototype = Object.create(EventEmitter.prototype);
-	Socket.prototype.constructor = Socket;
-
-	Socket.prototype.bind = function(port, address, cb) {
-		if (typeof port === 'object') {
-			var opts = port;
-			cb = address;
-			port = opts.port || 0;
-			address = opts.address || '';
-		}
-		if (typeof address === 'function') { cb = address; address = ''; }
-		if (typeof cb === 'function') this.once('listening', cb);
-		var actualPort = __go_dgram_bind(this._id, port || 0, address || '');
-		this._port = actualPort;
-		this._bound = true;
-		return this;
-	};
-
-	Socket.prototype.send = function(msg) {
-		var args = Array.prototype.slice.call(arguments, 1);
-		var cb, address, port;
-		if (typeof args[args.length - 1] === 'function') cb = args.pop();
-		if (args.length >= 4 && typeof args[0] === 'number' && typeof args[1] === 'number') {
-			msg = msg.slice(args[0], args[0] + args[1]);
-			port = args[2];
-			address = args[3];
-		} else {
-			port = args[0];
-			address = args[1];
-		}
-		if (typeof msg !== 'string') msg = String(msg);
-		try {
-			__go_dgram_send(this._id, msg, port, address || '127.0.0.1');
-			if (cb) cb(null);
-		} catch(e) {
-			if (cb) cb(e);
-			else this.emit('error', e);
-		}
-	};
-
-	Socket.prototype.close = function(cb) {
-		if (typeof cb === 'function') this.once('close', cb);
-		try { __go_dgram_close(this._id); } catch(e) {}
-		delete __activeDgramSockets[String(this._id)];
-		return this;
-	};
-
-	Socket.prototype.address = function() {
-		return { port: this._port || 0, family: this._type === 'udp6' ? 'IPv6' : 'IPv4', address: '0.0.0.0' };
-	};
-
-	Socket.prototype.ref = function() { return this; };
-	Socket.prototype.unref = function() { return this; };
-	Socket.prototype.setRecvBufferSize = function() {};
-	Socket.prototype.setSendBufferSize = function() {};
 
 	globalThis.__dgramDeliverEvents = function(events) {
 		for (var i = 0; i < events.length; i++) {

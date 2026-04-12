@@ -351,93 +351,88 @@ func asyncNetJSSource() string {
 	var EventEmitter = globalThis.require('events').EventEmitter;
 	var netModule = globalThis.require('net');
 
-	function Socket(opts) {
-		EventEmitter.call(this);
-		this._id = null;
-		this._connected = false;
-		this._destroyed = false;
-		this.readable = true;
-		this.writable = true;
-		this.remoteAddress = '';
-		this.remotePort = 0;
-	}
-	Socket.prototype = Object.create(EventEmitter.prototype);
-	Socket.prototype.constructor = Socket;
-
-	Socket.prototype.connect = function(portOrOpts, host, cb) {
-		var port, useTLS = false;
-		if (typeof portOrOpts === 'object') {
-			port = portOrOpts.port;
-			host = portOrOpts.host || 'localhost';
-			useTLS = !!portOrOpts.tls;
-			if (typeof host === 'function') { cb = host; host = 'localhost'; }
-		} else {
-			port = portOrOpts;
-			host = host || 'localhost';
+	class Socket extends EventEmitter {
+		constructor(opts) {
+			super();
+			this._id = null;
+			this._connected = false;
+			this._destroyed = false;
+			this.readable = true;
+			this.writable = true;
+			this.remoteAddress = '';
+			this.remotePort = 0;
 		}
-		if (typeof cb === 'function') this.once('connect', cb);
+		connect(portOrOpts, host, cb) {
+			var port, useTLS = false;
+			if (typeof portOrOpts === 'object') {
+				port = portOrOpts.port;
+				host = portOrOpts.host || 'localhost';
+				useTLS = !!portOrOpts.tls;
+				if (typeof host === 'function') { cb = host; host = 'localhost'; }
+			} else {
+				port = portOrOpts;
+				host = host || 'localhost';
+			}
+			if (typeof cb === 'function') this.once('connect', cb);
 
-		this.remoteAddress = host;
-		this.remotePort = port;
+			this.remoteAddress = host;
+			this.remotePort = port;
 
-		var self = this;
-		try {
-			self._id = __go_net_connect(host, port, useTLS);
-		} catch(e) {
-			setImmediate(function() { self.emit('error', e); });
+			var self = this;
+			try {
+				self._id = __go_net_connect(host, port, useTLS);
+			} catch(e) {
+				setImmediate(function() { self.emit('error', e); });
+				return self;
+			}
+
+			// Register in socket registry for event delivery by Go.
+			__activeSockets[String(self._id)] = self;
+
 			return self;
 		}
-
-		// Register in socket registry for event delivery by Go.
-		__activeSockets[String(self._id)] = self;
-
-		return self;
-	};
-
-	Socket.prototype.write = function(data, encoding, cb) {
-		if (typeof encoding === 'function') { cb = encoding; }
-		if (this._id != null) {
-			try { __go_net_write(this._id, String(data)); }
-			catch(e) { this.emit('error', e); }
+		write(data, encoding, cb) {
+			if (typeof encoding === 'function') { cb = encoding; }
+			if (this._id != null) {
+				try { __go_net_write(this._id, String(data)); }
+				catch(e) { this.emit('error', e); }
+			}
+			if (cb) cb();
+			return true;
 		}
-		if (cb) cb();
-		return true;
-	};
-
-	Socket.prototype.end = function(data, encoding, cb) {
-		if (typeof data === 'function') { cb = data; data = undefined; }
-		if (this._id != null) {
-			try { __go_net_end(this._id, data ? String(data) : ''); }
-			catch(e) {}
+		end(data, encoding, cb) {
+			if (typeof data === 'function') { cb = data; data = undefined; }
+			if (this._id != null) {
+				try { __go_net_end(this._id, data ? String(data) : ''); }
+				catch(e) {}
+			}
+			if (cb) cb();
+			return this;
 		}
-		if (cb) cb();
-		return this;
-	};
-
-	Socket.prototype.destroy = function(err) {
-		this._destroyed = true;
-		if (this._id != null) {
-			try { __go_net_destroy(this._id); } catch(e) {}
+		destroy(err) {
+			this._destroyed = true;
+			if (this._id != null) {
+				try { __go_net_destroy(this._id); } catch(e) {}
+			}
+			if (err) this.emit('error', err);
+			this.emit('close');
+			return this;
 		}
-		if (err) this.emit('error', err);
-		this.emit('close');
-		return this;
-	};
-
-	Socket.prototype.setEncoding = function() { return this; };
-	Socket.prototype.setNoDelay = function() { return this; };
-	Socket.prototype.setKeepAlive = function() { return this; };
-	Socket.prototype.setTimeout = function(ms, cb) {
-		if (cb) this.once('timeout', cb);
-		return this;
-	};
-	Socket.prototype.ref = function() { return this; };
-	Socket.prototype.unref = function() { return this; };
-	Socket.prototype.pipe = function(dest) {
-		this.on('data', function(d) { dest.write(d); });
-		this.on('end', function() { dest.end(); });
-		return dest;
-	};
+		setEncoding() { return this; }
+		setNoDelay() { return this; }
+		setKeepAlive() { return this; }
+		setTimeout(ms, cb) {
+			if (cb) this.once('timeout', cb);
+			return this;
+		}
+		ref() { return this; }
+		unref() { return this; }
+		pipe(dest) {
+			this.on('data', function(d) { dest.write(d); });
+			this.on('end', function() { dest.end(); });
+			return dest;
+		}
+	}
 
 	// Override net module.
 	netModule.Socket = Socket;
