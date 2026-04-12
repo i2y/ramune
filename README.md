@@ -702,8 +702,9 @@ Linux does not need JIT setup.
 | worker_threads | 75% (+ SharedArrayBuffer) | | readline | 70% |
 | vm | 70% | | querystring | 80% |
 | timers/promises | 70% | | perf_hooks | basic |
-| util | 80% (types, promisify, format) | | process | 85% (signals, exit, env, tty) |
-| tty | 70% (isatty, WriteStream) | | | |
+| util | 80% (types, promisify, format, debuglog) | | process | 85% (stdin, signals, exit, env, tty) |
+| tty | 70% (isatty, WriteStream) | | dgram | 70% (UDP) |
+| async_hooks | basic (AsyncLocalStorage) | | module | basic (createRequire) |
 
 ## Web Platform APIs
 
@@ -718,6 +719,7 @@ Linux does not need JIT setup.
 | `Headers` / `Request` / `Response` | Supported (ReadableStream body) |
 | `TextEncoder` / `TextDecoder` | Supported (UTF-8) |
 | `AbortController` / `AbortSignal` | Supported |
+| `EventTarget` / `Event` / `CustomEvent` | Supported (addEventListener, once, handleEvent) |
 | `URL` / `URLSearchParams` | Supported |
 | `WebSocket` | Supported (server-side via Ramune.serve) |
 | `performance.now` / `mark` / `measure` | Supported |
