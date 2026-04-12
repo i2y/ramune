@@ -666,7 +666,6 @@ func nodeCompatJSSource() string {
 			};
 
 			child.kill = function(signal) { child.killed = true; child.emit('exit', null, signal || 'SIGTERM'); };
-			child.off = child.removeListener;
 			child.ref = function() { return child; };
 			child.unref = function() { return child; };
 			return child;
@@ -740,7 +739,6 @@ func nodeCompatJSSource() string {
 		write: function(s) { __go_stderr_raw(String(s)); return true; },
 		isTTY: __go_tty_isatty(2)
 	};
-	// p.stdin is set up after EventEmitter class is defined (see below).
 	p.nextTick = function(fn) { queueMicrotask(fn); };
 	p.hrtime = function(prev) {
 		var raw = JSON.parse(__go_hrtime());
@@ -808,8 +806,9 @@ func nodeCompatJSSource() string {
 		listenerCount(event) {
 			return (this._events[event] || []).length;
 		}
+		addListener(event, fn) { return this.on(event, fn); }
+		off(event, fn) { return this.removeListener(event, fn); }
 	}
-	EventEmitter.prototype.addListener = EventEmitter.prototype.on;
 
 	var events = {
 		EventEmitter: EventEmitter,
@@ -825,7 +824,7 @@ func nodeCompatJSSource() string {
 	p.on = EventEmitter.prototype.on;
 	p.addListener = EventEmitter.prototype.addListener;
 	p.once = EventEmitter.prototype.once;
-	p.off = EventEmitter.prototype.removeListener;
+	p.off = EventEmitter.prototype.off;
 	p.removeListener = EventEmitter.prototype.removeListener;
 	p.removeAllListeners = EventEmitter.prototype.removeAllListeners;
 	p.emit = EventEmitter.prototype.emit;
@@ -942,7 +941,6 @@ func nodeCompatJSSource() string {
 			return r;
 		}
 	}
-	Readable.prototype.addListener = Readable.prototype.on;
 
 	class Writable extends EventEmitter {
 		constructor(opts) {
@@ -991,7 +989,6 @@ func nodeCompatJSSource() string {
 	class Duplex extends Readable {
 		constructor(opts) {
 			super(opts);
-			// Writable instance properties (mixin - single inheritance constraint)
 			this._chunks = [];
 			this._finished = false;
 			this._writing = false;

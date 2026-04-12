@@ -441,7 +441,6 @@ func asyncSpawnJSSource() string {
 			child.killed = true;
 			try { __go_async_spawn_kill(pid); } catch(e) {}
 		};
-		child.off = child.removeListener;
 		child.ref = function() { return child; };
 		child.unref = function() { return child; };
 
