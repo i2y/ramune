@@ -859,6 +859,7 @@ func nodeCompatJSSource() string {
 			this.readable = true;
 			this.readableHighWaterMark = (opts && opts.highWaterMark) || 16384;
 			this.objectMode = !!(opts && opts.objectMode);
+			this._readableBytes = 0;
 			this._pipes = [];
 			this._destroyed = false;
 			if (opts && opts.read) this._read = opts.read;
@@ -866,15 +867,7 @@ func nodeCompatJSSource() string {
 		}
 		get readableFlowing() { return this._flowing; }
 		get readableEnded() { return this._readableEnded; }
-		get readableLength() {
-			if (this.objectMode) return this._buffer.length;
-			var len = 0;
-			for (var i = 0; i < this._buffer.length; i++) {
-				var c = this._buffer[i];
-				len += typeof c === 'string' ? c.length : (c && c.length || 0);
-			}
-			return len;
-		}
+		get readableLength() { return this._readableBytes; }
 		_read() {}
 		push(chunk) {
 			if (chunk === null) {
@@ -885,13 +878,17 @@ func nodeCompatJSSource() string {
 				}
 				return false;
 			}
+			var clen = this.objectMode ? 1 : (typeof chunk === 'string' ? chunk.length : (chunk && chunk.length || 0));
+			this._readableBytes += clen;
 			if (this._flowing) {
+				this._readableBytes -= clen;
 				this.emit('data', chunk);
 			} else {
+				var wasEmpty = this._buffer.length === 0;
 				this._buffer.push(chunk);
-				this.emit('readable');
+				if (wasEmpty) this.emit('readable');
 			}
-			return this.readableLength < this.readableHighWaterMark;
+			return this._readableBytes < this.readableHighWaterMark;
 		}
 		read(size) {
 			if (this._buffer.length === 0) {
@@ -904,6 +901,7 @@ func nodeCompatJSSource() string {
 			if (size === undefined || size === null || size === 0) {
 				if (this.objectMode) {
 					var item = this._buffer.shift();
+					this._readableBytes--;
 					if (this._buffer.length === 0 && this._ended) {
 						this._readableEnded = true;
 						setImmediate(this.emit.bind(this, 'end'));
@@ -912,6 +910,7 @@ func nodeCompatJSSource() string {
 				}
 				var all = this._buffer.join('');
 				this._buffer = [];
+				this._readableBytes = 0;
 				if (this._ended) {
 					this._readableEnded = true;
 					setImmediate(this.emit.bind(this, 'end'));
@@ -920,7 +919,9 @@ func nodeCompatJSSource() string {
 			}
 			var result = '';
 			while (result.length < size && this._buffer.length > 0) {
-				result += this._buffer.shift();
+				var c = this._buffer.shift();
+				this._readableBytes -= (typeof c === 'string' ? c.length : (c && c.length || 0));
+				result += c;
 			}
 			return result || null;
 		}
@@ -931,7 +932,6 @@ func nodeCompatJSSource() string {
 		}
 		pipe(dest, opts) {
 			var self = this;
-			self._pipes.push(dest);
 			function ondata(chunk) {
 				var ret = dest.write(chunk);
 				if (ret === false) self.pause();
@@ -939,10 +939,12 @@ func nodeCompatJSSource() string {
 			function ondrain() { self.resume(); }
 			function onend() { if (!opts || opts.end !== false) dest.end(); }
 			function cleanup() {
-				dest.removeListener('drain', ondrain);
 				self.removeListener('data', ondata);
 				self.removeListener('end', onend);
+				dest.removeListener('drain', ondrain);
+				dest.removeListener('close', cleanup);
 			}
+			self._pipes.push({ dest: dest, cleanup: cleanup });
 			self.on('data', ondata);
 			self.on('end', onend);
 			dest.on('drain', ondrain);
@@ -952,17 +954,25 @@ func nodeCompatJSSource() string {
 			return dest;
 		}
 		unpipe(dest) {
+			var removed = [];
 			if (dest) {
-				this._pipes = this._pipes.filter(function(d) { return d !== dest; });
+				this._pipes = this._pipes.filter(function(p) {
+					if (p.dest === dest) { removed.push(p); return false; }
+					return true;
+				});
 			} else {
+				removed = this._pipes;
 				this._pipes = [];
 			}
+			for (var i = 0; i < removed.length; i++) removed[i].cleanup();
 			return this;
 		}
 		resume() {
 			this._flowing = true;
 			while (this._buffer.length > 0) {
-				this.emit('data', this._buffer.shift());
+				var c = this._buffer.shift();
+				this._readableBytes -= this.objectMode ? 1 : (typeof c === 'string' ? c.length : (c && c.length || 0));
+				this.emit('data', c);
 			}
 			if (this._ended && !this._readableEnded) {
 				this._readableEnded = true;
@@ -980,6 +990,7 @@ func nodeCompatJSSource() string {
 			if (this._destroyed) return this;
 			this._destroyed = true;
 			this._buffer = [];
+			this._readableBytes = 0;
 			this._ended = true;
 			var self = this;
 			if (this._destroy) {
@@ -1003,14 +1014,20 @@ func nodeCompatJSSource() string {
 			var ended = false;
 			var err = null;
 			var waiting = null;
-			self.on('error', function(e) { err = e; if (waiting) { waiting.reject(e); waiting = null; } });
-			self.on('end', function() { ended = true; if (waiting) { waiting.resolve({ value: undefined, done: true }); waiting = null; } });
+			function onError(e) { err = e; if (waiting) { waiting.reject(e); waiting = null; } }
+			function onEnd() { ended = true; if (waiting) { waiting.resolve({ value: undefined, done: true }); waiting = null; } }
+			self.on('error', onError);
+			self.on('end', onEnd);
+			function cleanup() {
+				self.removeListener('error', onError);
+				self.removeListener('end', onEnd);
+			}
 			return {
 				next: function() {
 					if (err) return Promise.reject(err);
 					var chunk = self.read();
 					if (chunk !== null) return Promise.resolve({ value: chunk, done: false });
-					if (ended || self._ended) return Promise.resolve({ value: undefined, done: true });
+					if (ended || self._ended) { cleanup(); return Promise.resolve({ value: undefined, done: true }); }
 					return new Promise(function(resolve, reject) {
 						waiting = { resolve: resolve, reject: reject };
 						function onData(c) {
@@ -1021,6 +1038,8 @@ func nodeCompatJSSource() string {
 					});
 				},
 				return: function() {
+					if (waiting) { waiting.resolve({ value: undefined, done: true }); waiting = null; }
+					cleanup();
 					self.destroy();
 					return Promise.resolve({ value: undefined, done: true });
 				}
@@ -1058,7 +1077,7 @@ func nodeCompatJSSource() string {
 			this._chunks = [];
 			this._finished = false;
 			this._writing = false;
-			this._ended = false;
+			this._writableEnded = false;
 			this._destroyed = false;
 			this._corked = 0;
 			this._corkedChunks = [];
@@ -1067,11 +1086,11 @@ func nodeCompatJSSource() string {
 			this.writableLength = 0;
 			if (opts && opts.write) this._write = opts.write;
 			if (opts && opts.writev) this._writev = opts.writev;
-			if (opts && opts.destroy) this.__destroyCb = opts.destroy;
+			if (opts && opts.destroy) this._destroy = opts.destroy;
 			if (opts && opts.final) this._final = opts.final;
 			this.objectMode = !!(opts && opts.objectMode);
 		}
-		get writableEnded() { return this._ended; }
+		get writableEnded() { return this._writableEnded; }
 		get writableFinished() { return this._finished; }
 		_write(chunk, encoding, cb) { cb(); }
 		write(chunk, encoding, cb) {
@@ -1110,7 +1129,7 @@ func nodeCompatJSSource() string {
 			if (typeof chunk === 'function') { cb = chunk; chunk = undefined; }
 			if (typeof encoding === 'function') { cb = encoding; encoding = undefined; }
 			if (chunk !== undefined && chunk !== null) this.write(chunk, encoding);
-			this._ended = true;
+			this._writableEnded = true;
 			var self = this;
 			function doFinish() {
 				self._finished = true;
@@ -1130,8 +1149,8 @@ func nodeCompatJSSource() string {
 			this._destroyed = true;
 			this._finished = true;
 			var self = this;
-			if (this.__destroyCb) {
-				this.__destroyCb(err, function(e) {
+			if (this._destroy) {
+				this._destroy(err, function(e) {
 					if (e) self.emit('error', e);
 					self.emit('close');
 				});
@@ -1149,8 +1168,7 @@ func nodeCompatJSSource() string {
 			this._chunks = [];
 			this._finished = false;
 			this._writing = false;
-			this._ended = false;
-			this._destroyed = false;
+			this._writableEnded = false;
 			this._corked = 0;
 			this._corkedChunks = [];
 			this.writable = true;
