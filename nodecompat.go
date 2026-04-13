@@ -338,6 +338,9 @@ func (r *Runtime) installNodeCompat() error {
 	if err := r.registerFuncLocked("__go_tty_getsize", goTTYGetSize); err != nil {
 		return err
 	}
+	if err := r.registerFuncLocked("__go_resolve_and_load", r.goResolveAndLoadFunc()); err != nil {
+		return err
+	}
 
 	if err := r.execLocked(nodeCompatJSSource()); err != nil {
 		return err
@@ -2843,49 +2846,89 @@ func nodeCompatJSSource() string {
 	})();
 	_modules['perf_hooks'] = { performance: globalThis.performance, PerformanceObserver: globalThis.PerformanceObserver };
 
-	// require
-	globalThis.require = function(mod) {
-		if (_modules[mod]) return _modules[mod];
-		// Try without node: prefix.
-		if (mod.indexOf('node:') === 0) {
-			var name = mod.slice(5);
-			if (_modules[name]) return _modules[name];
-		}
-		// Check globalThis for packages installed via Dependencies().
-		var varName = mod.replace(/^@/, '').replace(/\//g, '_').replace(/-/g, '_');
-		if (globalThis[varName]) return globalThis[varName];
-		return {};
-	};
-	globalThis.require.resolve = function(mod) {
-		if (globalThis.__nodeModulesDir) {
-			var resolved = globalThis.__nodeModulesDir + '/' + mod;
-			if (__go_file_exists(resolved)) return resolved;
-			var exts = ['.js', '.json', '.node'];
-			for (var i = 0; i < exts.length; i++) {
-				var p = resolved + exts[i];
-				if (__go_file_exists(p)) return p;
+	// require — file-based module loading with ESM-to-CJS transform
+	var _cache = {};
+	function _getBaseDir() {
+		return globalThis.__dirname || __go_cwd();
+	}
+	function makeRequire(fromDir) {
+		var req = function(mod) {
+			// 1. Built-in modules
+			if (_modules[mod]) return _modules[mod];
+			if (mod.indexOf('node:') === 0) {
+				var name = mod.slice(5);
+				if (_modules[name]) return _modules[name];
 			}
-			// Try package.json main/bin field.
-			var pkgPath = resolved + '/package.json';
-			if (__go_file_exists(pkgPath)) {
-				try {
-					var pkg = JSON.parse(__go_read_file(pkgPath));
-					if (pkg.main) {
-						var mainPath = resolved + '/' + pkg.main;
-						if (__go_file_exists(mainPath)) return mainPath;
-					}
-					if (pkg.bin) {
-						if (typeof pkg.bin === 'string') return resolved + '/' + pkg.bin;
-						var binKeys = Object.keys(pkg.bin);
-						if (binKeys.length > 0) return resolved + '/' + pkg.bin[binKeys[0]];
-					}
-				} catch(e) {}
+
+			// 2. Dependencies() packages (globalThis)
+			var varName = mod.replace(/^@/, '').replace(/\//g, '_').replace(/-/g, '_');
+			if (globalThis[varName] && typeof globalThis[varName] === 'object'
+				&& Object.keys(globalThis[varName]).length > 0) return globalThis[varName];
+			if (typeof globalThis[varName] === 'function') return globalThis[varName];
+
+			// 3. File-based resolution via Go
+			var dir = fromDir || _getBaseDir();
+			var resultJSON;
+			try {
+				resultJSON = __go_resolve_and_load(mod, dir);
+			} catch(e) {
+				throw new Error("Cannot find module '" + mod + "'\nRequire stack:\n- " + dir);
 			}
-		}
-		throw new Error("Cannot find module '" + mod + "'");
-	};
-	// Expose _modules so later-installed modules (e.g. bun:sqlite) can register.
-	globalThis.require._modules = _modules;
+			var resolved = JSON.parse(resultJSON);
+			var absPath = resolved.path;
+
+			// 4. Cache check
+			if (_cache[absPath]) return _cache[absPath].exports;
+
+			// 5. JSON files
+			if (absPath.slice(-5) === '.json') {
+				var jsonResult = JSON.parse(resolved.source);
+				_cache[absPath] = { exports: jsonResult };
+				return jsonResult;
+			}
+
+			// 6. CJS module wrapper
+			var moduleObj = { exports: {} };
+			_cache[absPath] = moduleObj; // cache before eval for circular requires
+
+			var source = resolved.source;
+			// Bun.plugin() loaders
+			if (typeof globalThis.__bunPluginResolve === 'function') {
+				var plugin = globalThis.__bunPluginResolve(absPath);
+				if (plugin && plugin.callback) {
+					var pResult = plugin.callback({ path: absPath, loader: plugin.loader || 'js' });
+					if (pResult && pResult.exports) { moduleObj.exports = pResult.exports; return pResult.exports; }
+					if (pResult && pResult.contents) source = pResult.contents;
+				}
+			}
+
+			var fn = new Function('exports', 'require', 'module', '__filename', '__dirname',
+				source + '\n//# sourceURL=' + absPath);
+			var modDir = absPath.substring(0, absPath.lastIndexOf('/'));
+			var childRequire = makeRequire(modDir);
+			fn.call(moduleObj.exports, moduleObj.exports, childRequire, moduleObj, absPath, modDir);
+			return moduleObj.exports;
+		};
+
+		req.resolve = function(mod) {
+			// Built-in modules
+			if (_modules[mod]) return mod;
+			if (mod.indexOf('node:') === 0 && _modules[mod.slice(5)]) return mod;
+			var dir = fromDir || _getBaseDir();
+			try {
+				var resultJSON = __go_resolve_and_load(mod, dir);
+				var resolved = JSON.parse(resultJSON);
+				return resolved.path;
+			} catch(e) {
+				throw new Error("Cannot find module '" + mod + "'");
+			}
+		};
+		req.resolve.paths = function() { return null; };
+		req._modules = _modules;
+		req.cache = _cache;
+		return req;
+	}
+	globalThis.require = makeRequire(null);
 
 	// Dynamic import() polyfill — delegates to require() and wraps in Promise.
 	globalThis.__dynamicImport = function(mod) {
@@ -2907,50 +2950,10 @@ func nodeCompatJSSource() string {
 
 	// module.createRequire — used by ESM-to-CJS interop in many npm packages
 	var createRequire = function(filename) {
-		var dir = '';
-		if (filename) {
-			var idx = String(filename).lastIndexOf('/');
-			dir = idx >= 0 ? String(filename).substring(0, idx) : '.';
-		}
-		var cr = function(mod) { return globalThis.require(mod); };
-		cr.resolve = function(mod) {
-			// Relative path: resolve from dir first
-			if (mod.charAt(0) === '.') {
-				var rel = dir + '/' + mod;
-				if (__go_file_exists(rel)) return rel;
-				var exts = ['.js', '.json', '.node'];
-				for (var i = 0; i < exts.length; i++) {
-					if (__go_file_exists(rel + exts[i])) return rel + exts[i];
-				}
-				// Fallback: search __nodeModulesDir packages for the relative file.
-				// Needed when import.meta.url is unavailable in bundled IIFE code.
-				if (globalThis.__nodeModulesDir) {
-					var base = mod.replace(/^\.\//, '');
-					try {
-						var entries = JSON.parse(__go_readdir(globalThis.__nodeModulesDir, 'false'));
-						for (var e = 0; e < entries.length; e++) {
-							var entry = entries[e];
-							if (entry.charAt(0) === '@') {
-								try {
-									var scoped = JSON.parse(__go_readdir(globalThis.__nodeModulesDir + '/' + entry, 'false'));
-									for (var s = 0; s < scoped.length; s++) {
-										var candidate = globalThis.__nodeModulesDir + '/' + entry + '/' + scoped[s] + '/' + base;
-										if (__go_file_exists(candidate)) return candidate;
-									}
-								} catch(ex) {}
-							} else {
-								var candidate = globalThis.__nodeModulesDir + '/' + entry + '/' + base;
-								if (__go_file_exists(candidate)) return candidate;
-							}
-						}
-					} catch(ex) {}
-				}
-				throw new Error("Cannot find module '" + mod + "'");
-			}
-			return globalThis.require.resolve(mod);
-		};
-		cr.resolve.paths = function() { return null; };
-		return cr;
+		var s = String(filename || '').replace(/^file:\/\//, '');
+		var idx = s.lastIndexOf('/');
+		var dir = idx >= 0 ? s.substring(0, idx) : '.';
+		return makeRequire(dir);
 	};
 	globalThis.module.createRequire = createRequire;
 	_modules['module'] = {
