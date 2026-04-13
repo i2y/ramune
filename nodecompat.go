@@ -2958,4 +2958,3 @@ func nodeCompatJSSource() string {
 	src = strings.Replace(src, "__SIGNALS__", signalConstants(), 1)
 	return src
 }
-
