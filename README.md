@@ -747,7 +747,7 @@ Linux does not need JIT setup.
 | timers/promises | 70% | | process | 85% (stdin, signals, exit, env, tty) |
 | util | 80% (types, promisify, format, debuglog) | | tty | 70% (isatty, WriteStream) |
 | dgram | 70% (UDP) | | async_hooks | basic (AsyncLocalStorage) |
-| module | basic (createRequire) | | | |
+| module | createRequire, file-based require with ESM-to-CJS | | | |
 
 ### Stream Classes
 
@@ -815,6 +815,19 @@ Supports `http2.connect()`, `createServer()`, `createSecureServer()`, stream mul
 | `setTimeout` / `setInterval` | Supported |
 | `navigator` | Supported (userAgent, platform, hardwareConcurrency) |
 | `console.time` / `table` / `trace` | Supported |
+
+### File-based `require()` with ESM Support
+
+`require()` loads files from the filesystem with automatic ESM-to-CJS conversion:
+
+```js
+const { hello } = require('./lib.mjs');     // ESM -> CJS transform
+const data = require('./config.json');       // JSON parsing
+const utils = require('./utils.ts');         // TypeScript stripping
+const pkg = require('some-package');         // node_modules resolution
+```
+
+ESM detection: `.mjs` extension, `package.json` `"type": "module"`, or `import`/`export` keywords. TypeScript ESM files (`.ts` with `import`/`export`) are processed in a single esbuild pass. Modules are cached by resolved absolute path. Per-module `require` functions ensure correct relative path resolution in nested imports.
 
 Ramune also supports `package.json` `"exports"` field resolution (conditional exports with `require`/`import`/`default` and subpath exports).
 
