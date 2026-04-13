@@ -338,7 +338,10 @@ func (r *Runtime) installNodeCompat() error {
 	if err := r.registerFuncLocked("__go_tty_getsize", goTTYGetSize); err != nil {
 		return err
 	}
-	if err := r.registerFuncLocked("__go_resolve_and_load", r.goResolveAndLoadFunc()); err != nil {
+	if err := r.registerFuncLocked("__go_resolve_module", r.goResolveModuleFunc()); err != nil {
+		return err
+	}
+	if err := r.registerFuncLocked("__go_load_module", r.goLoadModuleFunc()); err != nil {
 		return err
 	}
 
@@ -2846,53 +2849,50 @@ func nodeCompatJSSource() string {
 	})();
 	_modules['perf_hooks'] = { performance: globalThis.performance, PerformanceObserver: globalThis.PerformanceObserver };
 
-	// require — file-based module loading with ESM-to-CJS transform
+	// require - file-based module loading with ESM-to-CJS transform
 	var _cache = {};
 	function _getBaseDir() {
 		return globalThis.__dirname || __go_cwd();
 	}
 	function makeRequire(fromDir) {
 		var req = function(mod) {
-			// 1. Built-in modules
 			if (_modules[mod]) return _modules[mod];
 			if (mod.indexOf('node:') === 0) {
 				var name = mod.slice(5);
 				if (_modules[name]) return _modules[name];
 			}
 
-			// 2. Dependencies() packages (globalThis)
+			// Dependencies() packages (globalThis)
 			var varName = mod.replace(/^@/, '').replace(/\//g, '_').replace(/-/g, '_');
-			if (globalThis[varName] && typeof globalThis[varName] === 'object'
-				&& Object.keys(globalThis[varName]).length > 0) return globalThis[varName];
-			if (typeof globalThis[varName] === 'function') return globalThis[varName];
+			var gv = globalThis[varName];
+			if (gv != null && typeof gv === 'object') {
+				for (var _k in gv) return gv; // O(1) non-empty check
+			}
+			if (typeof gv === 'function') return gv;
 
-			// 3. File-based resolution via Go
+			// Resolve path (no file read)
 			var dir = fromDir || _getBaseDir();
-			var resultJSON;
+			var absPath;
 			try {
-				resultJSON = __go_resolve_and_load(mod, dir);
+				absPath = __go_resolve_module(mod, dir);
 			} catch(e) {
 				throw new Error("Cannot find module '" + mod + "'\nRequire stack:\n- " + dir);
 			}
-			var resolved = JSON.parse(resultJSON);
-			var absPath = resolved.path;
 
-			// 4. Cache check
 			if (_cache[absPath]) return _cache[absPath].exports;
 
-			// 5. JSON files
+			// JSON files
 			if (absPath.slice(-5) === '.json') {
-				var jsonResult = JSON.parse(resolved.source);
+				var jsonResult = JSON.parse(__go_load_module(absPath));
 				_cache[absPath] = { exports: jsonResult };
 				return jsonResult;
 			}
 
-			// 6. CJS module wrapper
+			// CJS module wrapper
 			var moduleObj = { exports: {} };
-			_cache[absPath] = moduleObj; // cache before eval for circular requires
+			_cache[absPath] = moduleObj; // before eval for circular requires
 
-			var source = resolved.source;
-			// Bun.plugin() loaders
+			var source = __go_load_module(absPath);
 			if (typeof globalThis.__bunPluginResolve === 'function') {
 				var plugin = globalThis.__bunPluginResolve(absPath);
 				if (plugin && plugin.callback) {
@@ -2911,17 +2911,9 @@ func nodeCompatJSSource() string {
 		};
 
 		req.resolve = function(mod) {
-			// Built-in modules
 			if (_modules[mod]) return mod;
 			if (mod.indexOf('node:') === 0 && _modules[mod.slice(5)]) return mod;
-			var dir = fromDir || _getBaseDir();
-			try {
-				var resultJSON = __go_resolve_and_load(mod, dir);
-				var resolved = JSON.parse(resultJSON);
-				return resolved.path;
-			} catch(e) {
-				throw new Error("Cannot find module '" + mod + "'");
-			}
+			return __go_resolve_module(mod, fromDir || _getBaseDir());
 		};
 		req.resolve.paths = function() { return null; };
 		req._modules = _modules;

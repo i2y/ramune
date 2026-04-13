@@ -11,113 +11,95 @@ import (
 	"github.com/evanw/esbuild/pkg/api"
 )
 
-// isESMSource detects whether source code uses ESM syntax.
+var esmImportRe = regexp.MustCompile(`(?m)^\s*(import\s+|export\s+(default\s+|const\s+|function\s+|class\s+|let\s+|var\s+|\{))`)
+
 func isESMSource(filename, source string) bool {
-	// .mjs files are always ESM.
 	if strings.HasSuffix(filename, ".mjs") {
 		return true
 	}
-	// .cjs files are never ESM.
 	if strings.HasSuffix(filename, ".cjs") {
 		return false
 	}
-	// Check for package.json "type": "module".
+	// Walk parent directories for package.json "type": "module".
 	dir := filepath.Dir(filename)
-	for dir != "/" && dir != "." {
+	for {
 		pkgJSON := filepath.Join(dir, "package.json")
 		if data, err := os.ReadFile(pkgJSON); err == nil {
-			s := string(data)
-			if strings.Contains(s, `"type":"module"`) ||
-				strings.Contains(s, `"type": "module"`) {
+			var pkg struct {
+				Type string `json:"type"`
+			}
+			if json.Unmarshal(data, &pkg) == nil && pkg.Type == "module" {
 				return true
 			}
 			break
 		}
-		dir = filepath.Dir(dir)
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
 	}
-	// Check for import/export keywords.
 	return esmImportRe.MatchString(source)
 }
 
-var esmImportRe = regexp.MustCompile(`(?m)^\s*(import\s+|export\s+(default\s+|const\s+|function\s+|class\s+|let\s+|var\s+|\{))`)
-
-// transformESMToCJS converts ESM source to CommonJS using esbuild Transform API.
-func transformESMToCJS(filename, source string) (string, error) {
-	result := api.Transform(source, api.TransformOptions{
-		Sourcefile: filepath.Base(filename),
-		Loader:     api.LoaderJS,
-		Format:     api.FormatCommonJS,
-		Platform:   api.PlatformNode,
-		Target:     api.ESNext,
-	})
-	if len(result.Errors) > 0 {
-		msgs := make([]string, len(result.Errors))
-		for i, e := range result.Errors {
-			msgs[i] = e.Text
-		}
-		return "", fmt.Errorf("ESM transform: %s", strings.Join(msgs, "; "))
+func esbuildErrors(errs []api.Message) string {
+	msgs := make([]string, len(errs))
+	for i, e := range errs {
+		msgs[i] = e.Text
 	}
-	out := string(result.Code)
-	// Replace dynamic import() with __dynamicImport() polyfill.
-	out = strings.ReplaceAll(out, "import(", "__dynamicImport(")
-	return out, nil
+	return strings.Join(msgs, "; ")
 }
 
-// transformTypeScriptSource strips TypeScript type annotations using esbuild.
-func transformTypeScriptSource(filename string, source string) (string, error) {
-	loader := api.LoaderTS
-	if strings.HasSuffix(filename, ".tsx") {
-		loader = api.LoaderTSX
-	}
-	result := api.Transform(source, api.TransformOptions{
+// transformSource runs esbuild Transform with the given loader and format.
+// Use FormatDefault to skip ESM-to-CJS conversion (e.g. TS-only stripping).
+func transformSource(filename, source string, loader api.Loader, format api.Format) (string, error) {
+	opts := api.TransformOptions{
 		Sourcefile: filepath.Base(filename),
 		Loader:     loader,
 		Target:     api.ESNext,
-	})
-	if len(result.Errors) > 0 {
-		msgs := make([]string, len(result.Errors))
-		for i, e := range result.Errors {
-			msgs[i] = e.Text
-		}
-		return "", fmt.Errorf("TypeScript: %s", strings.Join(msgs, "; "))
 	}
-	return string(result.Code), nil
+	if format != api.FormatDefault {
+		opts.Format = format
+		opts.Platform = api.PlatformNode
+	}
+	result := api.Transform(source, opts)
+	if len(result.Errors) > 0 {
+		return "", fmt.Errorf("transform %s: %s", filepath.Base(filename), esbuildErrors(result.Errors))
+	}
+	out := string(result.Code)
+	if format == api.FormatCommonJS {
+		out = strings.ReplaceAll(out, "import(", "__dynamicImport(")
+	}
+	return out, nil
 }
 
-// resolveFileModule resolves a file path trying extension and index fallbacks.
-// Returns the absolute path if found.
 func resolveFileModule(resolved string) (string, error) {
-	candidates := []string{
-		resolved,
-		resolved + ".js",
-		resolved + ".mjs",
-		resolved + ".cjs",
-		resolved + ".ts",
-		resolved + ".tsx",
-		resolved + ".json",
-		filepath.Join(resolved, "index.js"),
-		filepath.Join(resolved, "index.mjs"),
-		filepath.Join(resolved, "index.ts"),
+	// Try exact path first to avoid building the candidate list.
+	if info, err := os.Stat(resolved); err == nil && !info.IsDir() {
+		return filepath.Abs(resolved)
 	}
-	for _, c := range candidates {
+	for _, ext := range []string{".js", ".mjs", ".cjs", ".ts", ".tsx", ".json"} {
+		c := resolved + ext
 		if info, err := os.Stat(c); err == nil && !info.IsDir() {
-			abs, _ := filepath.Abs(c)
-			return abs, nil
+			return filepath.Abs(c)
+		}
+	}
+	for _, idx := range []string{"index.js", "index.mjs", "index.cjs", "index.ts"} {
+		c := filepath.Join(resolved, idx)
+		if info, err := os.Stat(c); err == nil && !info.IsDir() {
+			return filepath.Abs(c)
 		}
 	}
 	return "", fmt.Errorf("Cannot find module '%s'", resolved)
 }
 
-// resolveNodeModule searches node_modules directories for a package.
 func resolveNodeModule(mod, baseDir string) (string, error) {
 	pkgName, subpath := splitModulePath(mod)
-
 	dir := baseDir
 	for {
 		nmDir := filepath.Join(dir, "node_modules", pkgName)
 		if info, err := os.Stat(nmDir); err == nil && info.IsDir() {
-			entry, err := resolvePackageEntry(nmDir, subpath)
-			if err == nil {
+			if entry, err := resolvePackageEntry(nmDir, subpath); err == nil {
 				return entry, nil
 			}
 		}
@@ -148,7 +130,6 @@ func splitModulePath(mod string) (string, string) {
 	return pkgName, subpath
 }
 
-// resolvePackageEntry resolves the entry file for a package via package.json.
 func resolvePackageEntry(pkgDir, subpath string) (string, error) {
 	pkgJSON := filepath.Join(pkgDir, "package.json")
 	data, err := os.ReadFile(pkgJSON)
@@ -160,27 +141,24 @@ func resolvePackageEntry(pkgDir, subpath string) (string, error) {
 		Main    string `json:"main"`
 		Exports any    `json:"exports"`
 	}
-	json.Unmarshal(data, &pkg)
+	if err := json.Unmarshal(data, &pkg); err != nil {
+		return resolveFileModule(filepath.Join(pkgDir, subpath))
+	}
 
-	// Try "exports" field first.
 	if pkg.Exports != nil {
 		if resolved := resolveExports(pkg.Exports, subpath); resolved != "" {
 			full := filepath.Join(pkgDir, resolved)
 			if _, err := os.Stat(full); err == nil {
-				abs, _ := filepath.Abs(full)
-				return abs, nil
+				return filepath.Abs(full)
 			}
 		}
 	}
 
-	// Fallback: "main" field (only for root subpath).
 	if subpath == "." && pkg.Main != "" {
 		full := filepath.Join(pkgDir, pkg.Main)
 		if _, err := os.Stat(full); err == nil {
-			abs, _ := filepath.Abs(full)
-			return abs, nil
+			return filepath.Abs(full)
 		}
-		// Try main with extension fallback.
 		if entry, err := resolveFileModule(full); err == nil {
 			return entry, nil
 		}
@@ -189,7 +167,6 @@ func resolvePackageEntry(pkgDir, subpath string) (string, error) {
 	return resolveFileModule(filepath.Join(pkgDir, subpath))
 }
 
-// resolveExports resolves a subpath against a package.json "exports" field.
 func resolveExports(exports any, subpath string) string {
 	switch v := exports.(type) {
 	case string:
@@ -210,7 +187,6 @@ func resolveExports(exports any, subpath string) string {
 	return ""
 }
 
-// resolveExportCondition resolves conditional exports (require/default/import).
 func resolveExportCondition(val any) string {
 	switch v := val.(type) {
 	case string:
@@ -231,9 +207,8 @@ func resolveExportCondition(val any) string {
 	return ""
 }
 
-// goResolveAndLoadFunc returns a GoFunc that resolves and loads a module.
-// It handles file resolution, TypeScript stripping, and ESM-to-CJS transformation.
-func (r *Runtime) goResolveAndLoadFunc() GoFunc {
+// goResolveModuleFunc returns a GoFunc that resolves a module specifier to an absolute path.
+func (r *Runtime) goResolveModuleFunc() GoFunc {
 	return func(args []any) (any, error) {
 		if len(args) < 2 {
 			return nil, fmt.Errorf("require: module and basedir required")
@@ -241,7 +216,6 @@ func (r *Runtime) goResolveAndLoadFunc() GoFunc {
 		mod, _ := args[0].(string)
 		fromDir, _ := args[1].(string)
 
-		// Resolve file path.
 		var absPath string
 		var err error
 		if strings.HasPrefix(mod, "./") || strings.HasPrefix(mod, "../") || strings.HasPrefix(mod, "/") {
@@ -256,38 +230,56 @@ func (r *Runtime) goResolveAndLoadFunc() GoFunc {
 		if err != nil {
 			return nil, err
 		}
-
-		// Permission check.
 		if err := r.perms.CheckRead(absPath); err != nil {
 			return nil, err
 		}
+		return absPath, nil
+	}
+}
 
-		// Read file.
+// goLoadModuleFunc returns a GoFunc that reads a file and applies TS/ESM transforms.
+func (r *Runtime) goLoadModuleFunc() GoFunc {
+	return func(args []any) (any, error) {
+		if len(args) < 1 {
+			return nil, fmt.Errorf("load: path required")
+		}
+		absPath, _ := args[0].(string)
+
+		if err := r.perms.CheckRead(absPath); err != nil {
+			return nil, err
+		}
 		data, err := os.ReadFile(absPath)
 		if err != nil {
 			return nil, err
 		}
 		source := string(data)
 
-		// TypeScript: strip type annotations.
 		ext := filepath.Ext(absPath)
-		if ext == ".ts" || ext == ".tsx" {
-			source, err = transformTypeScriptSource(absPath, source)
+		if ext == ".json" {
+			return source, nil
+		}
+
+		isTS := ext == ".ts" || ext == ".tsx"
+		isESM := isESMSource(absPath, source)
+
+		// Single esbuild pass handles TS stripping and/or ESM-to-CJS conversion.
+		if isTS || isESM {
+			loader := api.LoaderJS
+			if ext == ".ts" {
+				loader = api.LoaderTS
+			} else if ext == ".tsx" {
+				loader = api.LoaderTSX
+			}
+			format := api.FormatDefault
+			if isESM {
+				format = api.FormatCommonJS
+			}
+			source, err = transformSource(absPath, source, loader, format)
 			if err != nil {
 				return nil, err
 			}
 		}
 
-		// ESM: convert to CommonJS.
-		if ext != ".json" && isESMSource(absPath, source) {
-			source, err = transformESMToCJS(absPath, source)
-			if err != nil {
-				return nil, err
-			}
-		}
-
-		result := map[string]string{"path": absPath, "source": source}
-		encoded, _ := json.Marshal(result)
-		return string(encoded), nil
+		return source, nil
 	}
 }
