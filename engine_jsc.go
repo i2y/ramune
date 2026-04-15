@@ -490,6 +490,29 @@ func (r *Runtime) jscLoop(cfg config, initErr chan<- error) {
 			initErr <- fmt.Errorf("ramune: failed to install bun:sqlite: %w", err)
 			return
 		}
+		// WinterTC gap APIs (CompressionStream, MessageChannel, etc.)
+		if err := r.installWinterTC(); err != nil {
+			releaseCtx()
+			initErr <- fmt.Errorf("ramune: failed to install WinterTC: %w", err)
+			return
+		}
+	}
+
+	// Install WinterTC standalone (without NodeCompat).
+	if cfg.winterTC && !cfg.nodeCompat {
+		// Ensure prerequisites are available.
+		if r.streamMgr == nil {
+			if err := r.installWebStreams(); err != nil {
+				releaseCtx()
+				initErr <- fmt.Errorf("ramune: failed to install Web Streams: %w", err)
+				return
+			}
+		}
+		if err := r.installWinterTC(); err != nil {
+			releaseCtx()
+			initErr <- fmt.Errorf("ramune: failed to install WinterTC: %w", err)
+			return
+		}
 	}
 
 	// Install fetch polyfill if requested (or if nodeCompat is enabled).

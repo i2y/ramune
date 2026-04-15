@@ -252,6 +252,28 @@ func (r *Runtime) qjsLoop(ready chan<- error, cfg *config) {
 			ready <- fmt.Errorf("ramune: sqlite: %w", err)
 			return
 		}
+		// WinterTC gap APIs (CompressionStream, MessageChannel, etc.)
+		if err := r.installWinterTC(); err != nil {
+			vm.Close()
+			ready <- fmt.Errorf("ramune: WinterTC: %w", err)
+			return
+		}
+	}
+
+	// Install WinterTC standalone (without NodeCompat).
+	if cfg.winterTC && !cfg.nodeCompat {
+		if r.streamMgr == nil {
+			if err := r.installWebStreams(); err != nil {
+				vm.Close()
+				ready <- fmt.Errorf("ramune: web streams: %w", err)
+				return
+			}
+		}
+		if err := r.installWinterTC(); err != nil {
+			vm.Close()
+			ready <- fmt.Errorf("ramune: WinterTC: %w", err)
+			return
+		}
 	}
 
 	// Install fetch polyfill if requested (or if nodeCompat is enabled).

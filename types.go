@@ -68,6 +68,7 @@ type config struct {
 	preloadJS    string   // JS to execute before loading dependency bundles
 	nodeCompat   bool     // install Node.js compatibility layer
 	withFetch    bool     // install fetch polyfill
+	winterTC     bool     // install WinterTC Minimum Common Web API
 	gc           *GCConfig
 	permissions  *Permissions
 	modules      []Module      // user-provided modules for require()
