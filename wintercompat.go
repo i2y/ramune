@@ -49,21 +49,27 @@ func goWTCCompress(args []any) (any, error) {
 	}
 
 	var buf bytes.Buffer
+	var w io.WriteCloser
 	switch format {
 	case "gzip":
-		w := gzip.NewWriter(&buf)
-		w.Write(data)
-		w.Close()
+		w = gzip.NewWriter(&buf)
 	case "deflate":
-		w := zlib.NewWriter(&buf)
-		w.Write(data)
-		w.Close()
+		w = zlib.NewWriter(&buf)
 	case "deflate-raw":
-		w, _ := flate.NewWriter(&buf, flate.DefaultCompression)
-		w.Write(data)
-		w.Close()
+		var err2 error
+		w, err2 = flate.NewWriter(&buf, flate.DefaultCompression)
+		if err2 != nil {
+			return nil, err2
+		}
 	default:
 		return nil, fmt.Errorf("unsupported compression format: %s", format)
+	}
+	if _, err := w.Write(data); err != nil {
+		w.Close()
+		return nil, err
+	}
+	if err := w.Close(); err != nil {
+		return nil, err
 	}
 	return hex.EncodeToString(buf.Bytes()), nil
 }
@@ -190,12 +196,20 @@ func winterTCJSSource() string {
 			return !event.defaultPrevented;
 		};
 	}
+	if (typeof globalThis.CustomEvent === 'undefined') {
+		globalThis.CustomEvent = function CustomEvent(type, opts) {
+			globalThis.Event.call(this, type, opts);
+			this.detail = (opts && opts.detail !== undefined) ? opts.detail : null;
+		};
+		globalThis.CustomEvent.prototype = Object.create(globalThis.Event.prototype);
+		globalThis.CustomEvent.prototype.constructor = globalThis.CustomEvent;
+	}
 
-	// --- CompressionStream (Web Compression API) ---
-	if (typeof globalThis.CompressionStream === 'undefined') {
-		globalThis.CompressionStream = function CompressionStream(format) {
+	// --- CompressionStream / DecompressionStream (Web Compression API) ---
+	function __wtcCodecStream(name, goFn) {
+		return function(format) {
 			if (['gzip', 'deflate', 'deflate-raw'].indexOf(format) < 0) {
-				throw new TypeError("Failed to construct 'CompressionStream': Unsupported compression format: '" + format + "'");
+				throw new TypeError("Failed to construct '" + name + "': Unsupported compression format: '" + format + "'");
 			}
 			var chunks = [];
 			var ts = new TransformStream({
@@ -205,7 +219,7 @@ func winterTCJSSource() string {
 				},
 				flush: function(controller) {
 					var merged = __wtcMergeChunks(chunks);
-					var hexResult = __go_wtc_compress(format, __wtcU8ToHex(merged));
+					var hexResult = goFn(format, __wtcU8ToHex(merged));
 					controller.enqueue(__wtcHexToU8(hexResult));
 				}
 			});
@@ -213,28 +227,11 @@ func winterTCJSSource() string {
 			this.writable = ts.writable;
 		};
 	}
-
-	// --- DecompressionStream (Web Compression API) ---
+	if (typeof globalThis.CompressionStream === 'undefined') {
+		globalThis.CompressionStream = __wtcCodecStream('CompressionStream', __go_wtc_compress);
+	}
 	if (typeof globalThis.DecompressionStream === 'undefined') {
-		globalThis.DecompressionStream = function DecompressionStream(format) {
-			if (['gzip', 'deflate', 'deflate-raw'].indexOf(format) < 0) {
-				throw new TypeError("Failed to construct 'DecompressionStream': Unsupported compression format: '" + format + "'");
-			}
-			var chunks = [];
-			var ts = new TransformStream({
-				transform: function(chunk, controller) {
-					var u8 = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk.buffer ? chunk.buffer : chunk);
-					chunks.push(u8);
-				},
-				flush: function(controller) {
-					var merged = __wtcMergeChunks(chunks);
-					var hexResult = __go_wtc_decompress(format, __wtcU8ToHex(merged));
-					controller.enqueue(__wtcHexToU8(hexResult));
-				}
-			});
-			this.readable = ts.readable;
-			this.writable = ts.writable;
-		};
+		globalThis.DecompressionStream = __wtcCodecStream('DecompressionStream', __go_wtc_decompress);
 	}
 
 	// --- MessageEvent ---
