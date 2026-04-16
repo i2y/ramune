@@ -1051,6 +1051,18 @@ func bunCompatJSSource() string {
 		globalThis.Headers = function(init) {
 			this._h = Object.create(null);
 			if (init == null) return;
+			// Plain-object fast path handles the common case ({ 'content-type': ... })
+			// without paying for three instanceof/typeof probes first.
+			var proto = Object.getPrototypeOf(init);
+			if (proto === Object.prototype || proto === null) {
+				var keys = Object.keys(init);
+				for (var i = 0; i < keys.length; i++) {
+					var k = keys[i], v = init[k];
+					if (typeof v === 'string') this._h[k.toLowerCase()] = v;
+					else if (Array.isArray(v) && v.length) this._h[k.toLowerCase()] = v.join(', ');
+				}
+				return;
+			}
 			if (init instanceof Headers) {
 				var self = this;
 				init.forEach(function(v, k) { self._h[k.toLowerCase()] = String(v); });
@@ -1067,13 +1079,6 @@ func bunCompatJSSource() string {
 				for (var e of init.entries()) {
 					this._h[String(e[0]).toLowerCase()] = String(e[1]);
 				}
-				return;
-			}
-			var keys = Object.keys(init);
-			for (var i = 0; i < keys.length; i++) {
-				var k = keys[i], v = init[k];
-				if (typeof v === 'string') this._h[k.toLowerCase()] = v;
-				else if (Array.isArray(v) && v.length) this._h[k.toLowerCase()] = v.join(', ');
 			}
 		};
 		Headers.prototype.get = function(k) { return this._h[k.toLowerCase()] || null; };
