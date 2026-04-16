@@ -795,26 +795,58 @@ Supports `http2.connect()`, `createServer()`, `createSecureServer()`, stream mul
 
 ## Web Platform APIs
 
+Ramune implements the [WinterTC Minimum Common Web API](https://min-common-api.proposal.wintertc.org/) (ECMA-429), the standard API surface shared across non-browser JS runtimes (Deno, Cloudflare Workers, Bun, Node.js).
+
 | API | Status |
 |-----|--------|
-| `fetch` | Supported (Go net/http backend) |
-| `ReadableStream` / `WritableStream` / `TransformStream` | Supported (pipeTo, pipeThrough, tee, async iterator) |
+| `fetch` / `Headers` / `Request` / `Response` | Supported (Go net/http backend, ReadableStream body) |
+| `ReadableStream` / `WritableStream` / `TransformStream` | Supported (pipeTo, pipeThrough, tee, BYOB, async iterator) |
+| `ReadableStreamBYOBReader` / `ReadableByteStreamController` | Supported |
+| `CompressionStream` / `DecompressionStream` | Supported (gzip, deflate, deflate-raw, brotli) |
+| `TextEncoder` / `TextDecoder` | Supported (UTF-8) |
+| `TextEncoderStream` / `TextDecoderStream` | Supported |
 | `crypto.subtle` | Supported (digest, sign/verify, encrypt/decrypt, importKey/exportKey, deriveBits/deriveKey) |
 | `crypto.getRandomValues` / `randomUUID` | Supported |
-| `Blob` / `File` | Supported |
-| `FormData` | Supported |
-| `Headers` / `Request` / `Response` | Supported (ReadableStream body) |
-| `TextEncoder` / `TextDecoder` | Supported (UTF-8) |
-| `AbortController` / `AbortSignal` | Supported |
-| `EventTarget` / `Event` / `CustomEvent` | Supported (addEventListener, once, handleEvent) |
-| `URL` / `URLSearchParams` | Supported |
+| `Blob` / `File` / `FormData` | Supported (stream, bytes, slice, MIME normalization) |
+| `AbortController` / `AbortSignal` | Supported (timeout, abort, any) |
+| `EventTarget` / `Event` / `CustomEvent` | Supported (addEventListener, once, signal, handleEvent) |
+| `ErrorEvent` / `PromiseRejectionEvent` / `MessageEvent` | Supported |
+| `MessageChannel` / `MessagePort` | Supported |
+| `DOMException` | Supported (all legacy error codes) |
+| `URL` / `URLSearchParams` / `URLPattern` | Supported |
 | `WebSocket` | Supported (server-side via Ramune.serve) |
-| `performance.now` / `mark` / `measure` | Supported |
-| `SharedArrayBuffer` / `Atomics` | Supported (Go []byte backed, wait/notify/waitAsync, exact-N notify, worker transfer) |
+| `Performance` / `performance.now` | Supported (mark, measure, timeOrigin) |
+| `SharedArrayBuffer` / `Atomics` | Supported (Go []byte backed, wait/notify/waitAsync) |
 | `structuredClone` | Supported (circular refs, Map, Set, Date, RegExp, TypedArray) |
-| `setTimeout` / `setInterval` | Supported |
-| `navigator` | Supported (userAgent, platform, hardwareConcurrency) |
-| `console.time` / `table` / `trace` | Supported |
+| `atob` / `btoa` | Supported |
+| `setTimeout` / `setInterval` / `queueMicrotask` | Supported |
+| `navigator.userAgent` | Supported |
+| `reportError` / `onerror` / `onunhandledrejection` | Supported |
+| `CountQueuingStrategy` / `ByteLengthQueuingStrategy` | Supported |
+| `WebAssembly` | Supported (JSC backend; compile, instantiate, validate, streaming) |
+| `console` | Supported (log, error, warn, info, debug, time, table, trace) |
+
+### WPT Conformance
+
+Ramune's Web API implementations are validated against the [Web Platform Tests](https://github.com/web-platform-tests/wpt) (WPT) suite:
+
+```bash
+make test-wpt   # run WPT conformance tests
+```
+
+| Category | Pass Rate |
+|----------|-----------|
+| timers | 100% |
+| atob/btoa | 99% |
+| hr-time | 86% |
+| FileAPI/blob | 82% |
+| microtask-queuing | 80% |
+| compression | 63% |
+| streams | 55% |
+| dom/events | 46% |
+| dom/abort | 61% |
+
+WPT checkout is required (`test/wpt/`). See `make test-wpt` output for setup instructions.
 
 ### File-based `require()` with ESM Support
 
@@ -966,6 +998,7 @@ ramune skills install   # install to ~/.agents/skills/ and .claude/skills/
 
 ```bash
 make ci          # fmt + build + vet + test
+make test-wpt    # WPT conformance tests (requires test/wpt checkout)
 make build-cli   # build with JIT entitlement (macOS)
 make bench       # benchmark vs Bun/Node
 make sync        # sync typescript-go & rslint from submodules
