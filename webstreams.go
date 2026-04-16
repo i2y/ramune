@@ -96,9 +96,16 @@ func webStreamsJSSource() string {
 		this._closeRequested = false;
 		this._pulling = false;
 		this._pullAgain = false;
-		this._highWaterMark = (strategy && strategy.highWaterMark !== undefined) ? strategy.highWaterMark : 1;
-		this._controller = new ReadableStreamDefaultController(this);
 		this._underlyingSource = underlyingSource || {};
+		this._byteSource = this._underlyingSource.type === 'bytes';
+
+		if (this._byteSource) {
+			this._highWaterMark = (strategy && strategy.highWaterMark !== undefined) ? strategy.highWaterMark : 0;
+			this._controller = new ReadableByteStreamController(this);
+		} else {
+			this._highWaterMark = (strategy && strategy.highWaterMark !== undefined) ? strategy.highWaterMark : 1;
+			this._controller = new ReadableStreamDefaultController(this);
+		}
 
 		var self = this;
 		if (this._underlyingSource.start) {
@@ -164,7 +171,10 @@ func webStreamsJSSource() string {
 		get: function() { return this._locked; }
 	});
 	ReadableStream.prototype.getReader = function(opts) {
-		if (opts && opts.mode === 'byob') throw new TypeError('BYOB readers are not supported');
+		if (opts && opts.mode === 'byob') {
+			if (!this._byteSource) throw new TypeError('This readable stream does not support BYOB readers');
+			return new ReadableStreamBYOBReader(this);
+		}
 		if (opts && opts.mode !== undefined && opts.mode !== 'byob') throw new RangeError('Invalid mode');
 		return new ReadableStreamDefaultReader(this);
 	};
@@ -510,47 +520,166 @@ func webStreamsJSSource() string {
 		return Promise.resolve();
 	};
 
+	// --- ReadableByteStreamController ---
+	function ReadableByteStreamController(stream) {
+		this._stream = stream;
+		this._closeRequested = false;
+		this._byobRequest = null;
+		this._pendingPullIntos = [];
+	}
+	ReadableByteStreamController.prototype.enqueue = function(chunk) {
+		if (this._closeRequested) throw new TypeError('Cannot enqueue after close');
+		var u8 = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk.buffer || chunk);
+		if (this._stream._byobPendingReads && this._stream._byobPendingReads.length > 0) {
+			var entry = this._stream._byobPendingReads.shift();
+			var dest = entry.view;
+			var n = Math.min(u8.length, dest.byteLength);
+			new Uint8Array(dest.buffer, dest.byteOffset, n).set(u8.subarray(0, n));
+			entry.resolve({ value: new Uint8Array(dest.buffer, dest.byteOffset, n), done: false });
+		} else {
+			this._stream._queue.push(u8);
+			this._stream._drainQueue();
+		}
+	};
+	ReadableByteStreamController.prototype.close = function() {
+		if (this._closeRequested) return;
+		this._closeRequested = true;
+		this._stream._closeRequested = true;
+		if (this._stream._queue.length === 0) {
+			this._stream._finishClose();
+		}
+	};
+	ReadableByteStreamController.prototype.error = function(e) {
+		this._stream._error(e);
+	};
+	Object.defineProperty(ReadableByteStreamController.prototype, 'byobRequest', {
+		get: function() { return this._byobRequest; }
+	});
+	Object.defineProperty(ReadableByteStreamController.prototype, 'desiredSize', {
+		get: function() {
+			if (this._stream._state === 'errored') return null;
+			if (this._stream._state === 'closed') return 0;
+			return this._stream._highWaterMark - this._stream._queue.length;
+		}
+	});
+
+	// --- ReadableStreamBYOBRequest ---
+	function ReadableStreamBYOBRequest(controller, view) {
+		this._controller = controller;
+		this.view = view;
+	}
+	ReadableStreamBYOBRequest.prototype.respond = function(bytesWritten) {
+		// Signal that bytesWritten bytes have been written into this.view
+		var u8 = new Uint8Array(this.view.buffer, this.view.byteOffset, bytesWritten);
+		this._controller.enqueue(u8);
+		this.view = null;
+	};
+	ReadableStreamBYOBRequest.prototype.respondWithNewView = function(view) {
+		this._controller.enqueue(new Uint8Array(view.buffer, view.byteOffset, view.byteLength));
+		this.view = null;
+	};
+
+	// --- ReadableStreamBYOBReader ---
+	function ReadableStreamBYOBReader(stream) {
+		if (stream._locked) throw new TypeError('ReadableStream is locked');
+		this._stream = stream;
+		stream._reader = this;
+		stream._locked = true;
+		this._closedResolve = null;
+		this._closedReject = null;
+		var self = this;
+		this.closed = new Promise(function(resolve, reject) {
+			self._closedResolve = resolve;
+			self._closedReject = reject;
+		});
+		if (stream._state === 'closed') this._closedResolve(undefined);
+		else if (stream._state === 'errored') this._closedReject(stream._storedError);
+	}
+	ReadableStreamBYOBReader.prototype.read = function(view) {
+		var stream = this._stream;
+		if (!stream) return Promise.reject(new TypeError('Reader has been released'));
+		if (!(view instanceof ArrayBuffer) && !ArrayBuffer.isView(view)) {
+			return Promise.reject(new TypeError('view must be a TypedArray or DataView'));
+		}
+		var u8View = view instanceof Uint8Array ? view : new Uint8Array(view.buffer || view, view.byteOffset || 0, view.byteLength);
+		// If data is queued, copy directly
+		if (stream._queue.length > 0) {
+			var chunk = stream._queue.shift();
+			var n = Math.min(chunk.length, u8View.byteLength);
+			u8View.set(chunk.subarray(0, n));
+			if (stream._closeRequested && stream._queue.length === 0) stream._finishClose();
+			return Promise.resolve({ value: new Uint8Array(u8View.buffer, u8View.byteOffset, n), done: false });
+		}
+		if (stream._state === 'closed') return Promise.resolve({ value: new Uint8Array(u8View.buffer, u8View.byteOffset, 0), done: true });
+		if (stream._state === 'errored') return Promise.reject(stream._storedError);
+		// Wait for data via pull
+		if (!stream._byobPendingReads) stream._byobPendingReads = [];
+		return new Promise(function(resolve, reject) {
+			stream._byobPendingReads.push({ view: u8View, resolve: resolve, reject: reject });
+			stream._pullIfNeeded();
+		});
+	};
+	ReadableStreamBYOBReader.prototype.releaseLock = function() {
+		if (!this._stream) return;
+		this._stream._reader = null;
+		this._stream._locked = false;
+		this._stream = null;
+	};
+	ReadableStreamBYOBReader.prototype.cancel = function(reason) {
+		if (!this._stream) return Promise.reject(new TypeError('Reader has been released'));
+		return this._stream.cancel(reason);
+	};
+
+	// --- TransformStreamDefaultController ---
+	function TransformStreamDefaultController(readableController) {
+		this._readableController = readableController;
+	}
+	TransformStreamDefaultController.prototype.enqueue = function(chunk) {
+		this._readableController.enqueue(chunk);
+	};
+	TransformStreamDefaultController.prototype.error = function(reason) {
+		this._readableController.error(reason);
+	};
+	TransformStreamDefaultController.prototype.terminate = function() {
+		this._readableController.close();
+	};
+	Object.defineProperty(TransformStreamDefaultController.prototype, 'desiredSize', {
+		get: function() { return this._readableController.desiredSize; }
+	});
+
 	// --- TransformStream ---
 	function TransformStream(transformer, writableStrategy, readableStrategy) {
 		transformer = transformer || {};
-		var readableController;
+		var ctrl;
 		var self = this;
 		this.readable = new ReadableStream({
-			start: function(c) { readableController = c; }
+			start: function(c) { ctrl = new TransformStreamDefaultController(c); }
 		}, readableStrategy);
 		this.writable = new WritableStream({
 			write: function(chunk) {
 				if (transformer.transform) {
 					return new Promise(function(resolve, reject) {
 						try {
-							var result = transformer.transform(chunk, {
-								enqueue: function(c) { readableController.enqueue(c); },
-								error: function(e) { readableController.error(e); },
-								terminate: function() { readableController.close(); }
-							});
+							var result = transformer.transform(chunk, ctrl);
 							if (result && typeof result.then === 'function') {
 								result.then(resolve, reject);
 							} else { resolve(); }
 						} catch(e) { reject(e); }
 					});
 				}
-				readableController.enqueue(chunk);
+				ctrl.enqueue(chunk);
 				return Promise.resolve();
 			},
 			close: function() {
 				if (transformer.flush) {
 					try {
-						transformer.flush({
-							enqueue: function(c) { readableController.enqueue(c); },
-							error: function(e) { readableController.error(e); },
-							terminate: function() { readableController.close(); }
-						});
-					} catch(e) { readableController.error(e); return; }
+						transformer.flush(ctrl);
+					} catch(e) { ctrl.error(e); return; }
 				}
-				readableController.close();
+				ctrl.terminate();
 			},
 			abort: function(reason) {
-				readableController.error(reason);
+				ctrl.error(reason);
 			}
 		}, writableStrategy);
 	}
@@ -597,6 +726,9 @@ func webStreamsJSSource() string {
 		return chunk.byteLength !== undefined ? chunk.byteLength : chunk.length || 0;
 	};
 
+	ReadableByteStreamController.prototype[Symbol.toStringTag] = 'ReadableByteStreamController';
+	ReadableStreamBYOBReader.prototype[Symbol.toStringTag] = 'ReadableStreamBYOBReader';
+	ReadableStreamBYOBRequest.prototype[Symbol.toStringTag] = 'ReadableStreamBYOBRequest';
 	ReadableStream.prototype[Symbol.toStringTag] = 'ReadableStream';
 	WritableStream.prototype[Symbol.toStringTag] = 'WritableStream';
 	TransformStream.prototype[Symbol.toStringTag] = 'TransformStream';
@@ -608,10 +740,16 @@ func webStreamsJSSource() string {
 	ByteLengthQueuingStrategy.prototype[Symbol.toStringTag] = 'ByteLengthQueuingStrategy';
 
 	globalThis.ReadableStream = ReadableStream;
-	globalThis.WritableStream = WritableStream;
-	globalThis.TransformStream = TransformStream;
 	globalThis.ReadableStreamDefaultReader = ReadableStreamDefaultReader;
+	globalThis.ReadableStreamDefaultController = ReadableStreamDefaultController;
+	globalThis.ReadableByteStreamController = ReadableByteStreamController;
+	globalThis.ReadableStreamBYOBReader = ReadableStreamBYOBReader;
+	globalThis.ReadableStreamBYOBRequest = ReadableStreamBYOBRequest;
+	globalThis.WritableStream = WritableStream;
 	globalThis.WritableStreamDefaultWriter = WritableStreamDefaultWriter;
+	globalThis.WritableStreamDefaultController = WritableStreamDefaultController;
+	globalThis.TransformStream = TransformStream;
+	globalThis.TransformStreamDefaultController = TransformStreamDefaultController;
 	globalThis.CountQueuingStrategy = CountQueuingStrategy;
 	globalThis.ByteLengthQueuingStrategy = ByteLengthQueuingStrategy;
 })();

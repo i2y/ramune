@@ -2134,39 +2134,42 @@ func nodeCompatJSSource() string {
 		var _perfOriginMs = Date.now();
 		var _perfMarks = {};
 		var _perfMeasures = [];
-		globalThis.performance = {
-			timeOrigin: _perfOriginMs,
-			now: function() {
-				var raw = JSON.parse(__go_hrtime());
-				var ds = raw[0] - _perfOriginNs[0];
-				var dn = raw[1] - _perfOriginNs[1];
-				return ds * 1e3 + dn / 1e6;
-			},
-			mark: function(name) {
-				var t = globalThis.performance.now();
-				_perfMarks[name] = t;
-				return { name: name, entryType: 'mark', startTime: t, duration: 0 };
-			},
-			measure: function(name, startMark, endMark) {
-				var s = startMark && _perfMarks[startMark] !== undefined ? _perfMarks[startMark] : 0;
-				var e = endMark && _perfMarks[endMark] !== undefined ? _perfMarks[endMark] : globalThis.performance.now();
-				var entry = { name: name, entryType: 'measure', startTime: s, duration: e - s };
-				_perfMeasures.push(entry);
-				return entry;
-			},
-			getEntriesByName: function(name) {
-				return _perfMeasures.filter(function(e) { return e.name === name; });
-			},
-			getEntriesByType: function(type) {
-				if (type === 'mark') {
-					return Object.keys(_perfMarks).map(function(k) { return { name: k, entryType: 'mark', startTime: _perfMarks[k], duration: 0 }; });
-				}
-				if (type === 'measure') return _perfMeasures.slice();
-				return [];
-			},
-			clearMarks: function(name) { if (name) delete _perfMarks[name]; else _perfMarks = {}; },
-			clearMeasures: function(name) { if (name) _perfMeasures = _perfMeasures.filter(function(e) { return e.name !== name; }); else _perfMeasures = []; }
+		function Performance() {}
+		Performance.prototype.now = function() {
+			var raw = JSON.parse(__go_hrtime());
+			var ds = raw[0] - _perfOriginNs[0];
+			var dn = raw[1] - _perfOriginNs[1];
+			return ds * 1e3 + dn / 1e6;
 		};
+		Performance.prototype.mark = function(name) {
+			var t = this.now();
+			_perfMarks[name] = t;
+			return { name: name, entryType: 'mark', startTime: t, duration: 0 };
+		};
+		Performance.prototype.measure = function(name, startMark, endMark) {
+			var s = startMark && _perfMarks[startMark] !== undefined ? _perfMarks[startMark] : 0;
+			var e = endMark && _perfMarks[endMark] !== undefined ? _perfMarks[endMark] : this.now();
+			var entry = { name: name, entryType: 'measure', startTime: s, duration: e - s };
+			_perfMeasures.push(entry);
+			return entry;
+		};
+		Performance.prototype[Symbol.toStringTag] = 'Performance';
+		var __perf = new Performance();
+		__perf.timeOrigin = _perfOriginMs;
+		globalThis.Performance = Performance;
+		globalThis.performance = __perf;
+		Performance.prototype.getEntriesByName = function(name) {
+			return _perfMeasures.filter(function(e) { return e.name === name; });
+		};
+		Performance.prototype.getEntriesByType = function(type) {
+			if (type === 'mark') {
+				return Object.keys(_perfMarks).map(function(k) { return { name: k, entryType: 'mark', startTime: _perfMarks[k], duration: 0 }; });
+			}
+			if (type === 'measure') return _perfMeasures.slice();
+			return [];
+		};
+		Performance.prototype.clearMarks = function(name) { if (name) delete _perfMarks[name]; else _perfMarks = {}; };
+		Performance.prototype.clearMeasures = function(name) { if (name) _perfMeasures = _perfMeasures.filter(function(e) { return e.name !== name; }); else _perfMeasures = []; };
 	}
 
 	// --- structuredClone ---

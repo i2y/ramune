@@ -581,6 +581,63 @@ func winterTCJSSource() string {
 		globalThis.PromiseRejectionEvent.prototype.constructor = globalThis.PromiseRejectionEvent;
 	}
 
+	// --- TextEncoderStream / TextDecoderStream ---
+	if (typeof globalThis.TextEncoderStream === 'undefined') {
+		globalThis.TextEncoderStream = function TextEncoderStream() {
+			var enc = new TextEncoder();
+			var ts = new TransformStream({
+				transform: function(chunk, controller) {
+					controller.enqueue(enc.encode(String(chunk)));
+				}
+			});
+			this.readable = ts.readable;
+			this.writable = ts.writable;
+			this.encoding = 'utf-8';
+		};
+	}
+	if (typeof globalThis.TextDecoderStream === 'undefined') {
+		globalThis.TextDecoderStream = function TextDecoderStream(label, options) {
+			var dec = new TextDecoder(label || 'utf-8', options);
+			var ts = new TransformStream({
+				transform: function(chunk, controller) {
+					var u8 = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk.buffer ? chunk.buffer : chunk);
+					var text = dec.decode(u8, { stream: true });
+					if (text.length > 0) controller.enqueue(text);
+				},
+				flush: function(controller) {
+					var text = dec.decode();
+					if (text.length > 0) controller.enqueue(text);
+				}
+			});
+			this.readable = ts.readable;
+			this.writable = ts.writable;
+			this.encoding = dec.encoding;
+			this.fatal = dec.fatal || false;
+			this.ignoreBOM = dec.ignoreBOM || false;
+		};
+	}
+
+	// --- reportError ---
+	if (typeof globalThis.reportError === 'undefined') {
+		globalThis.reportError = function reportError(e) {
+			var ev = new ErrorEvent('error', {
+				message: e && e.message || String(e),
+				error: e,
+				cancelable: true
+			});
+			if (globalThis.dispatchEvent) globalThis.dispatchEvent(ev);
+			if (typeof globalThis.onerror === 'function') globalThis.onerror(ev);
+			if (!ev.defaultPrevented) {
+				if (typeof console !== 'undefined' && console.error) console.error('Uncaught', e);
+			}
+		};
+	}
+
+	// --- Global error handler properties ---
+	if (globalThis.onerror === undefined) globalThis.onerror = null;
+	if (globalThis.onunhandledrejection === undefined) globalThis.onunhandledrejection = null;
+	if (globalThis.onrejectionhandled === undefined) globalThis.onrejectionhandled = null;
+
 	// --- URLPattern (Web Standard) ---
 	if (typeof globalThis.URLPattern === 'undefined') {
 		function _patternToRegex(pat, isPath) {

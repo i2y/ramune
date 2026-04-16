@@ -908,24 +908,30 @@ func webCryptoJSSource() string {
 		}
 	};
 
-	if (!globalThis.crypto) globalThis.crypto = {};
-	if (!globalThis.crypto.getRandomValues) {
-		globalThis.crypto.getRandomValues = function(arr) {
-			var hex = __go_crypto_random_bytes(arr.length);
-			var bytes = [];
-			for (var i = 0; i < hex.length; i += 2) { bytes.push(parseInt(hex.substr(i, 2), 16)); }
-			for (var i = 0; i < arr.length; i++) arr[i] = bytes[i];
-			return arr;
-		};
+	function Crypto() {}
+	Crypto.prototype.getRandomValues = function(arr) {
+		var hex = __go_crypto_random_bytes(arr.length);
+		var bytes = [];
+		for (var i = 0; i < hex.length; i += 2) { bytes.push(parseInt(hex.substr(i, 2), 16)); }
+		for (var i = 0; i < arr.length; i++) arr[i] = bytes[i];
+		return arr;
+	};
+	Crypto.prototype.randomUUID = function() {
+		var hex = __go_crypto_random_bytes(16);
+		return hex.substr(0,8) + '-' + hex.substr(8,4) + '-4' + hex.substr(13,3) + '-' +
+			((parseInt(hex.substr(16,2),16) & 0x3f | 0x80).toString(16)) + hex.substr(18,2) + '-' + hex.substr(20,12);
+	};
+	Crypto.prototype[Symbol.toStringTag] = 'Crypto';
+	CryptoKey.prototype = {};
+	CryptoKey.prototype[Symbol.toStringTag] = 'CryptoKey';
+
+	if (!globalThis.crypto || !globalThis.crypto.subtle) {
+		var _c = new Crypto();
+		_c.subtle = subtle;
+		globalThis.crypto = _c;
 	}
-	if (!globalThis.crypto.randomUUID) {
-		globalThis.crypto.randomUUID = function() {
-			var hex = __go_crypto_random_bytes(16);
-			return hex.substr(0,8) + '-' + hex.substr(8,4) + '-4' + hex.substr(13,3) + '-' +
-				((parseInt(hex.substr(16,2),16) & 0x3f | 0x80).toString(16)) + hex.substr(18,2) + '-' + hex.substr(20,12);
-		};
-	}
-	globalThis.crypto.subtle = subtle;
+	globalThis.Crypto = Crypto;
+	globalThis.SubtleCrypto = subtle.constructor;
 	globalThis.CryptoKey = CryptoKey;
 })();
 `
