@@ -322,23 +322,28 @@ Enabled via `ramune.NodeCompat()`:
 | fs | 90% | readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync, readdirSync, statSync, rmSync, copyFileSync, realpathSync, accessSync, chmodSync, symlinkSync, createReadStream, createWriteStream, fs.promises, fs.watch |
 | child_process | 80% | spawnSync, execSync, execFileSync, spawn (async goroutine I/O) |
 | crypto | 85% | randomBytes, randomUUID, createHash, createHmac, scryptSync, pbkdf2Sync, createCipheriv, createDecipheriv, randomInt, timingSafeEqual, createSign/Verify, generateKeyPairSync, crypto.subtle |
-| stream | 70% | Readable, Writable, Transform, Duplex, PassThrough, pipe |
+| stream | 85% | Readable, Writable, Transform, Duplex, PassThrough as ES6 classes (class extends supported), pipe, asyncIterator (for await...of), backpressure, cork/uncork, unshift, unpipe, objectMode, stream.pipeline, stream.finished |
 | zlib | 75% | gzipSync, gunzipSync, deflateSync, inflateSync, brotliCompressSync, brotliDecompressSync |
 | os | 85% | platform, arch, hostname, type, cpus, totalmem, freemem, userInfo |
 | events | 85% | EventEmitter: on, once, emit, removeListener, setMaxListeners |
-| http/https | 70% | http.request, http.get, http.createServer (Go net/http backend) |
-| net/tls | 60% | net.Socket, net.createConnection, tls.connect (async goroutines) |
-| Buffer | 60% | from, alloc, concat, readUInt8/16/32, writeUInt8/16/32, fill, toString(hex/base64) |
+| http/https | 80% | http.request, http.get, http.createServer with streaming response (Go net/http backend) |
+| http2 | 75% | connect, createServer, createSecureServer, trailers, multiplexing, h2c |
+| net/tls | 70% | net.Socket, net.createConnection, net.createServer, tls.connect (async goroutines) |
+| Buffer | 90% | from, alloc, concat, readUInt8/16/32, writeUInt8/16/32, fill, toString(hex/base64/utf8), Buffer.compare, equals, slice, copy |
 | url | 80% | parse, format, resolve, fileURLToPath |
 | assert | 80% | ok, strictEqual, deepStrictEqual, throws, doesNotThrow |
-| util | 80% | types, promisify, callbackify, format, inspect |
-| worker_threads | 70% | Worker, parentPort, workerData, postMessage |
+| util | 80% | types, promisify, callbackify, format, inspect, debuglog |
+| worker_threads | 80% | Worker, parentPort, workerData, postMessage, SharedArrayBuffer, Atomics.waitAsync |
 | vm | 70% | createContext, runInContext, runInNewContext, Script |
 | readline | 70% | async iterator support |
 | querystring | 80% | escape, unescape, stringify, parse |
 | timers/promises | 70% | setTimeout, setImmediate as Promise |
 | perf_hooks | basic | performance.now, mark, measure |
-| process | 85% | env, cwd, platform, arch, hrtime, nextTick, exit, signals via EventEmitter |
+| process | 85% | env, cwd, platform, arch, hrtime, nextTick, exit, signals via EventEmitter, stdin/stdout/stderr with isTTY |
+| tty | 70% | isatty, ReadStream, WriteStream with columns/rows |
+| dgram | 70% | UDP sockets |
+| async_hooks | basic | AsyncLocalStorage |
+| module | — | createRequire, file-based require with ESM-to-CJS transform |
 | dns | basic | lookup, resolve |
 
 Also: TextEncoder/TextDecoder, AbortController/AbortSignal, Symbol.dispose/asyncDispose.
