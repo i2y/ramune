@@ -32,9 +32,10 @@ content = re.sub(
     '', content, flags=re.DOTALL
 )
 
-# Remove ToLSFormatOptions method (uses lsproto)
+# Remove ToLSFormatOptions method (uses lsproto). Receiver may be value or
+# pointer depending on tsgo version.
 content = re.sub(
-    r'func \(settings \*FormatCodeSettings\) ToLSFormatOptions\(\).*?\n\}\n',
+    r'func \(settings \*?FormatCodeSettings\) ToLSFormatOptions\(\).*?\n\}\n',
     '', content, flags=re.DOTALL
 )
 

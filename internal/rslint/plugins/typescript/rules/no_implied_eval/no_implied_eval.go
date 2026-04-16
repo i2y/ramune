@@ -3,9 +3,9 @@ package no_implied_eval
 import (
 	"slices"
 
-	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/shim/ast"
 	"github.com/i2y/ramune/internal/rslint/shim/checker"
+	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/utils"
 )
 
@@ -26,7 +26,8 @@ var globalCandidates = []string{"global", "globalThis", "window"}
 var evalLikeFunctions = []string{"execScript", "setImmediate", "setInterval", "setTimeout"}
 
 var NoImpliedEvalRule = rule.CreateRule(rule.Rule{
-	Name: "no-implied-eval",
+	Name:             "no-implied-eval",
+	RequiresTypeInfo: true,
 	Run: func(ctx rule.RuleContext, options any) rule.RuleListeners {
 		getCalleeName := func(node *ast.Expression) string {
 			if ast.IsIdentifier(node) {

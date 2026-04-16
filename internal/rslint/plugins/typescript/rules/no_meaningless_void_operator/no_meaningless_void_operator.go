@@ -3,9 +3,9 @@ package no_meaningless_void_operator
 import (
 	"fmt"
 
-	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/shim/ast"
 	"github.com/i2y/ramune/internal/rslint/shim/checker"
+	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/utils"
 )
 
@@ -27,7 +27,8 @@ type NoMeaninglessVoidOperatorOptions struct {
 }
 
 var NoMeaninglessVoidOperatorRule = rule.CreateRule(rule.Rule{
-	Name: "no-meaningless-void-operator",
+	Name:             "no-meaningless-void-operator",
+	RequiresTypeInfo: true,
 	Run: func(ctx rule.RuleContext, options any) rule.RuleListeners {
 		opts, ok := options.(NoMeaninglessVoidOperatorOptions)
 		if !ok {

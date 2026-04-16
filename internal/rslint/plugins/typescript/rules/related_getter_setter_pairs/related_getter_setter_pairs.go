@@ -1,9 +1,9 @@
 package related_getter_setter_pairs
 
 import (
-	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/shim/ast"
 	"github.com/i2y/ramune/internal/rslint/shim/checker"
+	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/utils"
 )
 
@@ -15,7 +15,8 @@ func buildMismatchMessage() rule.RuleMessage {
 }
 
 var RelatedGetterSetterPairsRule = rule.CreateRule(rule.Rule{
-	Name: "related-getter-setter-pairs",
+	Name:             "related-getter-setter-pairs",
+	RequiresTypeInfo: true,
 	Run: func(ctx rule.RuleContext, options any) rule.RuleListeners {
 		checkAccessorsPair := func(getter *ast.GetAccessorDeclaration, setter *ast.SetAccessorDeclaration) {
 			getType := ctx.TypeChecker.GetTypeAtLocation(getter.AsNode())

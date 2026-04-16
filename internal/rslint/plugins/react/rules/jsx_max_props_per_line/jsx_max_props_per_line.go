@@ -3,11 +3,11 @@ package jsx_max_props_per_line
 import (
 	"fmt"
 
-	"github.com/i2y/ramune/internal/rslint/plugins/react/reactutil"
-	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/shim/ast"
 	"github.com/i2y/ramune/internal/rslint/shim/core"
 	"github.com/i2y/ramune/internal/rslint/shim/scanner"
+	"github.com/i2y/ramune/internal/rslint/plugins/react/reactutil"
+	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/utils"
 )
 

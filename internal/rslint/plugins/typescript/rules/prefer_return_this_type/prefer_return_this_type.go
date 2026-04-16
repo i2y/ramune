@@ -1,9 +1,9 @@
 package prefer_return_this_type
 
 import (
-	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/shim/ast"
 	"github.com/i2y/ramune/internal/rslint/shim/checker"
+	"github.com/i2y/ramune/internal/rslint/rule"
 )
 
 func buildUseThisTypeMessage() rule.RuleMessage {
@@ -14,7 +14,8 @@ func buildUseThisTypeMessage() rule.RuleMessage {
 }
 
 var PreferReturnThisTypeRule = rule.CreateRule(rule.Rule{
-	Name: "prefer-return-this-type",
+	Name:             "prefer-return-this-type",
+	RequiresTypeInfo: true,
 	Run: func(ctx rule.RuleContext, options any) rule.RuleListeners {
 		var tryGetNameInTypeNode func(name string, node *ast.Node) *ast.Node
 		tryGetNameInTypeNode = func(name string, node *ast.Node) *ast.Node {

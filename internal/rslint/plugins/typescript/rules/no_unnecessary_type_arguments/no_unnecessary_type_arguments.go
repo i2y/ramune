@@ -3,11 +3,11 @@ package no_unnecessary_type_arguments
 import (
 	"slices"
 
-	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/shim/ast"
 	"github.com/i2y/ramune/internal/rslint/shim/checker"
 	"github.com/i2y/ramune/internal/rslint/shim/core"
 	"github.com/i2y/ramune/internal/rslint/shim/scanner"
+	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/utils"
 )
 
@@ -27,7 +27,8 @@ func isInTypeContext(node *ast.Node) bool {
 }
 
 var NoUnnecessaryTypeArgumentsRule = rule.CreateRule(rule.Rule{
-	Name: "no-unnecessary-type-arguments",
+	Name:             "no-unnecessary-type-arguments",
+	RequiresTypeInfo: true,
 	Run: func(ctx rule.RuleContext, options any) rule.RuleListeners {
 		getTypeParametersFromType := func(node *ast.Node, nodeName *ast.Node) []*ast.Node {
 			symbol := ctx.TypeChecker.GetSymbolAtLocation(nodeName)

@@ -1,8 +1,8 @@
 package no_async_promise_executor
 
 import (
-	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/shim/ast"
+	"github.com/i2y/ramune/internal/rslint/rule"
 )
 
 func buildAsyncMessage() rule.RuleMessage {

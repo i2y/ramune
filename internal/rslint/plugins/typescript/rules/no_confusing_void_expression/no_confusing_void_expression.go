@@ -2,10 +2,10 @@ package no_confusing_void_expression
 
 import (
 	"encoding/json"
-	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/shim/ast"
 	"github.com/i2y/ramune/internal/rslint/shim/checker"
 	"github.com/i2y/ramune/internal/rslint/shim/scanner"
+	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/utils"
 )
 
@@ -65,7 +65,8 @@ type NoConfusingVoidExpressionOptions struct {
 }
 
 var NoConfusingVoidExpressionRule = rule.CreateRule(rule.Rule{
-	Name: "no-confusing-void-expression",
+	Name:             "no-confusing-void-expression",
+	RequiresTypeInfo: true,
 	Run: func(ctx rule.RuleContext, options any) rule.RuleListeners {
 		opts, ok := options.(NoConfusingVoidExpressionOptions)
 

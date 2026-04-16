@@ -4,9 +4,9 @@ import (
 	"strings"
 
 	"github.com/dlclark/regexp2"
-	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/shim/ast"
 	"github.com/i2y/ramune/internal/rslint/shim/scanner"
+	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/utils"
 )
 
@@ -385,7 +385,8 @@ func buildPreferRegExpExecReplacement(ctx rule.RuleContext, callNode *ast.Node, 
 }
 
 var PreferRegExpExecRule = rule.CreateRule(rule.Rule{
-	Name: "prefer-regexp-exec",
+	Name:             "prefer-regexp-exec",
+	RequiresTypeInfo: true,
 	Run: func(ctx rule.RuleContext, options any) rule.RuleListeners {
 		return rule.RuleListeners{
 			ast.KindCallExpression: func(node *ast.Node) {

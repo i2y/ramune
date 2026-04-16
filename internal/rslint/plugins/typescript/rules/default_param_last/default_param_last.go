@@ -1,8 +1,8 @@
 package default_param_last
 
 import (
-	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/shim/ast"
+	"github.com/i2y/ramune/internal/rslint/rule"
 )
 
 // DefaultParamLastRule enforces default parameters to be last

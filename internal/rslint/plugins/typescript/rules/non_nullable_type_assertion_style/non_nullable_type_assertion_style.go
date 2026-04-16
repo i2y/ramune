@@ -1,10 +1,10 @@
 package non_nullable_type_assertion_style
 
 import (
-	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/shim/ast"
 	"github.com/i2y/ramune/internal/rslint/shim/checker"
 	"github.com/i2y/ramune/internal/rslint/shim/core"
+	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/utils"
 )
 
@@ -16,7 +16,8 @@ func buildPreferNonNullAssertionMessage() rule.RuleMessage {
 }
 
 var NonNullableTypeAssertionStyleRule = rule.CreateRule(rule.Rule{
-	Name: "non-nullable-type-assertion-style",
+	Name:             "non-nullable-type-assertion-style",
+	RequiresTypeInfo: true,
 	Run: func(ctx rule.RuleContext, options any) rule.RuleListeners {
 		getTypesIfNotLoose := func(node *ast.Node) []*checker.Type {
 			t := ctx.TypeChecker.GetTypeAtLocation(node)

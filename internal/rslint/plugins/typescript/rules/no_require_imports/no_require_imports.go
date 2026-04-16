@@ -3,8 +3,8 @@ package no_require_imports
 import (
 	"regexp"
 
-	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/shim/ast"
+	"github.com/i2y/ramune/internal/rslint/rule"
 )
 
 type NoRequireImportsOptions struct {

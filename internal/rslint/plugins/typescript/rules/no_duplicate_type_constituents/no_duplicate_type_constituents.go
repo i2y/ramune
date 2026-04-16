@@ -3,11 +3,11 @@ package no_duplicate_type_constituents
 import (
 	"fmt"
 
-	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/shim/ast"
 	"github.com/i2y/ramune/internal/rslint/shim/checker"
 	"github.com/i2y/ramune/internal/rslint/shim/core"
 	"github.com/i2y/ramune/internal/rslint/shim/scanner"
+	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/utils"
 )
 
@@ -43,7 +43,8 @@ type NoDuplicateTypeConstituentsOptions struct {
 }
 
 var NoDuplicateTypeConstituentsRule = rule.CreateRule(rule.Rule{
-	Name: "no-duplicate-type-constituents",
+	Name:             "no-duplicate-type-constituents",
+	RequiresTypeInfo: true,
 	Run: func(ctx rule.RuleContext, options any) rule.RuleListeners {
 		opts, ok := options.(NoDuplicateTypeConstituentsOptions)
 		if !ok {

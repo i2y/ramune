@@ -3,9 +3,9 @@ package only_throw_error
 import (
 	"encoding/json"
 
-	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/shim/ast"
 	"github.com/i2y/ramune/internal/rslint/shim/checker"
+	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/utils"
 )
 
@@ -132,7 +132,8 @@ func isRethrownError(ctx rule.RuleContext, expr *ast.Node) bool {
 }
 
 var OnlyThrowErrorRule = rule.CreateRule(rule.Rule{
-	Name: "only-throw-error",
+	Name:             "only-throw-error",
+	RequiresTypeInfo: true,
 	Run: func(ctx rule.RuleContext, options any) rule.RuleListeners {
 		opts, ok := options.(OnlyThrowErrorOptions)
 		if !ok {

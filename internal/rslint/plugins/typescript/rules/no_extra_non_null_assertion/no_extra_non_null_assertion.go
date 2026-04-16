@@ -1,9 +1,9 @@
 package no_extra_non_null_assertion
 
 import (
-	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/shim/ast"
 	"github.com/i2y/ramune/internal/rslint/shim/scanner"
+	"github.com/i2y/ramune/internal/rslint/rule"
 )
 
 // hasOwnQuestionDotToken checks if a node has its own ?. token (not inherited through chain).

@@ -27,11 +27,7 @@ type importRequireStatements struct {
 
 func NewESModuleTransformer(opts *transformers.TransformOptions) *transformers.Transformer {
 	compilerOptions := opts.CompilerOptions
-	resolver := opts.Resolver
-	if resolver == nil {
-		resolver = binder.NewReferenceResolver(compilerOptions, binder.ReferenceResolverHooks{})
-	}
-	tx := &ESModuleTransformer{compilerOptions: compilerOptions, resolver: resolver, getEmitModuleFormatOfFile: opts.GetEmitModuleFormatOfFile}
+	tx := &ESModuleTransformer{compilerOptions: compilerOptions, resolver: opts.Resolver, getEmitModuleFormatOfFile: opts.GetEmitModuleFormatOfFile}
 	return tx.NewTransformer(tx.visit, opts.Context)
 }
 
@@ -133,7 +129,6 @@ func (tx *ESModuleTransformer) visitImportEqualsDeclaration(node *ast.ImportEqua
 	varStatement := tx.Factory().NewVariableStatement(
 		nil, /*modifiers*/
 		tx.Factory().NewVariableDeclarationList(
-			ast.NodeFlagsConst,
 			tx.Factory().NewNodeList([]*ast.Node{
 				tx.Factory().NewVariableDeclaration(
 					node.Name().Clone(tx.Factory()),
@@ -142,6 +137,7 @@ func (tx *ESModuleTransformer) visitImportEqualsDeclaration(node *ast.ImportEqua
 					tx.createRequireCall(node.AsNode()),
 				),
 			}),
+			ast.NodeFlagsConst,
 		),
 	)
 	tx.EmitContext().SetOriginal(varStatement, node.AsNode())
@@ -287,6 +283,7 @@ func (tx *ESModuleTransformer) visitImportOrRequireCall(node *ast.CallExpression
 		node.QuestionDotToken,
 		nil, /*typeArguments*/
 		argumentList,
+		node.Flags,
 	)
 }
 
@@ -334,7 +331,6 @@ func (tx *ESModuleTransformer) createRequireCall(node *ast.Node /*ImportDeclarat
 		requireStatement := tx.Factory().NewVariableStatement(
 			nil, /*modifiers*/
 			tx.Factory().NewVariableDeclarationList(
-				ast.NodeFlagsConst,
 				tx.Factory().NewNodeList([]*ast.Node{
 					tx.Factory().NewVariableDeclaration(
 						requireHelperName,
@@ -356,6 +352,7 @@ func (tx *ESModuleTransformer) createRequireCall(node *ast.Node /*ImportDeclarat
 						),
 					),
 				}),
+				ast.NodeFlagsConst,
 			),
 		)
 		tx.EmitContext().AddEmitFlags(requireStatement, printer.EFCustomPrologue)

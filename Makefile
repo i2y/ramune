@@ -1,4 +1,4 @@
-.PHONY: all build build-cli build-quickjs fmt fmt-check vet test test-quickjs test-wpt ci bench bench-go clean sync-tsgo sync-rslint sync
+.PHONY: all build build-cli build-quickjs fmt fmt-check vet test test-quickjs test-wpt ci bench bench-go clean sync-tsgo sync-tsgo-pinned sync-rslint sync
 
 all: ci
 
@@ -60,11 +60,19 @@ sync-tsgo:
 	git submodule update --init --depth 1 third_party/typescript-go
 	./scripts/sync-tsgo.sh
 
+# Syncs rslint's pinned tsgo submodule into internal/rslint/tsgo_pinned/.
+# This tree is used only by rslint's shim go:linkname bindings, kept separate
+# from internal/tsgo/ so ramune's own code can track upstream tsgo freely.
+sync-tsgo-pinned:
+	git submodule update --init --depth 1 third_party/rslint
+	git -C third_party/rslint submodule update --init --depth 1 typescript-go
+	./scripts/sync-tsgo-pinned.sh
+
 sync-rslint:
 	git submodule update --init --depth 1 third_party/rslint
 	./scripts/sync-rslint.sh
 
-sync: sync-tsgo sync-rslint
+sync: sync-tsgo sync-tsgo-pinned sync-rslint
 	go mod tidy
 
 clean:

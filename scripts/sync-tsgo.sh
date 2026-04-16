@@ -58,6 +58,7 @@ PACKAGES=(
     vfs/cachedvfs
     vfs/internal
     vfs/osvfs
+    vfs/vfsmatch
 )
 
 # lsutil files needed by format (subset of ls/lsutil/)
@@ -118,6 +119,12 @@ find "$DST" -name '*.go' -exec sed -i '' "s|\"$OLD_MODULE/|\"$NEW_MODULE/|g" {} 
 FMTOPTS="$DST/ls/lsutil/formatcodeoptions.go"
 if [ -f "$FMTOPTS" ]; then
     python3 "$SCRIPT_DIR/patch_formatcodeoptions.py" "$FMTOPTS"
+fi
+
+# Patch checker/types.go: expose Type.alias via public Alias() accessor
+CHECKER_TYPES="$DST/checker/types.go"
+if [ -f "$CHECKER_TYPES" ]; then
+    python3 "$SCRIPT_DIR/patch_checker_types.py" "$CHECKER_TYPES"
 fi
 
 # Copy LICENSE

@@ -8,10 +8,10 @@ import (
 	"sync"
 
 	"github.com/dlclark/regexp2"
-	"github.com/i2y/ramune/internal/tsgo/collections"
-	"github.com/i2y/ramune/internal/tsgo/core"
-	"github.com/i2y/ramune/internal/tsgo/stringutil"
-	"github.com/i2y/ramune/internal/tsgo/tspath"
+	"github.com/i2y/ramune/internal/rslint/tsgo_pinned/collections"
+	"github.com/i2y/ramune/internal/rslint/tsgo_pinned/core"
+	"github.com/i2y/ramune/internal/rslint/tsgo_pinned/stringutil"
+	"github.com/i2y/ramune/internal/rslint/tsgo_pinned/tspath"
 )
 
 type FileMatcherPatterns struct {

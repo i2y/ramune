@@ -3,10 +3,10 @@ package no_floating_promises
 import (
 	"encoding/json"
 
-	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/shim/ast"
 	"github.com/i2y/ramune/internal/rslint/shim/checker"
 	"github.com/i2y/ramune/internal/rslint/shim/scanner"
+	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/utils"
 )
 
@@ -78,7 +78,8 @@ func buildFloatingVoidMessage() rule.RuleMessage {
 }
 
 var NoFloatingPromisesRule = rule.CreateRule(rule.Rule{
-	Name: "no-floating-promises",
+	Name:             "no-floating-promises",
+	RequiresTypeInfo: true,
 	Run: func(ctx rule.RuleContext, options any) rule.RuleListeners {
 		opts, ok := options.(NoFloatingPromisesOptions)
 		if !ok {

@@ -166,7 +166,7 @@ func (t *Transpiler) emitExpr(node *ast.Node) {
 							// Use the TS alias name, not the resolved underlying type
 							structName := goTarget
 							if as.Type.Kind == ast.KindTypeReference {
-								ref := as.Type.AsTypeReference()
+								ref := as.Type.AsTypeReferenceNode()
 								if ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier {
 									structName = goExportedName(ref.TypeName.AsIdentifier().Text)
 								}

@@ -83,14 +83,16 @@ func ListenerOnNotAllowPattern(kind ast.Kind) ast.Kind {
 type RuleListeners map[ast.Kind](func(node *ast.Node))
 
 type Rule struct {
-	Name string
-	Run  func(ctx RuleContext, options any) RuleListeners
+	Name             string
+	RequiresTypeInfo bool
+	Run              func(ctx RuleContext, options any) RuleListeners
 }
 
 func CreateRule(r Rule) Rule {
 	return Rule{
-		Name: "@typescript-eslint/" + r.Name,
-		Run:  r.Run,
+		Name:             "@typescript-eslint/" + r.Name,
+		RequiresTypeInfo: r.RequiresTypeInfo,
+		Run:              r.Run,
 	}
 }
 
@@ -152,6 +154,10 @@ type RuleDiagnostic struct {
 	Suggestions *[]RuleSuggestion
 	SourceFile  *ast.SourceFile
 	Severity    DiagnosticSeverity
+	// PreFormatted indicates that Message.Description already contains
+	// structured formatting (e.g. indented continuation lines from tsc diagnostics).
+	// The renderer will use a simple 2-space indent instead of the │ border style.
+	PreFormatted bool
 }
 
 func (d RuleDiagnostic) Fixes() []RuleFix {
@@ -163,6 +169,7 @@ func (d RuleDiagnostic) Fixes() []RuleFix {
 
 type RuleContext struct {
 	SourceFile                 *ast.SourceFile
+	Settings                   map[string]interface{}
 	Program                    *compiler.Program
 	TypeChecker                *checker.Checker
 	DisableManager             *DisableManager

@@ -5,10 +5,10 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/shim/ast"
 	"github.com/i2y/ramune/internal/rslint/shim/checker"
 	"github.com/i2y/ramune/internal/rslint/shim/core"
+	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/utils"
 )
 
@@ -45,7 +45,7 @@ func parseOptions(rawOpts any) options {
 }
 
 const (
-	outsideConstructor        = -1
+	outsideConstructor       = -1
 	directlyInsideConstructor = 0
 )
 
@@ -59,15 +59,15 @@ const (
 )
 
 type classScope struct {
-	checker                                    *checker.Checker
-	classType                                  *checker.Type
-	onlyInlineLambdas                          bool
-	constructorScopeDepth                      int
-	memberVariableModifications                *utils.Set[string]
+	checker                                  *checker.Checker
+	classType                                *checker.Type
+	onlyInlineLambdas                        bool
+	constructorScopeDepth                    int
+	memberVariableModifications              *utils.Set[string]
 	memberVariableWithConstructorModifications *utils.Set[string]
-	staticVariableModifications                *utils.Set[string]
-	privateModifiableMembers                   map[string]*ast.Node
-	privateModifiableStatics                   map[string]*ast.Node
+	staticVariableModifications              *utils.Set[string]
+	privateModifiableMembers                 map[string]*ast.Node
+	privateModifiableStatics                 map[string]*ast.Node
 }
 
 func newClassScope(ch *checker.Checker, classNode *ast.Node, onlyInlineLambdas bool) *classScope {
@@ -80,15 +80,15 @@ func newClassScope(ch *checker.Checker, classNode *ast.Node, onlyInlineLambdas b
 	}
 
 	cs := &classScope{
-		checker:                     ch,
-		classType:                   classType,
-		onlyInlineLambdas:           onlyInlineLambdas,
-		constructorScopeDepth:       outsideConstructor,
-		memberVariableModifications: utils.NewSetWithSizeHint[string](4),
+		checker:                                  ch,
+		classType:                                classType,
+		onlyInlineLambdas:                        onlyInlineLambdas,
+		constructorScopeDepth:                    outsideConstructor,
+		memberVariableModifications:              utils.NewSetWithSizeHint[string](4),
 		memberVariableWithConstructorModifications: utils.NewSetWithSizeHint[string](4),
-		staticVariableModifications:                utils.NewSetWithSizeHint[string](4),
-		privateModifiableMembers:                   make(map[string]*ast.Node),
-		privateModifiableStatics:                   make(map[string]*ast.Node),
+		staticVariableModifications:              utils.NewSetWithSizeHint[string](4),
+		privateModifiableMembers:                 make(map[string]*ast.Node),
+		privateModifiableStatics:                 make(map[string]*ast.Node),
 	}
 
 	// Scan class members for property declarations
@@ -400,7 +400,8 @@ func isDestructuringAssignment(node *ast.Node) bool {
 }
 
 var PreferReadonlyRule = rule.CreateRule(rule.Rule{
-	Name: "prefer-readonly",
+	Name:             "prefer-readonly",
+	RequiresTypeInfo: true,
 	Run: func(ctx rule.RuleContext, rawOpts any) rule.RuleListeners {
 		if ctx.TypeChecker == nil {
 			return rule.RuleListeners{}

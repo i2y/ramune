@@ -1,8 +1,8 @@
 package no_case_declarations
 
 import (
-	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/shim/ast"
+	"github.com/i2y/ramune/internal/rslint/rule"
 )
 
 // https://eslint.org/docs/latest/rules/no-case-declarations

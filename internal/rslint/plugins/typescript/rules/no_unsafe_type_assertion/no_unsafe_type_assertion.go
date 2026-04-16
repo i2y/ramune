@@ -3,9 +3,9 @@ package no_unsafe_type_assertion
 import (
 	"fmt"
 
-	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/shim/ast"
 	"github.com/i2y/ramune/internal/rslint/shim/checker"
+	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/utils"
 )
 
@@ -52,7 +52,8 @@ func isObjectLiteralType(t *checker.Type) bool {
 }
 
 var NoUnsafeTypeAssertionRule = rule.CreateRule(rule.Rule{
-	Name: "no-unsafe-type-assertion",
+	Name:             "no-unsafe-type-assertion",
+	RequiresTypeInfo: true,
 	Run: func(ctx rule.RuleContext, options any) rule.RuleListeners {
 		checkExpression := func(node *ast.Node) {
 			expression := node.Expression()

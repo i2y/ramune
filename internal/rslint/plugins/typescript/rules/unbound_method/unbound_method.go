@@ -1,9 +1,9 @@
 package unbound_method
 
 import (
-	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/shim/ast"
 	"github.com/i2y/ramune/internal/rslint/shim/checker"
+	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/utils"
 )
 
@@ -192,7 +192,8 @@ func checkIfMethod(symbol *ast.Symbol, ignoreStatic bool) ( /* dangerous */ bool
 }
 
 var UnboundMethodRule = rule.CreateRule(rule.Rule{
-	Name: "unbound-method",
+	Name:             "unbound-method",
+	RequiresTypeInfo: true,
 	Run: func(ctx rule.RuleContext, options any) rule.RuleListeners {
 		opts, ok := options.(UnboundMethodOptions)
 		if !ok {

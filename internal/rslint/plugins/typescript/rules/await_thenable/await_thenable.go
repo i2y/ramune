@@ -1,9 +1,9 @@
 package await_thenable
 
 import (
-	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/shim/ast"
 	"github.com/i2y/ramune/internal/rslint/shim/scanner"
+	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/utils"
 )
 
@@ -43,7 +43,8 @@ func buildAwaitUsingOfNonAsyncDisposableMessage() rule.RuleMessage {
 }
 
 var AwaitThenableRule = rule.CreateRule(rule.Rule{
-	Name: "await-thenable",
+	Name:             "await-thenable",
+	RequiresTypeInfo: true,
 	Run: func(ctx rule.RuleContext, options any) rule.RuleListeners {
 		return rule.RuleListeners{
 			ast.KindAwaitExpression: func(node *ast.Node) {

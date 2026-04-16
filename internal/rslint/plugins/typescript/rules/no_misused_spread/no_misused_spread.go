@@ -1,11 +1,11 @@
 package no_misused_spread
 
 import (
-	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/shim/ast"
 	"github.com/i2y/ramune/internal/rslint/shim/checker"
 	"github.com/i2y/ramune/internal/rslint/shim/compiler"
 	"github.com/i2y/ramune/internal/rslint/shim/scanner"
+	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/utils"
 )
 
@@ -151,7 +151,8 @@ func isClassDeclaration(t *checker.Type) bool {
 }
 
 var NoMisusedSpreadRule = rule.CreateRule(rule.Rule{
-	Name: "no-misused-spread",
+	Name:             "no-misused-spread",
+	RequiresTypeInfo: true,
 	Run: func(ctx rule.RuleContext, options any) rule.RuleListeners {
 		opts, ok := options.(NoMisusedSpreadOptions)
 		if !ok {

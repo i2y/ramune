@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/shim/ast"
 	"github.com/i2y/ramune/internal/rslint/shim/checker"
+	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/utils"
 )
 
@@ -81,7 +81,8 @@ type NoMisusedPromisesOptions struct {
 }
 
 var NoMisusedPromisesRule = rule.CreateRule(rule.Rule{
-	Name: "no-misused-promises",
+	Name:             "no-misused-promises",
+	RequiresTypeInfo: true,
 	Run: func(ctx rule.RuleContext, options any) rule.RuleListeners {
 		opts, ok := options.(NoMisusedPromisesOptions)
 		if !ok {

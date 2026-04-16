@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/shim/ast"
+	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/utils"
 )
 
@@ -14,7 +14,8 @@ type NoEmptyInterfaceOptions struct {
 }
 
 var NoEmptyInterfaceRule = rule.CreateRule(rule.Rule{
-	Name: "no-empty-interface",
+	Name:             "no-empty-interface",
+	RequiresTypeInfo: true,
 	Run: func(ctx rule.RuleContext, options any) rule.RuleListeners {
 		opts := NoEmptyInterfaceOptions{
 			AllowSingleExtends: false,

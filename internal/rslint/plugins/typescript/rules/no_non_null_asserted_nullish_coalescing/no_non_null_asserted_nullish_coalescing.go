@@ -1,9 +1,9 @@
 package no_non_null_asserted_nullish_coalescing
 
 import (
-	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/shim/ast"
 	"github.com/i2y/ramune/internal/rslint/shim/scanner"
+	"github.com/i2y/ramune/internal/rslint/rule"
 )
 
 // findVariableAndCheckAssignment looks for a variable declaration matching identName

@@ -1,9 +1,9 @@
 package prefer_promise_reject_errors
 
 import (
-	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/shim/ast"
 	"github.com/i2y/ramune/internal/rslint/shim/checker"
+	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/utils"
 )
 
@@ -21,7 +21,8 @@ type PreferPromiseRejectErrorsOptions struct {
 }
 
 var PreferPromiseRejectErrorsRule = rule.CreateRule(rule.Rule{
-	Name: "prefer-promise-reject-errors",
+	Name:             "prefer-promise-reject-errors",
+	RequiresTypeInfo: true,
 	Run: func(ctx rule.RuleContext, options any) rule.RuleListeners {
 		opts, ok := options.(PreferPromiseRejectErrorsOptions)
 		if !ok {

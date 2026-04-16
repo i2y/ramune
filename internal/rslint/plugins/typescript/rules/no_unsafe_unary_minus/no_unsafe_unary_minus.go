@@ -3,9 +3,9 @@ package no_unsafe_unary_minus
 import (
 	"fmt"
 
-	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/shim/ast"
 	"github.com/i2y/ramune/internal/rslint/shim/checker"
+	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/utils"
 )
 
@@ -17,7 +17,8 @@ func buildUnaryMinusMessage(t string) rule.RuleMessage {
 }
 
 var NoUnsafeUnaryMinusRule = rule.CreateRule(rule.Rule{
-	Name: "no-unsafe-unary-minus",
+	Name:             "no-unsafe-unary-minus",
+	RequiresTypeInfo: true,
 	Run: func(ctx rule.RuleContext, options any) rule.RuleListeners {
 		return rule.RuleListeners{
 			ast.KindPrefixUnaryExpression: func(node *ast.Node) {

@@ -1,8 +1,8 @@
 package consistent_indexed_object_style
 
 import (
-	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/shim/ast"
+	"github.com/i2y/ramune/internal/rslint/rule"
 )
 
 type ConsistentIndexedObjectStyleOptions struct {

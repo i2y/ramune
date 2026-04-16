@@ -3,8 +3,8 @@ package no_duplicate_enum_values
 import (
 	"fmt"
 
-	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/shim/ast"
+	"github.com/i2y/ramune/internal/rslint/rule"
 )
 
 var NoDuplicateEnumValuesRule = rule.CreateRule(rule.Rule{

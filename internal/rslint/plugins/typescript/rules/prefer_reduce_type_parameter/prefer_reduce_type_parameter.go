@@ -1,9 +1,9 @@
 package prefer_reduce_type_parameter
 
 import (
-	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/shim/ast"
 	"github.com/i2y/ramune/internal/rslint/shim/checker"
+	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/utils"
 )
 
@@ -15,7 +15,8 @@ func buildPreferTypeParameterMessage() rule.RuleMessage {
 }
 
 var PreferReduceTypeParameterRule = rule.CreateRule(rule.Rule{
-	Name: "prefer-reduce-type-parameter",
+	Name:             "prefer-reduce-type-parameter",
+	RequiresTypeInfo: true,
 	Run: func(ctx rule.RuleContext, options any) rule.RuleListeners {
 		return rule.RuleListeners{
 			ast.KindCallExpression: func(node *ast.Node) {

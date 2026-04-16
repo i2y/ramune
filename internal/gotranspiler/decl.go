@@ -29,7 +29,7 @@ func (t *Transpiler) emitTypeParameters(node *ast.Node) {
 		if i > 0 {
 			t.w.write(", ")
 		}
-		tpDecl := tp.AsTypeParameter()
+		tpDecl := tp.AsTypeParameterDeclaration()
 		tpName := tp.Name().AsIdentifier().Text
 
 		t.w.write(goExportedName(tpName))
@@ -59,7 +59,7 @@ func (t *Transpiler) mapConstraint(constraint *ast.Node) string {
 	case ast.KindBooleanKeyword:
 		return "~bool"
 	case ast.KindTypeReference:
-		ref := constraint.AsTypeReference()
+		ref := constraint.AsTypeReferenceNode()
 		if ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier {
 			return t.tm.qualifyTypeName(ref.TypeName.AsIdentifier().Text)
 		}
@@ -443,7 +443,7 @@ func (t *Transpiler) collectTypeAlias(node *ast.Node) {
 			// Scan intersection constituents for named type references
 			for _, member := range ta.Type.AsIntersectionTypeNode().Types.Nodes {
 				if member.Kind == ast.KindTypeReference {
-					ref := member.AsTypeReference()
+					ref := member.AsTypeReferenceNode()
 					if ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier {
 						refName := ref.TypeName.AsIdentifier().Text
 						goRefName := goTypeName(refName)
@@ -544,7 +544,7 @@ func (t *Transpiler) emitTypeAliasDeclaration(node *ast.Node) {
 						if ta.Type != nil && ta.Type.Kind == ast.KindIntersectionType {
 							for _, member := range ta.Type.AsIntersectionTypeNode().Types.Nodes {
 								if member.Kind == ast.KindTypeReference {
-									ref := member.AsTypeReference()
+									ref := member.AsTypeReferenceNode()
 									if ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier {
 										refName := goExportedName(ref.TypeName.AsIdentifier().Text)
 										t.w.writeln(refName)
@@ -577,7 +577,7 @@ func (t *Transpiler) emitTypeAliasDeclaration(node *ast.Node) {
 									}
 								} else if member.Kind == ast.KindTypeReference {
 									// Named type reference (e.g., HtmlEscaped) → get its declared properties
-									ref := member.AsTypeReference()
+									ref := member.AsTypeReferenceNode()
 									if ref.TypeName != nil {
 										refType := t.ck.GetTypeAtLocation(ref.TypeName)
 										if refType != nil && refType.Flags()&checker.TypeFlagsObject != 0 {

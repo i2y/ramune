@@ -1,9 +1,9 @@
 package no_for_in_array
 
 import (
-	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/shim/ast"
 	"github.com/i2y/ramune/internal/rslint/shim/checker"
+	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/utils"
 )
 
@@ -15,7 +15,8 @@ func buildForInViolationMessage() rule.RuleMessage {
 }
 
 var NoForInArrayRule = rule.CreateRule(rule.Rule{
-	Name: "no-for-in-array",
+	Name:             "no-for-in-array",
+	RequiresTypeInfo: true,
 	Run: func(ctx rule.RuleContext, options any) rule.RuleListeners {
 		hasArrayishLength := func(t *checker.Type) bool {
 			lengthProperty := checker.Checker_getPropertyOfType(ctx.TypeChecker, t, "length")

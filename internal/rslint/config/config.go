@@ -2,14 +2,13 @@ package config
 
 import (
 	"encoding/json"
-	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 
 	"github.com/bmatcuk/doublestar/v4"
+	"github.com/i2y/ramune/internal/rslint/shim/tspath"
 	importPlugin "github.com/i2y/ramune/internal/rslint/plugins/import"
+	jestPlugin "github.com/i2y/ramune/internal/rslint/plugins/jest"
 	reactPlugin "github.com/i2y/ramune/internal/rslint/plugins/react"
 	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/adjacent_overload_signatures"
 	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/array_type"
@@ -27,10 +26,15 @@ import (
 	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/consistent_type_imports"
 	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/default_param_last"
 	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/dot_notation"
+	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/explicit_function_return_type"
+	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/member_ordering"
+	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/method_signature_style"
+	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/naming_convention"
 	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_array_constructor"
 	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_array_delete"
 	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_base_to_string"
 	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_confusing_void_expression"
+	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_dupe_class_members"
 	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_duplicate_enum_values"
 	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_duplicate_type_constituents"
 	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_dynamic_delete"
@@ -57,6 +61,7 @@ import (
 	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_require_imports"
 	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_this_alias"
 	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_unnecessary_boolean_literal_compare"
+	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_unnecessary_condition"
 	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_unnecessary_template_expression"
 	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_unnecessary_type_arguments"
 	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_unnecessary_type_assertion"
@@ -68,18 +73,21 @@ import (
 	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_unsafe_return"
 	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_unsafe_type_assertion"
 	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_unsafe_unary_minus"
+	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_unused_expressions"
 	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_unused_vars"
+	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_use_before_define"
+	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_useless_constructor"
 	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_useless_empty_export"
 	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_var_requires"
 	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/non_nullable_type_assertion_style"
 	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/only_throw_error"
+	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/parameter_properties"
 	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/prefer_as_const"
 	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/prefer_includes"
 	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/prefer_literal_enum_member"
 	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/prefer_namespace_keyword"
 	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/prefer_promise_reject_errors"
 	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/prefer_readonly"
-	"github.com/i2y/ramune/internal/rslint/shim/tspath"
 
 	// "github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/prefer_readonly_parameter_types" // Temporarily disabled - incomplete implementation
 	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/prefer_reduce_type_parameter"
@@ -103,10 +111,14 @@ import (
 	"github.com/i2y/ramune/internal/rslint/rules/array_callback_return"
 	"github.com/i2y/ramune/internal/rslint/rules/constructor_super"
 	"github.com/i2y/ramune/internal/rslint/rules/default_case"
+	"github.com/i2y/ramune/internal/rslint/rules/default_case_last"
+	"github.com/i2y/ramune/internal/rslint/rules/eqeqeq"
 	"github.com/i2y/ramune/internal/rslint/rules/for_direction"
 	"github.com/i2y/ramune/internal/rslint/rules/getter_return"
+	"github.com/i2y/ramune/internal/rslint/rules/no_alert"
 	"github.com/i2y/ramune/internal/rslint/rules/no_async_promise_executor"
 	"github.com/i2y/ramune/internal/rslint/rules/no_await_in_loop"
+	"github.com/i2y/ramune/internal/rslint/rules/no_caller"
 	"github.com/i2y/ramune/internal/rslint/rules/no_case_declarations"
 	"github.com/i2y/ramune/internal/rslint/rules/no_class_assign"
 	"github.com/i2y/ramune/internal/rslint/rules/no_compare_neg_zero"
@@ -117,15 +129,54 @@ import (
 	"github.com/i2y/ramune/internal/rslint/rules/no_constant_condition"
 	"github.com/i2y/ramune/internal/rslint/rules/no_constructor_return"
 	"github.com/i2y/ramune/internal/rslint/rules/no_debugger"
+	"github.com/i2y/ramune/internal/rslint/rules/no_delete_var"
 	"github.com/i2y/ramune/internal/rslint/rules/no_dupe_args"
 	"github.com/i2y/ramune/internal/rslint/rules/no_dupe_keys"
 	"github.com/i2y/ramune/internal/rslint/rules/no_duplicate_case"
 	"github.com/i2y/ramune/internal/rslint/rules/no_empty"
+	"github.com/i2y/ramune/internal/rslint/rules/no_empty_character_class"
 	"github.com/i2y/ramune/internal/rslint/rules/no_empty_pattern"
+	"github.com/i2y/ramune/internal/rslint/rules/no_eval"
 	"github.com/i2y/ramune/internal/rslint/rules/no_ex_assign"
+	"github.com/i2y/ramune/internal/rslint/rules/no_extra_bind"
+	"github.com/i2y/ramune/internal/rslint/rules/no_fallthrough"
+	"github.com/i2y/ramune/internal/rslint/rules/no_func_assign"
+	"github.com/i2y/ramune/internal/rslint/rules/no_global_assign"
+	"github.com/i2y/ramune/internal/rslint/rules/no_import_assign"
+	"github.com/i2y/ramune/internal/rslint/rules/no_inner_declarations"
+	"github.com/i2y/ramune/internal/rslint/rules/no_invalid_regexp"
+	"github.com/i2y/ramune/internal/rslint/rules/no_iterator"
+	"github.com/i2y/ramune/internal/rslint/rules/no_labels"
 	"github.com/i2y/ramune/internal/rslint/rules/no_loss_of_precision"
+	"github.com/i2y/ramune/internal/rslint/rules/no_multi_str"
+	"github.com/i2y/ramune/internal/rslint/rules/no_new_func"
+	"github.com/i2y/ramune/internal/rslint/rules/no_new_object"
+	"github.com/i2y/ramune/internal/rslint/rules/require_atomic_updates"
+	"github.com/i2y/ramune/internal/rslint/rules/no_new_symbol"
+	"github.com/i2y/ramune/internal/rslint/rules/no_new_wrappers"
+	"github.com/i2y/ramune/internal/rslint/rules/no_obj_calls"
+	"github.com/i2y/ramune/internal/rslint/rules/no_octal_escape"
+	"github.com/i2y/ramune/internal/rslint/rules/no_proto"
+	"github.com/i2y/ramune/internal/rslint/rules/no_restricted_imports"
+	"github.com/i2y/ramune/internal/rslint/rules/no_script_url"
+	"github.com/i2y/ramune/internal/rslint/rules/no_self_assign"
+	"github.com/i2y/ramune/internal/rslint/rules/no_setter_return"
 	"github.com/i2y/ramune/internal/rslint/rules/no_sparse_arrays"
 	"github.com/i2y/ramune/internal/rslint/rules/no_template_curly_in_string"
+	"github.com/i2y/ramune/internal/rslint/rules/no_this_before_super"
+	"github.com/i2y/ramune/internal/rslint/rules/no_undef"
+	"github.com/i2y/ramune/internal/rslint/rules/no_undef_init"
+	"github.com/i2y/ramune/internal/rslint/rules/no_unmodified_loop_condition"
+	"github.com/i2y/ramune/internal/rslint/rules/no_unreachable"
+	"github.com/i2y/ramune/internal/rslint/rules/no_unsafe_finally"
+	"github.com/i2y/ramune/internal/rslint/rules/no_unsafe_negation"
+	"github.com/i2y/ramune/internal/rslint/rules/no_unsafe_optional_chaining"
+	"github.com/i2y/ramune/internal/rslint/rules/no_var"
+	"github.com/i2y/ramune/internal/rslint/rules/no_with"
+	"github.com/i2y/ramune/internal/rslint/rules/prefer_const"
+	"github.com/i2y/ramune/internal/rslint/rules/prefer_rest_params"
+	"github.com/i2y/ramune/internal/rslint/rules/use_isnan"
+	"github.com/i2y/ramune/internal/rslint/rules/valid_typeof"
 )
 
 // RslintConfig represents the top-level configuration array
@@ -188,8 +239,8 @@ type Rules map[string]interface{}
 
 // RuleConfig represents individual rule configuration
 type RuleConfig struct {
-	Level   string                 `json:"level,omitempty"`   // "error", "warn", "off"
-	Options map[string]interface{} `json:"options,omitempty"` // Rule-specific options
+	Level   string      `json:"level,omitempty"`   // "error", "warn", "off"
+	Options interface{} `json:"options,omitempty"` // Rule-specific options (string, map, array, etc.)
 }
 
 // IsEnabled returns true if the rule is enabled (not "off")
@@ -209,15 +260,15 @@ func (rc *RuleConfig) GetLevel() string {
 }
 
 // GetOptions returns the rule options, ensuring we return a usable value
-func (rc *RuleConfig) GetOptions() map[string]interface{} {
+func (rc *RuleConfig) GetOptions() interface{} {
 	if rc == nil || rc.Options == nil {
-		return make(map[string]interface{})
+		return nil
 	}
 	return rc.Options
 }
 
 // SetOptions sets the rule options
-func (rc *RuleConfig) SetOptions(options map[string]interface{}) {
+func (rc *RuleConfig) SetOptions(options interface{}) {
 	if rc != nil {
 		rc.Options = options
 	}
@@ -249,6 +300,11 @@ var KnownPlugins = []PluginInfo{
 		RulePrefix:  "import",
 		DeclNames:   []string{"eslint-plugin-import", "import"},
 		getAllRules: func() []rule.Rule { return importPlugin.GetAllRules() },
+	},
+	{
+		RulePrefix:  "jest",
+		DeclNames:   []string{"eslint-plugin-jest", "jest"},
+		getAllRules: func() []rule.Rule { return jestPlugin.GetAllRules() },
 	},
 	{
 		RulePrefix:  "react",
@@ -284,7 +340,8 @@ func NormalizePluginName(pluginName string) string {
 // - ["error"] -> enabled rule with error severity
 // - ["warn"] -> enabled rule with warning severity
 // - ["error", {...options}] -> enabled rule with error severity and options
-// - ["warn", {...options}] -> enabled rule with warning severity and options
+// - ["error", "both"] -> enabled rule with string option (e.g. no-inner-declarations)
+// - ["error", "both", {...options}] -> enabled rule with string + object options
 func parseArrayRuleConfig(ruleArray []interface{}) *RuleConfig {
 	if len(ruleArray) == 0 {
 		return nil
@@ -298,21 +355,19 @@ func parseArrayRuleConfig(ruleArray []interface{}) *RuleConfig {
 
 	ruleConfig := &RuleConfig{Level: level}
 
-	// Second element (if present) should be the options object
+	// Remaining elements are rule options — pass them through to the rule's
+	// option parser which knows how to interpret its own format.
 	if len(ruleArray) > 1 {
-		switch opts := ruleArray[1].(type) {
-		case map[string]interface{}:
-			ruleConfig.Options = opts
-		case nil:
-			// Explicitly null/nil options are valid
-			ruleConfig.Options = make(map[string]interface{})
-		default:
-			// Invalid options type, but still create the rule config with just the level
-			ruleConfig.Options = make(map[string]interface{})
+		remaining := ruleArray[1:]
+		if len(remaining) == 1 {
+			// Single option element: pass directly (string, map, etc.)
+			ruleConfig.Options = remaining[0]
+		} else {
+			// Multiple option elements: pass as array (e.g. ["both", {blockScopedFunctions: "disallow"}])
+			ruleConfig.Options = remaining
 		}
 	}
 
-	// Additional elements are ignored (following ESLint behavior)
 	return ruleConfig
 }
 
@@ -323,12 +378,19 @@ func RegisterAllRules() {
 		registerAllTypeScriptEslintPluginRules()
 		registerAllEslintImportPluginRules()
 		registerAllReactPluginRules()
+		registerAllJestPluginRules()
 		registerAllCoreEslintRules()
 	})
 }
 
 func registerAllReactPluginRules() {
 	for _, rule := range reactPlugin.GetAllRules() {
+		GlobalRuleRegistry.Register(rule.Name, rule)
+	}
+}
+
+func registerAllJestPluginRules() {
+	for _, rule := range jestPlugin.GetAllRules() {
 		GlobalRuleRegistry.Register(rule.Name, rule)
 	}
 }
@@ -351,10 +413,15 @@ func registerAllTypeScriptEslintPluginRules() {
 	GlobalRuleRegistry.Register("@typescript-eslint/consistent-type-imports", consistent_type_imports.ConsistentTypeImportsRule)
 	GlobalRuleRegistry.Register("@typescript-eslint/default-param-last", default_param_last.DefaultParamLastRule)
 	GlobalRuleRegistry.Register("@typescript-eslint/dot-notation", dot_notation.DotNotationRule)
+	GlobalRuleRegistry.Register("@typescript-eslint/explicit-function-return-type", explicit_function_return_type.ExplicitFunctionReturnTypeRule)
+	GlobalRuleRegistry.Register("@typescript-eslint/member-ordering", member_ordering.MemberOrderingRule)
+	GlobalRuleRegistry.Register("@typescript-eslint/method-signature-style", method_signature_style.MethodSignatureStyleRule)
+	GlobalRuleRegistry.Register("@typescript-eslint/naming-convention", naming_convention.NamingConventionRule)
 	GlobalRuleRegistry.Register("@typescript-eslint/no-array-constructor", no_array_constructor.NoArrayConstructorRule)
 	GlobalRuleRegistry.Register("@typescript-eslint/no-array-delete", no_array_delete.NoArrayDeleteRule)
 	GlobalRuleRegistry.Register("@typescript-eslint/no-base-to-string", no_base_to_string.NoBaseToStringRule)
 	GlobalRuleRegistry.Register("@typescript-eslint/no-confusing-void-expression", no_confusing_void_expression.NoConfusingVoidExpressionRule)
+	GlobalRuleRegistry.Register("@typescript-eslint/no-dupe-class-members", no_dupe_class_members.NoDupeClassMembersRule)
 	GlobalRuleRegistry.Register("@typescript-eslint/no-duplicate-enum-values", no_duplicate_enum_values.NoDuplicateEnumValuesRule)
 	GlobalRuleRegistry.Register("@typescript-eslint/no-duplicate-type-constituents", no_duplicate_type_constituents.NoDuplicateTypeConstituentsRule)
 	GlobalRuleRegistry.Register("@typescript-eslint/no-dynamic-delete", no_dynamic_delete.NoDynamicDeleteRule)
@@ -381,6 +448,7 @@ func registerAllTypeScriptEslintPluginRules() {
 	GlobalRuleRegistry.Register("@typescript-eslint/no-this-alias", no_this_alias.NoThisAliasRule)
 	GlobalRuleRegistry.Register("@typescript-eslint/no-require-imports", no_require_imports.NoRequireImportsRule)
 	GlobalRuleRegistry.Register("@typescript-eslint/no-unnecessary-boolean-literal-compare", no_unnecessary_boolean_literal_compare.NoUnnecessaryBooleanLiteralCompareRule)
+	GlobalRuleRegistry.Register("@typescript-eslint/no-unnecessary-condition", no_unnecessary_condition.NoUnnecessaryConditionRule)
 	GlobalRuleRegistry.Register("@typescript-eslint/no-unnecessary-template-expression", no_unnecessary_template_expression.NoUnnecessaryTemplateExpressionRule)
 	GlobalRuleRegistry.Register("@typescript-eslint/no-unnecessary-type-arguments", no_unnecessary_type_arguments.NoUnnecessaryTypeArgumentsRule)
 	GlobalRuleRegistry.Register("@typescript-eslint/no-unnecessary-type-assertion", no_unnecessary_type_assertion.NoUnnecessaryTypeAssertionRule)
@@ -392,11 +460,15 @@ func registerAllTypeScriptEslintPluginRules() {
 	GlobalRuleRegistry.Register("@typescript-eslint/no-unsafe-return", no_unsafe_return.NoUnsafeReturnRule)
 	GlobalRuleRegistry.Register("@typescript-eslint/no-unsafe-type-assertion", no_unsafe_type_assertion.NoUnsafeTypeAssertionRule)
 	GlobalRuleRegistry.Register("@typescript-eslint/no-unsafe-unary-minus", no_unsafe_unary_minus.NoUnsafeUnaryMinusRule)
+	GlobalRuleRegistry.Register("@typescript-eslint/no-unused-expressions", no_unused_expressions.NoUnusedExpressionsRule)
 	GlobalRuleRegistry.Register("@typescript-eslint/no-unused-vars", no_unused_vars.NoUnusedVarsRule)
+	GlobalRuleRegistry.Register("@typescript-eslint/no-use-before-define", no_use_before_define.NoUseBeforeDefineRule)
+	GlobalRuleRegistry.Register("@typescript-eslint/no-useless-constructor", no_useless_constructor.NoUselessConstructorRule)
 	GlobalRuleRegistry.Register("@typescript-eslint/no-useless-empty-export", no_useless_empty_export.NoUselessEmptyExportRule)
 	GlobalRuleRegistry.Register("@typescript-eslint/no-var-requires", no_var_requires.NoVarRequiresRule)
 	GlobalRuleRegistry.Register("@typescript-eslint/non-nullable-type-assertion-style", non_nullable_type_assertion_style.NonNullableTypeAssertionStyleRule)
 	GlobalRuleRegistry.Register("@typescript-eslint/only-throw-error", only_throw_error.OnlyThrowErrorRule)
+	GlobalRuleRegistry.Register("@typescript-eslint/parameter-properties", parameter_properties.ParameterPropertiesRule)
 	GlobalRuleRegistry.Register("@typescript-eslint/prefer-as-const", prefer_as_const.PreferAsConstRule)
 	GlobalRuleRegistry.Register("@typescript-eslint/prefer-includes", prefer_includes.PreferIncludesRule)
 	GlobalRuleRegistry.Register("@typescript-eslint/prefer-literal-enum-member", prefer_literal_enum_member.PreferLiteralEnumMemberRule)
@@ -437,10 +509,13 @@ func registerAllCoreEslintRules() {
 	GlobalRuleRegistry.Register("array-callback-return", array_callback_return.ArrayCallbackReturnRule)
 	GlobalRuleRegistry.Register("constructor-super", constructor_super.ConstructorSuperRule)
 	GlobalRuleRegistry.Register("default-case", default_case.DefaultCaseRule)
+	GlobalRuleRegistry.Register("default-case-last", default_case_last.DefaultCaseLastRule)
 	GlobalRuleRegistry.Register("for-direction", for_direction.ForDirectionRule)
 	GlobalRuleRegistry.Register("getter-return", getter_return.GetterReturnRule)
+	GlobalRuleRegistry.Register("no-alert", no_alert.NoAlertRule)
 	GlobalRuleRegistry.Register("no-async-promise-executor", no_async_promise_executor.NoAsyncPromiseExecutorRule)
 	GlobalRuleRegistry.Register("no-await-in-loop", no_await_in_loop.NoAwaitInLoopRule)
+	GlobalRuleRegistry.Register("no-caller", no_caller.NoCallerRule)
 	GlobalRuleRegistry.Register("no-case-declarations", no_case_declarations.NoCaseDeclarationsRule)
 	GlobalRuleRegistry.Register("no-class-assign", no_class_assign.NoClassAssignRule)
 	GlobalRuleRegistry.Register("no-compare-neg-zero", no_compare_neg_zero.NoCompareNegZeroRule)
@@ -451,17 +526,62 @@ func registerAllCoreEslintRules() {
 	GlobalRuleRegistry.Register("no-constant-condition", no_constant_condition.NoConstantConditionRule)
 	GlobalRuleRegistry.Register("no-constructor-return", no_constructor_return.NoConstructorReturnRule)
 	GlobalRuleRegistry.Register("no-debugger", no_debugger.NoDebuggerRule)
+	GlobalRuleRegistry.Register("no-delete-var", no_delete_var.NoDeleteVarRule)
 	GlobalRuleRegistry.Register("no-dupe-args", no_dupe_args.NoDupeArgsRule)
 	GlobalRuleRegistry.Register("no-dupe-keys", no_dupe_keys.NoDupeKeysRule)
 	GlobalRuleRegistry.Register("no-duplicate-case", no_duplicate_case.NoDuplicateCaseRule)
 	GlobalRuleRegistry.Register("no-empty", no_empty.NoEmptyRule)
 	GlobalRuleRegistry.Register("no-empty-pattern", no_empty_pattern.NoEmptyPatternRule)
+	GlobalRuleRegistry.Register("no-eval", no_eval.NoEvalRule)
 	GlobalRuleRegistry.Register("no-ex-assign", no_ex_assign.NoExAssignRule)
+	GlobalRuleRegistry.Register("no-extra-bind", no_extra_bind.NoExtraBindRule)
+	GlobalRuleRegistry.Register("no-labels", no_labels.NoLabelsRule)
+	GlobalRuleRegistry.Register("no-func-assign", no_func_assign.NoFuncAssignRule)
+	GlobalRuleRegistry.Register("no-global-assign", no_global_assign.NoGlobalAssignRule)
+	GlobalRuleRegistry.Register("no-import-assign", no_import_assign.NoImportAssignRule)
+	GlobalRuleRegistry.Register("no-inner-declarations", no_inner_declarations.NoInnerDeclarationsRule)
 	GlobalRuleRegistry.Register("no-loss-of-precision", no_loss_of_precision.NoLossOfPrecisionRule)
+	GlobalRuleRegistry.Register("no-new-func", no_new_func.NoNewFuncRule)
+	GlobalRuleRegistry.Register("no-new-wrappers", no_new_wrappers.NoNewWrappersRule)
+	GlobalRuleRegistry.Register("no-restricted-imports", no_restricted_imports.NoRestrictedImportsRule)
+	GlobalRuleRegistry.Register("no-multi-str", no_multi_str.NoMultiStrRule)
+	GlobalRuleRegistry.Register("no-octal-escape", no_octal_escape.NoOctalEscapeRule)
+	GlobalRuleRegistry.Register("no-proto", no_proto.NoProtoRule)
+	GlobalRuleRegistry.Register("no-script-url", no_script_url.NoScriptUrlRule)
+	GlobalRuleRegistry.Register("no-self-assign", no_self_assign.NoSelfAssignRule)
 	GlobalRuleRegistry.Register("no-template-curly-in-string", no_template_curly_in_string.NoTemplateCurlyInString)
 	GlobalRuleRegistry.Register("no-sparse-arrays", no_sparse_arrays.NoSparseArraysRule)
+	GlobalRuleRegistry.Register("no-undef", no_undef.NoUndefRule)
+	GlobalRuleRegistry.Register("no-undef-init", no_undef_init.NoUndefInitRule)
+	GlobalRuleRegistry.Register("prefer-const", prefer_const.PreferConstRule)
+	GlobalRuleRegistry.Register("no-this-before-super", no_this_before_super.NoThisBeforeSuperRule)
+	GlobalRuleRegistry.Register("no-var", no_var.NoVarRule)
+	GlobalRuleRegistry.Register("no-with", no_with.NoWithRule)
+	GlobalRuleRegistry.Register("prefer-rest-params", prefer_rest_params.PreferRestParamsRule)
+	GlobalRuleRegistry.Register("no-empty-character-class", no_empty_character_class.NoEmptyCharacterClassRule)
+	GlobalRuleRegistry.Register("no-invalid-regexp", no_invalid_regexp.NoInvalidRegexpRule)
+	GlobalRuleRegistry.Register("no-iterator", no_iterator.NoIteratorRule)
+	GlobalRuleRegistry.Register("no-setter-return", no_setter_return.NoSetterReturnRule)
+	GlobalRuleRegistry.Register("no-unsafe-negation", no_unsafe_negation.NoUnsafeNegationRule)
+	GlobalRuleRegistry.Register("no-obj-calls", no_obj_calls.NoObjCallsRule)
+	GlobalRuleRegistry.Register("no-new-object", no_new_object.NoNewObjectRule)
+	GlobalRuleRegistry.Register("no-new-symbol", no_new_symbol.NoNewSymbolRule)
+	GlobalRuleRegistry.Register("use-isnan", use_isnan.UseIsNaNRule)
+	GlobalRuleRegistry.Register("eqeqeq", eqeqeq.EqeqeqRule)
+	GlobalRuleRegistry.Register("no-fallthrough", no_fallthrough.NoFallthroughRule)
+	GlobalRuleRegistry.Register("valid-typeof", valid_typeof.ValidTypeofRule)
+	GlobalRuleRegistry.Register("no-unsafe-optional-chaining", no_unsafe_optional_chaining.NoUnsafeOptionalChainingRule)
+	GlobalRuleRegistry.Register("no-unsafe-finally", no_unsafe_finally.NoUnsafeFinallyRule)
+	GlobalRuleRegistry.Register("no-unmodified-loop-condition", no_unmodified_loop_condition.NoUnmodifiedLoopConditionRule)
+	GlobalRuleRegistry.Register("no-unreachable", no_unreachable.NoUnreachableRule)
+	GlobalRuleRegistry.Register("require-atomic-updates", require_atomic_updates.RequireAtomicUpdatesRule)
 }
 
+// isFileIgnored checks if a file is matched by ignore patterns, evaluated sequentially.
+// Later patterns override earlier ones; a `!` prefix negates (re-includes) a previously
+// ignored file. This aligns with ESLint v10's ignore semantics.
+//
+// For directory-level blocking (dir/** prevents traversal entirely), use isDirPathBlocked.
 func isFileIgnored(filePath string, ignorePatterns []string, cwd string) bool {
 	if cwd == "" {
 		return isFileIgnoredSimple(filePath, ignorePatterns)
@@ -469,38 +589,109 @@ func isFileIgnored(filePath string, ignorePatterns []string, cwd string) bool {
 
 	// Normalize the file path relative to cwd
 	normalizedPath := normalizePath(filePath, cwd)
+	unixPath := strings.ReplaceAll(normalizedPath, "\\", "/")
 
+	// Evaluate patterns sequentially. Later patterns override earlier ones.
+	// A `!` prefix negates (re-includes) a previously ignored file.
+	// This aligns with ESLint v10's ignore semantics.
+	ignored := false
 	for _, pattern := range ignorePatterns {
+		negated := false
+		if strings.HasPrefix(pattern, "!") {
+			negated = true
+			pattern = pattern[1:]
+		}
+
 		normalizedPattern := normalizePattern(pattern)
 
-		// Try matching against normalized path
-		if matched, err := doublestar.Match(normalizedPattern, normalizedPath); err == nil && matched {
-			return true
+		// Match against the relative path only. Do NOT fall back to the
+		// absolute filePath — patterns with **/ prefix (e.g., **/tmp/**/*)
+		// would incorrectly match system directory names in the absolute path
+		// (e.g., /tmp/ on Linux/macOS).
+		matched := matchGlob(normalizedPattern, normalizedPath)
+		// Windows path separator fallback.
+		if !matched && unixPath != normalizedPath {
+			matched = matchGlob(normalizedPattern, unixPath)
 		}
 
-		// Also try matching against original path for absolute patterns
-		if normalizedPath != filePath {
-			if matched, err := doublestar.Match(normalizedPattern, filePath); err == nil && matched {
-				return true
-			}
-		}
-
-		// Try Unix-style path for cross-platform compatibility
-		unixPath := strings.ReplaceAll(normalizedPath, "\\", "/")
-		if unixPath != normalizedPath {
-			if matched, err := doublestar.Match(normalizedPattern, unixPath); err == nil && matched {
-				return true
-			}
+		if matched {
+			ignored = !negated
 		}
 	}
-	return false
+	return ignored
 }
 
 // normalizePattern cleans up a glob pattern to match paths produced by normalizePath.
 // normalizePath uses tspath.NormalizePath on file paths (strips leading "./", collapses
 // "/./", resolves ".."), so patterns must undergo the same transformation.
+// matchGlob matches a glob pattern against a path using doublestar.
+func matchGlob(pattern, path string) bool {
+	m, err := doublestar.Match(pattern, path)
+	return err == nil && m
+}
+
+// isFileLevelPattern returns true if the pattern only matches files (not directories).
+// File-level patterns end with /**/* or /* (but not /**).
+// These do NOT block directory traversal in ESLint v10's isDirectoryIgnored.
+func isFileLevelPattern(pattern string) bool {
+	return strings.HasSuffix(pattern, "/**/*") ||
+		(strings.HasSuffix(pattern, "/*") && !strings.HasSuffix(pattern, "/**"))
+}
+
 func normalizePattern(pattern string) string {
 	return tspath.NormalizePath(pattern)
+}
+
+// isDirBlockedByIgnores checks if the file's directory is blocked by a
+// directory-level ignore pattern (e.g., `dir/**`). File-level patterns
+// (`dir/**/*`, `dir/*`) and negation patterns are skipped.
+// This aligns with ESLint v10: `dir/**` blocks directory traversal entirely,
+// and `!` negation cannot undo it.
+func isDirBlockedByIgnores(filePath string, ignorePatterns []string, cwd string) bool {
+	var dirPath string
+	if cwd != "" {
+		dirPath = normalizePath(tspath.GetDirectoryPath(filePath), cwd)
+	} else {
+		dirPath = tspath.GetDirectoryPath(filePath)
+	}
+	dirPath = strings.ReplaceAll(dirPath, "\\", "/")
+	dirPath = strings.TrimSuffix(dirPath, "/")
+	if dirPath == "" || dirPath == "." {
+		return false
+	}
+	return isDirPathBlocked(dirPath, ignorePatterns)
+}
+
+// isDirPathBlocked checks if a directory path is blocked by any directory-level ignore
+// pattern. Shared between GetConfigForFile and DiscoverGapFiles.
+//
+// A directory is blocked if a pattern matches the path itself or any parent segment.
+// For example, pattern "dir1/**" blocks "dir1", "dir1/sub", and "dir1/sub/deep".
+// File-level patterns (ending with /**/* or /*) and negation (!) patterns are skipped —
+// directory blocking is absolute and cannot be negated.
+func isDirPathBlocked(dirPath string, ignorePatterns []string) bool {
+	for _, pattern := range ignorePatterns {
+		if pattern == "" || strings.HasPrefix(pattern, "!") {
+			continue
+		}
+		if isFileLevelPattern(pattern) {
+			continue
+		}
+
+		normalizedPattern := normalizePattern(pattern)
+
+		if matchGlob(normalizedPattern, dirPath) || matchGlob(normalizedPattern, dirPath+"/x") {
+			return true
+		}
+		segments := strings.Split(dirPath, "/")
+		for i := 1; i < len(segments); i++ {
+			partial := strings.Join(segments[:i], "/")
+			if matchGlob(normalizedPattern, partial) || matchGlob(normalizedPattern, partial+"/x") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // normalizePath converts file path to be relative to cwd for consistent matching
@@ -513,13 +704,19 @@ func normalizePath(filePath, cwd string) string {
 
 // isFileIgnoredSimple provides fallback matching when cwd is unavailable
 func isFileIgnoredSimple(filePath string, ignorePatterns []string) bool {
+	ignored := false
 	for _, pattern := range ignorePatterns {
+		negated := false
+		if strings.HasPrefix(pattern, "!") {
+			negated = true
+			pattern = pattern[1:]
+		}
 		normalizedPattern := normalizePattern(pattern)
 		if matched, err := doublestar.Match(normalizedPattern, filePath); err == nil && matched {
-			return true
+			ignored = !negated
 		}
 	}
-	return false
+	return ignored
 }
 
 // MergedConfig is the final computed configuration for a single file
@@ -532,25 +729,42 @@ type MergedConfig struct {
 
 // GetConfigForFile computes the merged configuration for a file following ESLint flat config semantics.
 // Returns nil if the file is globally ignored or no entry matches (should not be linted).
-// Both JS and JSON configs are processed identically here — any differences in default rule
-// behavior are handled during config loading (see normalizeJSONConfig).
-// cwd is the directory the config lives in; file paths are resolved relative to it
-// for files/ignores glob matching.
+//
+// Global ignore evaluation happens in two phases:
+//  1. Directory-level (isDirBlockedByIgnores): patterns like dir/** block entire directories.
+//     Negation (!) cannot override directory-level blocking.
+//  2. File-level (isFileIgnored): sequential evaluation with ! negation support for re-inclusion.
+//
+// After global ignore check, entries are merged in order if their files match and ignores don't.
+// cwd is the directory the config lives in; file paths are resolved relative to it.
 func (config RslintConfig) GetConfigForFile(filePath string, cwd string) *MergedConfig {
 	merged := &MergedConfig{
 		Rules:   make(map[string]*RuleConfig),
 		Plugins: make(map[string]struct{}),
 	}
 
+	// 1. Collect all global ignore patterns and evaluate once.
+	// This allows `!` negation patterns in separate entries to work correctly,
+	// aligned with ESLint v10 which merges all global ignores before evaluating.
+	globalIgnorePatterns := ExtractConfigIgnores(config)
+	if len(globalIgnorePatterns) > 0 {
+		// Phase 1: directory-level check. Patterns like `dir/**` block the
+		// directory entirely — `!` negation cannot undo this. Aligned with
+		// ESLint v10's isDirectoryIgnored behavior.
+		if isDirBlockedByIgnores(filePath, globalIgnorePatterns, cwd) {
+			return nil
+		}
+		// Phase 2: file-level check with sequential `!` negation support.
+		if isFileIgnored(filePath, globalIgnorePatterns, cwd) {
+			return nil
+		}
+	}
+
 	// Track whether any non-global entry matched this file
 	entryMatched := false
 
 	for _, entry := range config {
-		// 1. Global ignores: entry with only ignores means "skip this file entirely"
 		if isGlobalIgnoreEntry(entry) {
-			if isFileIgnored(filePath, entry.Ignores, cwd) {
-				return nil
-			}
 			continue
 		}
 
@@ -716,87 +930,5 @@ func GetCoreRules() []rule.Rule {
 	return rules
 }
 
-const defaultTSConfig = `import { defineConfig, ts } from '@rslint/core';
-
-export default defineConfig([
-  ts.configs.recommended,
-  {
-    rules: {
-      // customize rules here
-    },
-  },
-]);
-`
-
-const defaultJSConfig = `import { defineConfig, js } from '@rslint/core';
-
-export default defineConfig([
-  js.configs.recommended,
-  {
-    rules: {
-      // customize rules here
-    },
-  },
-]);
-`
-
-// isESMPackage checks if the package.json in the given directory has "type": "module".
-func isESMPackage(directory string) bool {
-	data, err := os.ReadFile(filepath.Join(directory, "package.json"))
-	if err != nil {
-		return false
-	}
-	var pkg struct {
-		Type string `json:"type"`
-	}
-	if err := json.Unmarshal(data, &pkg); err != nil {
-		return false
-	}
-	return pkg.Type == "module"
-}
-
-// InitDefaultConfig initializes a default config file in the directory.
-// - If tsconfig.json exists → rslint.config.ts (ESM syntax, handled by TS loaders)
-// - Otherwise, follows the ESLint convention based on package.json "type" field:
-//   - "type": "module" → rslint.config.js  (ESM syntax, .js is ESM in this context)
-//   - no "type": "module" → rslint.config.mjs (ESM syntax, .mjs is always ESM)
-func InitDefaultConfig(directory string) error {
-	allConfigs := []string{
-		"rslint.config.ts", "rslint.config.mts",
-		"rslint.config.js", "rslint.config.mjs",
-		"rslint.json", "rslint.jsonc",
-	}
-	for _, name := range allConfigs {
-		p := filepath.Join(directory, name)
-		if _, err := os.Stat(p); err == nil {
-			return fmt.Errorf("config file already exists: %s", name)
-		}
-	}
-
-	tsconfigPath := filepath.Join(directory, "tsconfig.json")
-	if _, err := os.Stat(tsconfigPath); err == nil {
-		configPath := filepath.Join(directory, "rslint.config.ts")
-		if err := os.WriteFile(configPath, []byte(defaultTSConfig), 0644); err != nil {
-			return fmt.Errorf("failed to create rslint.config.ts: %w", err)
-		}
-		fmt.Println("Created rslint.config.ts with TypeScript recommended config.")
-	} else {
-		// Use .js when the project is ESM ("type": "module" in package.json),
-		// otherwise .mjs to ensure Node.js treats the file as ESM regardless.
-		var configName, content string
-		if isESMPackage(directory) {
-			configName = "rslint.config.js"
-			content = defaultJSConfig
-		} else {
-			configName = "rslint.config.mjs"
-			content = defaultJSConfig
-		}
-		configPath := filepath.Join(directory, configName)
-		if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
-			return fmt.Errorf("failed to create %s: %w", configName, err)
-		}
-		fmt.Printf("Created %s with JavaScript recommended config.\n", configName)
-	}
-
-	return nil
-}
+// InitDefaultConfig, createDefaultConfig, migrateJSONConfig and related helpers
+// are in config_init.go.

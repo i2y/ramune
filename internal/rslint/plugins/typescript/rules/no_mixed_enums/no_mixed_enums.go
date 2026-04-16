@@ -1,9 +1,9 @@
 package no_mixed_enums
 
 import (
-	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/shim/ast"
 	"github.com/i2y/ramune/internal/rslint/shim/checker"
+	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/utils"
 )
 
@@ -23,7 +23,8 @@ const (
 )
 
 var NoMixedEnumsRule = rule.CreateRule(rule.Rule{
-	Name: "no-mixed-enums",
+	Name:             "no-mixed-enums",
+	RequiresTypeInfo: true,
 	Run: func(ctx rule.RuleContext, options any) rule.RuleListeners {
 		getMemberType := func(node *ast.Node) allowedType {
 			initializer := node.AsEnumMember().Initializer

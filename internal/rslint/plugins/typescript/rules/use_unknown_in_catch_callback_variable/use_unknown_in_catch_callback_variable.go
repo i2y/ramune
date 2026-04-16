@@ -3,9 +3,9 @@ package use_unknown_in_catch_callback_variable
 import (
 	"fmt"
 
-	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/shim/ast"
 	"github.com/i2y/ramune/internal/rslint/shim/checker"
+	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/utils"
 )
 
@@ -57,7 +57,8 @@ func buildWrongTypeAnnotationSuggestionMessage() rule.RuleMessage {
 }
 
 var UseUnknownInCatchCallbackVariableRule = rule.CreateRule(rule.Rule{
-	Name: "use-unknown-in-catch-callback-variable",
+	Name:             "use-unknown-in-catch-callback-variable",
+	RequiresTypeInfo: true,
 	Run: func(ctx rule.RuleContext, options any) rule.RuleListeners {
 		var collectFlaggedNodes func(node *ast.Node) []*ast.Node
 

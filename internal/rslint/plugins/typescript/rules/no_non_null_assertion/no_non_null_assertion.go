@@ -1,9 +1,9 @@
 package no_non_null_assertion
 
 import (
-	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/shim/ast"
 	"github.com/i2y/ramune/internal/rslint/shim/scanner"
+	"github.com/i2y/ramune/internal/rslint/rule"
 )
 
 // isAssignmentTarget checks if a node is used as the left side of an assignment.

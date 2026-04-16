@@ -3,8 +3,8 @@ package no_empty_function
 import (
 	"strings"
 
-	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/shim/ast"
+	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/utils"
 )
 
@@ -96,7 +96,7 @@ var NoEmptyFunctionRule = rule.CreateRule(rule.Rule{
 				if fn.Body.Kind != ast.KindBlock {
 					return false // Expression body, not empty
 				}
-				return isBlockBodyEmpty(fn.Body)
+			return isBlockBodyEmpty(fn.Body)
 			case ast.KindConstructor:
 				constructor := node.AsConstructorDeclaration()
 				if constructor == nil || constructor.Body == nil {

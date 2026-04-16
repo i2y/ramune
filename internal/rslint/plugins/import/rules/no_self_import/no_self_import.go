@@ -1,9 +1,9 @@
 package no_self_import
 
 import (
+	"github.com/i2y/ramune/internal/rslint/shim/ast"
 	"github.com/i2y/ramune/internal/rslint/plugins/import/utils"
 	"github.com/i2y/ramune/internal/rslint/rule"
-	"github.com/i2y/ramune/internal/rslint/shim/ast"
 )
 
 // See: https://github.com/import-js/eslint-plugin-import/blob/01c9eb04331d2efa8d63f2d7f4bfec3bc44c94f3/src/rules/no-self-import.js

@@ -3,10 +3,10 @@ package no_unnecessary_template_expression
 import (
 	"strings"
 
-	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/shim/ast"
 	"github.com/i2y/ramune/internal/rslint/shim/checker"
 	"github.com/i2y/ramune/internal/rslint/shim/core"
+	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/utils"
 )
 
@@ -59,7 +59,8 @@ func isWhitespace(str string) bool {
 }
 
 var NoUnnecessaryTemplateExpressionRule = rule.CreateRule(rule.Rule{
-	Name: "no-unnecessary-template-expression",
+	Name:             "no-unnecessary-template-expression",
+	RequiresTypeInfo: true,
 	Run: func(ctx rule.RuleContext, options any) rule.RuleListeners {
 		reportSingleInterpolation := func(spanExpr *ast.Node, spanLiteral *ast.Node) {
 			ctx.ReportRange(core.NewTextRange(spanExpr.Pos()-2, spanLiteral.Pos()+1), buildNoUnnecessaryTemplateExpressionMessage())

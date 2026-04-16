@@ -1,9 +1,9 @@
 package no_array_constructor
 
 import (
-	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/shim/ast"
 	"github.com/i2y/ramune/internal/rslint/shim/scanner"
+	"github.com/i2y/ramune/internal/rslint/rule"
 )
 
 func useLiteralMessage() rule.RuleMessage {

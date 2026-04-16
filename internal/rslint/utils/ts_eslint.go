@@ -2,6 +2,7 @@ package utils
 
 import (
 	"math"
+	"math/big"
 	"slices"
 	"strconv"
 	"strings"
@@ -173,6 +174,116 @@ func GetForStatementHeadLoc(
 		statement = node.AsForInOrOfStatement().Statement
 	}
 	return TrimNodeTextRange(sourceFile, node).WithEnd(statement.Pos())
+}
+
+/**
+ * Gets the location of a function node's "head" for reporting.
+ * Matches the behavior of typescript-eslint's getFunctionHeadLoc:
+ *
+ * - `function foo() {}`         → `function foo`
+ * - `(function() {})`           → `function`
+ * - `() => {}`                  → `=>`
+ * - `class A { method() {} }`   → `method`
+ * - `class A { get foo() {} }`  → `get foo`
+ * - `class A { static async foo() {} }` → `static async foo`
+ * - `class A { foo = () => {} }` → `foo = `
+ * - `{ foo: function() {} }`    → `foo: function`
+ * - `export default function() {}` → `function`
+ */
+func GetFunctionHeadLoc(sourceFile *ast.SourceFile, node *ast.Node) core.TextRange {
+	parent := node.Parent
+
+	switch node.Kind {
+	case ast.KindMethodDeclaration, ast.KindGetAccessor, ast.KindSetAccessor, ast.KindConstructor:
+		start := TrimNodeTextRange(sourceFile, node)
+		if parenPos := findOpenParenPos(sourceFile, node); parenPos >= 0 {
+			return start.WithEnd(parenPos)
+		}
+		if node.Body() != nil {
+			return start.WithEnd(node.Body().Pos())
+		}
+		return start
+
+	case ast.KindArrowFunction:
+		if parent != nil && (parent.Kind == ast.KindPropertyDeclaration || parent.Kind == ast.KindPropertyAssignment) {
+			start := TrimNodeTextRange(sourceFile, parent)
+			if parenPos := findOpenParenPos(sourceFile, node); parenPos >= 0 {
+				return start.WithEnd(parenPos)
+			}
+			af := node.AsArrowFunction()
+			if af.Parameters != nil && len(af.Parameters.Nodes) > 0 {
+				paramStart := scanner.GetRangeOfTokenAtPosition(sourceFile, af.Parameters.Nodes[0].Pos())
+				return start.WithEnd(paramStart.Pos())
+			}
+			return start.WithEnd(af.EqualsGreaterThanToken.Pos())
+		}
+		af := node.AsArrowFunction()
+		arrowRange := scanner.GetRangeOfTokenAtPosition(sourceFile, af.EqualsGreaterThanToken.Pos())
+		return core.NewTextRange(arrowRange.Pos(), arrowRange.End())
+
+	case ast.KindFunctionExpression:
+		if parent != nil && (parent.Kind == ast.KindPropertyAssignment || parent.Kind == ast.KindPropertyDeclaration) {
+			start := TrimNodeTextRange(sourceFile, parent)
+			if parenPos := findOpenParenPos(sourceFile, node); parenPos >= 0 {
+				return start.WithEnd(parenPos)
+			}
+			if node.Body() != nil {
+				return start.WithEnd(node.Body().Pos())
+			}
+			return start
+		}
+		start := TrimNodeTextRange(sourceFile, node)
+		if parenPos := findOpenParenPos(sourceFile, node); parenPos >= 0 {
+			return start.WithEnd(parenPos)
+		}
+		if node.Body() != nil {
+			return start.WithEnd(node.Body().Pos())
+		}
+		return start
+
+	case ast.KindFunctionDeclaration:
+		start := findFunctionKeywordPos(sourceFile, node)
+		if parenPos := findOpenParenPos(sourceFile, node); parenPos >= 0 {
+			return core.NewTextRange(start, parenPos)
+		}
+		if node.Body() != nil {
+			return core.NewTextRange(start, node.Body().Pos())
+		}
+		return TrimNodeTextRange(sourceFile, node)
+	}
+
+	return TrimNodeTextRange(sourceFile, node)
+}
+
+// findOpenParenPos finds the position of the first '(' token in a function node.
+func findOpenParenPos(sourceFile *ast.SourceFile, node *ast.Node) int {
+	s := scanner.GetScannerForSourceFile(sourceFile, node.Pos())
+	end := node.End()
+	for s.TokenStart() < end {
+		if s.Token() == ast.KindOpenParenToken {
+			return s.TokenStart()
+		}
+		s.Scan()
+	}
+	return -1
+}
+
+// findFunctionKeywordPos returns the start position of the function head,
+// skipping only `export` and `default` keywords. Other modifiers like `async`
+// and `declare` are kept because they are part of the function signature
+// (matching ESLint's behavior where FunctionDeclaration.loc excludes export/default).
+func findFunctionKeywordPos(sourceFile *ast.SourceFile, node *ast.Node) int {
+	s := scanner.GetScannerForSourceFile(sourceFile, node.Pos())
+	end := node.End()
+	for s.TokenStart() < end {
+		tok := s.Token()
+		if tok == ast.KindExportKeyword || tok == ast.KindDefaultKeyword {
+			s.Scan()
+			continue
+		}
+		return s.TokenStart()
+	}
+	return TrimNodeTextRange(sourceFile, node).Pos()
 }
 
 var arrayPredicateFunctions = []string{"every", "filter", "find", "findIndex", "findLast", "findLastIndex", "some"}
@@ -655,6 +766,21 @@ func IsInObjectLiteralMethod(functionNode *ast.Node) bool {
 	return false
 }
 
+// IsSymbolDeclaredInFile reports whether the given symbol has at least one
+// declaration in the specified source file. Use this to distinguish locally
+// declared symbols (shadowed) from globals provided by lib.d.ts.
+func IsSymbolDeclaredInFile(symbol *ast.Symbol, sf *ast.SourceFile) bool {
+	if symbol == nil {
+		return false
+	}
+	for _, decl := range symbol.Declarations {
+		if ast.GetSourceFileOfNode(decl) == sf {
+			return true
+		}
+	}
+	return false
+}
+
 // GetStaticPropertyName extracts the static name from a property name node.
 // It handles Identifier, StringLiteral, NumericLiteral, and ComputedPropertyName
 // (with static string, numeric, BigInt, or template literal expressions).
@@ -678,6 +804,8 @@ func GetStaticPropertyName(nameNode *ast.Node) (string, bool) {
 			return NormalizeBigIntLiteral(expr.AsBigIntLiteral().Text), true
 		case ast.KindNoSubstitutionTemplateLiteral:
 			return expr.AsNoSubstitutionTemplateLiteral().Text, true
+		case ast.KindNullKeyword:
+			return "null", true
 		}
 		return "", false
 	default:
@@ -689,6 +817,16 @@ func GetStaticPropertyName(nameNode *ast.Node) (string, bool) {
 // normalized string representation, matching ESLint's String(node.value) behavior.
 // e.g., "0x1" -> "1", "1.0" -> "1", "1e2" -> "100"
 func NormalizeNumericLiteral(text string) string {
+	// ParseFloat doesn't handle JS octal (0o) or binary (0b) prefixes.
+	// Use big.Int to handle arbitrary precision, then convert to float64
+	// to match JavaScript's String(Number(...)) behavior.
+	if len(text) > 2 && text[0] == '0' && (text[1] == 'o' || text[1] == 'O' || text[1] == 'b' || text[1] == 'B') {
+		if n, ok := new(big.Int).SetString(text, 0); ok {
+			f, _ := new(big.Float).SetInt(n).Float64()
+			return strconv.FormatFloat(f, 'f', -1, 64)
+		}
+		return text
+	}
 	f, err := strconv.ParseFloat(text, 64)
 	if err != nil {
 		// ParseFloat returns +/-Inf with ErrRange for overflow (e.g. 1e309).
@@ -716,6 +854,142 @@ func NormalizeBigIntLiteral(text string) string {
 		return s
 	}
 	return strconv.FormatInt(i, 10)
+}
+
+// GetStaticExpressionValue returns the static string value of a literal expression,
+// or ("", false) if the value cannot be statically determined.
+//
+// Unlike [GetStaticPropertyName], which is designed for property name nodes
+// (Identifier, ComputedPropertyName, etc.) and treats Identifier as a static name,
+// this function is for arbitrary value expressions — it only recognizes
+// compile-time-constant literals and does NOT treat Identifier as static
+// (since a[b] where b is a variable is dynamic).
+//
+// Supported node kinds:
+//   - StringLiteral: returns the string value
+//   - NumericLiteral: returns the normalized numeric string (e.g. "0x1" → "1")
+//   - NoSubstitutionTemplateLiteral: returns the template text
+//   - RegularExpressionLiteral: returns the source text (e.g. /foo/g),
+//     matching JavaScript's implicit toString coercion when used as a property key
+//
+// This is the expression-level complement to [GetStaticPropertyName]:
+// use GetStaticPropertyName for property name nodes (object keys, class members),
+// and GetStaticExpressionValue for value positions (element access arguments, etc.).
+func GetStaticExpressionValue(node *ast.Node) (string, bool) {
+	if node == nil {
+		return "", false
+	}
+	switch node.Kind {
+	case ast.KindStringLiteral:
+		return node.AsStringLiteral().Text, true
+	case ast.KindNumericLiteral:
+		return NormalizeNumericLiteral(node.AsNumericLiteral().Text), true
+	case ast.KindNoSubstitutionTemplateLiteral:
+		return node.AsNoSubstitutionTemplateLiteral().Text, true
+	case ast.KindRegularExpressionLiteral:
+		return node.AsRegularExpressionLiteral().Text, true
+	}
+	return "", false
+}
+
+// IsSameReference reports whether two AST nodes refer to the same runtime value.
+// It recursively compares member expression chains (PropertyAccessExpression,
+// ElementAccessExpression), walking through the object/property structure.
+//
+// Behavior details:
+//   - Parenthesized expressions and type assertions (as, <T>) are transparently
+//     unwrapped on both sides via [ast.SkipOuterExpressions].
+//   - Optional chaining is ignored: a.b and a?.b are considered the same reference,
+//     matching ESLint's isSameReference semantics.
+//   - Cross-syntax comparison is supported via static property names:
+//     a.b and a['b'] are the same reference; a[0] and a['0'] likewise.
+//   - For non-static element access (a[x]), falls back to comparing the argument
+//     nodes structurally (same Kind + same Identifier/ThisKeyword).
+//   - Function calls break the chain: a.b() and a.b() are NOT the same reference,
+//     because each call may return a different value.
+//
+// This implements the same logic as ESLint's astUtils.isSameReference combined
+// with astUtils.getStaticPropertyName, adapted for the TypeScript AST.
+func IsSameReference(left, right *ast.Node) bool {
+	left = ast.SkipOuterExpressions(left, ast.OEKParentheses|ast.OEKTypeAssertions)
+	right = ast.SkipOuterExpressions(right, ast.OEKParentheses|ast.OEKTypeAssertions)
+
+	if left == nil || right == nil {
+		return false
+	}
+
+	// Base cases: Identifier and ThisKeyword.
+	if left.Kind == ast.KindIdentifier && right.Kind == ast.KindIdentifier {
+		return left.AsIdentifier().Text == right.AsIdentifier().Text
+	}
+	if left.Kind == ast.KindThisKeyword && right.Kind == ast.KindThisKeyword {
+		return true
+	}
+
+	// Member expression comparison.
+	if ast.IsAccessExpression(left) && ast.IsAccessExpression(right) {
+		// Try static property name comparison first (handles cross-type: a.b vs a['b']).
+		leftName, leftOK := AccessExpressionStaticName(left)
+		if leftOK {
+			rightName, rightOK := AccessExpressionStaticName(right)
+			if rightOK && leftName == rightName {
+				return IsSameReference(AccessExpressionObject(left), AccessExpressionObject(right))
+			}
+			return false
+		}
+
+		// Non-static: fall back to same-kind, same-index comparison (e.g. a[x] = a[x]).
+		if left.Kind == right.Kind && left.Kind == ast.KindElementAccessExpression {
+			leftArg := left.AsElementAccessExpression().ArgumentExpression
+			rightArg := right.AsElementAccessExpression().ArgumentExpression
+			if isSameSimpleNode(leftArg, rightArg) {
+				return IsSameReference(left.AsElementAccessExpression().Expression, right.AsElementAccessExpression().Expression)
+			}
+		}
+	}
+
+	return false
+}
+
+// AccessExpressionStaticName returns the static property name of an access expression
+// (PropertyAccessExpression or ElementAccessExpression), or ("", false) if not static.
+func AccessExpressionStaticName(node *ast.Node) (string, bool) {
+	switch node.Kind {
+	case ast.KindPropertyAccessExpression:
+		name := node.AsPropertyAccessExpression().Name()
+		if name != nil {
+			return name.Text(), true
+		}
+	case ast.KindElementAccessExpression:
+		return GetStaticExpressionValue(node.AsElementAccessExpression().ArgumentExpression)
+	}
+	return "", false
+}
+
+// AccessExpressionObject returns the object expression of an access expression.
+func AccessExpressionObject(node *ast.Node) *ast.Node {
+	switch node.Kind {
+	case ast.KindPropertyAccessExpression:
+		return node.AsPropertyAccessExpression().Expression
+	case ast.KindElementAccessExpression:
+		return node.AsElementAccessExpression().Expression
+	}
+	return nil
+}
+
+// isSameSimpleNode checks if two nodes are the same simple reference (Identifier or ThisKeyword).
+// Used as a fallback for comparing non-static element access arguments like a[x] vs a[x].
+func isSameSimpleNode(left, right *ast.Node) bool {
+	if left == nil || right == nil || left.Kind != right.Kind {
+		return false
+	}
+	switch left.Kind {
+	case ast.KindIdentifier:
+		return left.AsIdentifier().Text == right.AsIdentifier().Text
+	case ast.KindThisKeyword:
+		return true
+	}
+	return false
 }
 
 // CollectBindingNames recursively extracts all identifier names from a binding
@@ -755,4 +1029,211 @@ func CollectBindingNames(nameNode *ast.Node, callback func(ident *ast.Node, name
 			return false
 		})
 	}
+}
+
+// IsNullLiteral checks if a node is the null keyword, unwrapping parentheses.
+func IsNullLiteral(node *ast.Node) bool {
+	if node == nil {
+		return false
+	}
+	return ast.SkipParentheses(node).Kind == ast.KindNullKeyword
+}
+
+// FindEnclosingScope finds the nearest function-like, class static block,
+// module block, or source file scope for a node. Uses the tsgo public
+// function IsFunctionLikeOrClassStaticBlockDeclaration.
+// This is commonly needed by rules that walk write references or check
+// variable scoping (e.g. prefer-const, no-var, no-class-assign).
+func FindEnclosingScope(node *ast.Node) *ast.Node {
+	return ast.FindAncestor(node.Parent, func(n *ast.Node) bool {
+		if ast.IsFunctionLikeOrClassStaticBlockDeclaration(n) {
+			return true
+		}
+		switch n.Kind {
+		case ast.KindSourceFile, ast.KindModuleBlock:
+			return true
+		}
+		return false
+	})
+}
+
+// IsDeclarationIdentifier checks if the node is the name (identifier) of a declaration.
+// Unlike ast.IsDeclarationName(), this returns false for ShorthandPropertyAssignment
+// names since they are both declaration names AND value references.
+func IsDeclarationIdentifier(node *ast.Node) bool {
+	if node == nil || node.Parent == nil {
+		return false
+	}
+	parent := node.Parent
+	switch parent.Kind {
+	case ast.KindVariableDeclaration:
+		return parent.AsVariableDeclaration().Name() == node
+	case ast.KindFunctionDeclaration:
+		return parent.AsFunctionDeclaration().Name() == node
+	case ast.KindParameter:
+		return parent.AsParameterDeclaration().Name() == node
+	case ast.KindClassDeclaration:
+		return parent.AsClassDeclaration().Name() == node
+	case ast.KindClassExpression:
+		return parent.AsClassExpression().Name() == node
+	case ast.KindFunctionExpression:
+		return parent.AsFunctionExpression().Name() == node
+	case ast.KindInterfaceDeclaration:
+		return parent.AsInterfaceDeclaration().Name() == node
+	case ast.KindTypeAliasDeclaration:
+		return parent.AsTypeAliasDeclaration().Name() == node
+	case ast.KindEnumDeclaration:
+		return parent.AsEnumDeclaration().Name() == node
+	case ast.KindModuleDeclaration:
+		return parent.AsModuleDeclaration().Name() == node
+	case ast.KindCatchClause:
+		return parent.AsCatchClause().VariableDeclaration == node
+	case ast.KindImportSpecifier:
+		return parent.AsImportSpecifier().Name() == node
+	case ast.KindImportClause:
+		return parent.AsImportClause().Name() == node
+	case ast.KindBindingElement:
+		return parent.AsBindingElement().Name() == node
+	case ast.KindNamespaceImport:
+		return parent.AsNamespaceImport().Name() == node
+	case ast.KindImportEqualsDeclaration:
+		return parent.AsImportEqualsDeclaration().Name() == node
+	case ast.KindEnumMember:
+		return parent.AsEnumMember().Name() == node
+	}
+	return false
+}
+
+// GetDeclarationIdentifier returns the name node of a declaration.
+func GetDeclarationIdentifier(decl *ast.Node) *ast.Node {
+	if decl == nil {
+		return nil
+	}
+	switch decl.Kind {
+	case ast.KindVariableDeclaration:
+		return decl.AsVariableDeclaration().Name()
+	case ast.KindFunctionDeclaration:
+		return decl.AsFunctionDeclaration().Name()
+	case ast.KindClassDeclaration:
+		return decl.AsClassDeclaration().Name()
+	case ast.KindClassExpression:
+		return decl.AsClassExpression().Name()
+	case ast.KindInterfaceDeclaration:
+		return decl.AsInterfaceDeclaration().Name()
+	case ast.KindTypeAliasDeclaration:
+		return decl.AsTypeAliasDeclaration().Name()
+	case ast.KindEnumDeclaration:
+		return decl.AsEnumDeclaration().Name()
+	case ast.KindModuleDeclaration:
+		return decl.AsModuleDeclaration().Name()
+	case ast.KindImportSpecifier:
+		return decl.AsImportSpecifier().Name()
+	case ast.KindImportClause:
+		return decl.AsImportClause().Name()
+	case ast.KindNamespaceImport:
+		return decl.AsNamespaceImport().Name()
+	case ast.KindImportEqualsDeclaration:
+		return decl.AsImportEqualsDeclaration().Name()
+	case ast.KindParameter:
+		return decl.AsParameterDeclaration().Name()
+	case ast.KindBindingElement:
+		return decl.AsBindingElement().Name()
+	}
+	return nil
+}
+
+// GetImportBindingNodes returns the local binding identifier nodes declared by
+// an import statement. Returns nil for side-effect imports (e.g. `import 'foo'`).
+// Handles ImportDeclaration (default, named, namespace) and ImportEqualsDeclaration.
+func GetImportBindingNodes(node *ast.Node) []*ast.Node {
+	var nodes []*ast.Node
+	switch node.Kind {
+	case ast.KindImportDeclaration:
+		importDecl := node.AsImportDeclaration()
+		if importDecl.ImportClause == nil {
+			return nil
+		}
+		clause := importDecl.ImportClause.AsImportClause()
+		if clause == nil {
+			return nil
+		}
+		if clause.Name() != nil {
+			nodes = append(nodes, clause.Name())
+		}
+		if clause.NamedBindings != nil {
+			nb := clause.NamedBindings
+			switch nb.Kind {
+			case ast.KindNamespaceImport:
+				nsImport := nb.AsNamespaceImport()
+				if nsImport != nil && nsImport.Name() != nil {
+					nodes = append(nodes, nsImport.Name())
+				}
+			case ast.KindNamedImports:
+				namedImports := nb.AsNamedImports()
+				if namedImports != nil && namedImports.Elements != nil {
+					for _, elem := range namedImports.Elements.Nodes {
+						importSpec := elem.AsImportSpecifier()
+						if importSpec != nil && importSpec.Name() != nil {
+							nodes = append(nodes, importSpec.Name())
+						}
+					}
+				}
+			}
+		}
+	case ast.KindImportEqualsDeclaration:
+		importEquals := node.AsImportEqualsDeclaration()
+		if importEquals.Name() != nil {
+			nodes = append(nodes, importEquals.Name())
+		}
+	}
+	return nodes
+}
+
+// VisitDestructuringIdentifiers calls fn for each identifier target in a
+// destructuring assignment pattern (object/array literal on the left side
+// of an assignment expression). Handles shorthand properties, renamed
+// properties, default values, rest/spread, and arbitrary nesting.
+// This does NOT handle declaration-level destructuring (BindingPattern) —
+// use CollectBindingNames for that.
+func VisitDestructuringIdentifiers(node *ast.Node, fn func(*ast.Node)) {
+	node.ForEachChild(func(child *ast.Node) bool {
+		switch child.Kind {
+		case ast.KindIdentifier:
+			fn(child)
+		case ast.KindShorthandPropertyAssignment:
+			shorthand := child.AsShorthandPropertyAssignment()
+			if shorthand != nil && shorthand.Name() != nil {
+				fn(shorthand.Name())
+			}
+		case ast.KindPropertyAssignment:
+			pa := child.AsPropertyAssignment()
+			if pa != nil && pa.Initializer != nil {
+				if pa.Initializer.Kind == ast.KindIdentifier {
+					fn(pa.Initializer)
+				} else {
+					VisitDestructuringIdentifiers(pa.Initializer, fn)
+				}
+			}
+		case ast.KindArrayLiteralExpression, ast.KindObjectLiteralExpression, ast.KindSpreadElement:
+			VisitDestructuringIdentifiers(child, fn)
+		case ast.KindSpreadAssignment:
+			child.ForEachChild(func(gc *ast.Node) bool {
+				if gc.Kind == ast.KindIdentifier {
+					fn(gc)
+				}
+				return false
+			})
+		case ast.KindBinaryExpression:
+			// Default value: [x = 5] → visit left side only
+			be := child.AsBinaryExpression()
+			if be != nil && be.Left != nil {
+				if be.Left.Kind == ast.KindIdentifier {
+					fn(be.Left)
+				} else {
+					VisitDestructuringIdentifiers(be.Left, fn)
+				}
+			}
+		}
+		return false
+	})
 }

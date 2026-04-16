@@ -1,9 +1,9 @@
 package consistent_return
 
 import (
-	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/shim/ast"
 	"github.com/i2y/ramune/internal/rslint/shim/checker"
+	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/utils"
 )
 
@@ -13,8 +13,9 @@ type ConsistentReturnOptions struct {
 
 // ConsistentReturnRule enforces consistent return statements
 var ConsistentReturnRule = rule.CreateRule(rule.Rule{
-	Name: "consistent-return",
-	Run:  run,
+	Name:             "consistent-return",
+	RequiresTypeInfo: true,
+	Run:              run,
 })
 
 // functionInfo tracks information about a function's return statements

@@ -13,8 +13,12 @@ DST="$ROOT_DIR/internal/rslint"
 
 echo "Syncing rslint packages..."
 
-# Clean destination
-rm -rf "$DST"
+# Clean only rslint-managed subdirectories. The sibling tsgo_pinned/ directory
+# is managed by sync-tsgo-pinned.sh and must survive this sync.
+mkdir -p "$DST"
+for sub in config linter rule rules utils plugins shim LICENSE; do
+    rm -rf "$DST/$sub"
+done
 
 # --- Copy rslint internal packages ---
 copy_pkg() {
@@ -54,7 +58,7 @@ for pkg in config linter rule rules utils; do
 done
 
 # rslint plugins
-for pkg in plugins/import plugins/react plugins/typescript; do
+for pkg in plugins/import plugins/jest plugins/react plugins/typescript; do
     copy_pkg_recursive "$RSLINT_SRC/internal" "$DST" "$pkg"
 done
 
@@ -79,16 +83,20 @@ done
 # --- Rewrite import paths ---
 # 1. rslint internal: github.com/web-infra-dev/rslint/internal/ -> github.com/i2y/ramune/internal/rslint/
 # 2. typescript-go shim: github.com/microsoft/typescript-go/shim/ -> github.com/i2y/ramune/internal/rslint/shim/
-# 3. typescript-go internal (in shims): github.com/microsoft/typescript-go/internal/ -> github.com/i2y/ramune/internal/tsgo/
+# 3. typescript-go internal (in shims): github.com/microsoft/typescript-go/internal/ -> github.com/i2y/ramune/internal/rslint/tsgo_pinned/
+#    (rslint shim linknames must match the exact tsgo commit rslint pins; that
+#     version is synced separately into tsgo_pinned/ by sync-tsgo-pinned.sh.
+#     The main internal/tsgo/ tracks upstream tsgo independently and is used
+#     only by ramune's own code, not by the shim.)
 find "$DST" -name '*.go' -exec sed -i '' \
     -e 's|"github.com/web-infra-dev/rslint/internal/|"github.com/i2y/ramune/internal/rslint/|g' \
     -e 's|"github.com/microsoft/typescript-go/shim/|"github.com/i2y/ramune/internal/rslint/shim/|g' \
-    -e 's|"github.com/microsoft/typescript-go/internal/|"github.com/i2y/ramune/internal/tsgo/|g' \
+    -e 's|"github.com/microsoft/typescript-go/internal/|"github.com/i2y/ramune/internal/rslint/tsgo_pinned/|g' \
     {} +
 
 # --- Rewrite go:linkname targets in shim packages ---
 find "$DST/shim" -name '*.go' -exec sed -i '' \
-    's|github.com/microsoft/typescript-go/internal/|github.com/i2y/ramune/internal/tsgo/|g' \
+    's|github.com/microsoft/typescript-go/internal/|github.com/i2y/ramune/internal/rslint/tsgo_pinned/|g' \
     {} +
 
 # Copy LICENSE

@@ -5,10 +5,10 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/shim/ast"
 	"github.com/i2y/ramune/internal/rslint/shim/checker"
 	"github.com/i2y/ramune/internal/rslint/shim/scanner"
+	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/utils"
 )
 
@@ -34,7 +34,8 @@ type NoUnnecessaryTypeAssertionOptions struct {
 }
 
 var NoUnnecessaryTypeAssertionRule = rule.CreateRule(rule.Rule{
-	Name: "no-unnecessary-type-assertion",
+	Name:             "no-unnecessary-type-assertion",
+	RequiresTypeInfo: true,
 	Run: func(ctx rule.RuleContext, options any) rule.RuleListeners {
 		opts := NoUnnecessaryTypeAssertionOptions{}
 		if options != nil {

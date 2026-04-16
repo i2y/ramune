@@ -1,9 +1,9 @@
 package require_array_sort_compare
 
 import (
-	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/shim/ast"
 	"github.com/i2y/ramune/internal/rslint/shim/checker"
+	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/utils"
 )
 
@@ -19,7 +19,8 @@ type RequireArraySortCompareOptions struct {
 }
 
 var RequireArraySortCompareRule = rule.CreateRule(rule.Rule{
-	Name: "require-array-sort-compare",
+	Name:             "require-array-sort-compare",
+	RequiresTypeInfo: true,
 	Run: func(ctx rule.RuleContext, options any) rule.RuleListeners {
 		opts, ok := options.(RequireArraySortCompareOptions)
 		if !ok {

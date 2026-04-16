@@ -3,8 +3,8 @@ package no_template_curly_in_string
 import (
 	"regexp"
 
-	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/shim/ast"
+	"github.com/i2y/ramune/internal/rslint/rule"
 )
 
 // https://eslint.org/docs/latest/rules/no-template-curly-in-string

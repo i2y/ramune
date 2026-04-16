@@ -26,7 +26,7 @@ func (b *IRBuilder) buildTypeParamsAndSuffix(node *ast.Node) ([]IRTypeParam, str
 	var result []IRTypeParam
 	var suffixParts []string
 	for _, tp := range typeParams.Nodes {
-		tpDecl := tp.AsTypeParameter()
+		tpDecl := tp.AsTypeParameterDeclaration()
 		tpName := tp.Name().AsIdentifier().Text
 		b.tm.typeParams[tpName] = true
 
@@ -67,7 +67,7 @@ func (b *IRBuilder) mapConstraintIR(constraint *ast.Node) string {
 	case ast.KindBooleanKeyword:
 		return "~bool"
 	case ast.KindTypeReference:
-		ref := constraint.AsTypeReference()
+		ref := constraint.AsTypeReferenceNode()
 		if ref.TypeName != nil && ref.TypeName.Kind == ast.KindIdentifier {
 			name := ref.TypeName.AsIdentifier().Text
 			// TS utility types (Partial, Required, etc.) have no Go equivalent → any

@@ -45,6 +45,11 @@ import (
 	"github.com/i2y/ramune/internal/rslint/config"
 	"github.com/i2y/ramune/internal/rslint/linter"
 	"github.com/i2y/ramune/internal/rslint/rule"
+	rast "github.com/i2y/ramune/internal/rslint/shim/ast"
+	rcompiler "github.com/i2y/ramune/internal/rslint/shim/compiler"
+	rcore "github.com/i2y/ramune/internal/rslint/shim/core"
+	rscanner "github.com/i2y/ramune/internal/rslint/shim/scanner"
+	rosvfs "github.com/i2y/ramune/internal/rslint/shim/vfs/osvfs"
 	rslintutils "github.com/i2y/ramune/internal/rslint/utils"
 	"github.com/i2y/ramune/internal/tsgo/ast"
 	"github.com/i2y/ramune/internal/tsgo/compiler"
@@ -1596,15 +1601,15 @@ func lintCmd(args []string) {
 	}
 
 	cwd, _ := os.Getwd()
-	fs := osvfs.FS()
+	fs := rosvfs.FS()
 	host := rslintutils.CreateCompilerHost(cwd, fs)
 
-	compilerOpts := &core.CompilerOptions{
-		NoEmit:       core.TSTrue,
-		AllowJs:      core.TSTrue,
-		CheckJs:      core.TSFalse,
-		Strict:       core.TSTrue,
-		SkipLibCheck: core.TSTrue,
+	compilerOpts := &rcore.CompilerOptions{
+		NoEmit:       rcore.TSTrue,
+		AllowJs:      rcore.TSTrue,
+		CheckJs:      rcore.TSFalse,
+		Strict:       rcore.TSTrue,
+		SkipLibCheck: rcore.TSTrue,
 	}
 
 	program, err := rslintutils.CreateProgramFromOptions(true, compilerOpts, files, host)
@@ -1621,12 +1626,13 @@ func lintCmd(args []string) {
 	useAllRules := configErr != nil
 	hasErrors := false
 
-	fileCount, _ := linter.RunLinter(
-		[]*compiler.Program{program},
+	_, err = linter.RunLinter(
+		[]*rcompiler.Program{program},
 		true,
 		files,
 		nil,
-		func(sourceFile *ast.SourceFile) []linter.ConfiguredRule {
+		nil,
+		func(sourceFile *rast.SourceFile) []linter.ConfiguredRule {
 			if useAllRules {
 				// No config file: enable all registered rules with warning severity
 				var rules []linter.ConfiguredRule
@@ -1645,6 +1651,7 @@ func lintCmd(args []string) {
 			rules, _ := config.GlobalRuleRegistry.GetEnabledRules(rslintConfig, sourceFile.FileName(), cwd, false)
 			return rules
 		},
+		false,
 		func(d rule.RuleDiagnostic) {
 			hasErrors = true
 			severity := "warning"
@@ -1652,7 +1659,7 @@ func lintCmd(args []string) {
 				severity = "error"
 			}
 			if d.SourceFile != nil {
-				line, col := scanner.GetECMALineAndUTF16CharacterOfPosition(d.SourceFile, d.Range.Pos())
+				line, col := rscanner.GetECMALineAndUTF16CharacterOfPosition(d.SourceFile, d.Range.Pos())
 				fmt.Fprintf(os.Stderr, "%s(%d,%d): %s [%s] %s\n",
 					d.SourceFile.FileName(), line+1, col+1, d.Message.Description, d.RuleName, severity)
 			} else {
@@ -1663,18 +1670,22 @@ func lintCmd(args []string) {
 				fixes := d.Fixes()
 				if len(fixes) > 0 {
 					source := d.SourceFile.Text()
-					changes := make([]core.TextChange, len(fixes))
+					changes := make([]rcore.TextChange, len(fixes))
 					for i, f := range fixes {
-						changes[i] = core.TextChange{TextRange: f.Range, NewText: f.Text}
+						changes[i] = rcore.TextChange{TextRange: f.Range, NewText: f.Text}
 					}
-					result := core.ApplyBulkEdits(source, changes)
+					result := rcore.ApplyBulkEdits(source, changes)
 					os.WriteFile(d.SourceFile.FileName(), []byte(result), 0644)
 				}
 			}
 		},
+		nil,
+		nil,
 	)
-
-	_ = fileCount
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
 
 	if hasErrors {
 		os.Exit(1)
@@ -2526,10 +2537,7 @@ func compileCmd(args []string) {
 
 import (
 	_ "embed"
-	"fmt"
 	"log"
-	"os"
-	"strings"
 	%s
 
 	"github.com/i2y/ramune"

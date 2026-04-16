@@ -1,8 +1,8 @@
 package consistent_generic_constructors
 
 import (
-	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/shim/ast"
+	"github.com/i2y/ramune/internal/rslint/rule"
 )
 
 type ConsistentGenericConstructorsOptions struct {

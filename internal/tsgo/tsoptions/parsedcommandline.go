@@ -15,6 +15,7 @@ import (
 	"github.com/i2y/ramune/internal/tsgo/outputpaths"
 	"github.com/i2y/ramune/internal/tsgo/tspath"
 	"github.com/i2y/ramune/internal/tsgo/vfs"
+	"github.com/i2y/ramune/internal/tsgo/vfs/vfsmatch"
 )
 
 const (
@@ -326,7 +327,7 @@ func (p *ParsedCommandLine) PossiblyMatchesFileName(fileName string) bool {
 	}
 
 	for _, include := range p.ConfigFile.configFileSpecs.validatedIncludeSpecs {
-		if !strings.ContainsAny(include, "*?") && !vfs.IsImplicitGlob(include) {
+		if !strings.ContainsAny(include, "*?") && !vfsmatch.IsImplicitGlob(include) {
 			includePath := tspath.ToPath(include, p.GetCurrentDirectory(), p.UseCaseSensitiveFileNames())
 			if includePath == path {
 				return true
@@ -336,6 +337,22 @@ func (p *ParsedCommandLine) PossiblyMatchesFileName(fileName string) bool {
 	if wildcardDirectoryGlobs := p.WildcardDirectoryGlobs(); len(wildcardDirectoryGlobs) > 0 {
 		for _, glob := range wildcardDirectoryGlobs {
 			if glob.Match(fileName) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (p *ParsedCommandLine) PossiblyMatchesDirectoryName(directoryPath tspath.Path) bool {
+	for wildcardDir, recursive := range p.WildcardDirectories() {
+		wildcardDirPath := tspath.ToPath(wildcardDir, p.GetCurrentDirectory(), p.UseCaseSensitiveFileNames())
+		if recursive {
+			if wildcardDirPath.ContainsPath(directoryPath) {
+				return true
+			}
+		} else {
+			if wildcardDirPath == directoryPath {
 				return true
 			}
 		}
