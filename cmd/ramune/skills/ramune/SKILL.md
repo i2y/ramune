@@ -153,4 +153,6 @@ Ramune.serve({
 
 ## Node.js Compatibility
 
-Built-in support for: fs, path, crypto, stream, zlib, os, http/https, net/tls, child_process, worker_threads, events, Buffer, url, assert, readline, vm, dns, querystring, util, process, timers/promises, perf_hooks.
+Built-in support for: fs, path, crypto, stream (with ES6 class extends, asyncIterator, backpressure), zlib, os, http/https, http2, net/tls, dgram (UDP), child_process, worker_threads (with SharedArrayBuffer, Atomics.waitAsync), events, Buffer, url, assert, readline, vm, dns, querystring, util, process, tty, timers/promises, perf_hooks, async_hooks (AsyncLocalStorage), module (createRequire).
+
+Web APIs: fetch, ReadableStream/WritableStream/TransformStream, crypto.subtle, Blob/File, FormData, Headers/Request/Response (Hono and other frameworks work out of the box), TextEncoder/TextDecoder, AbortController, URL/URLSearchParams, WebSocket (server-side), performance, structuredClone.
