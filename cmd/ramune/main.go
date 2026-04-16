@@ -2578,7 +2578,7 @@ go 1.26
 		// uses a ramune release that matches this CLI, not an unrelated older one.
 		ver := getVersion()
 		if ver == "" || ver == "dev" {
-			ver = "v0.10.0"
+			ver = "v0.11.0"
 		} else if !strings.HasPrefix(ver, "v") {
 			ver = "v" + ver
 		}
