@@ -2569,12 +2569,20 @@ func main() {
 	ramuneModPath := findRamuneModPath()
 	goMod := `module ramune-compiled-app
 
-go 1.23
+go 1.26
 `
 	if ramuneModPath != "" {
 		goMod += fmt.Sprintf("\nrequire github.com/i2y/ramune v0.0.0\n\nreplace github.com/i2y/ramune => %s\n", ramuneModPath)
 	} else {
-		goMod += "\nrequire github.com/i2y/ramune v0.1.0\n"
+		// Fallback: pin to the CLI's own build version so the compiled binary
+		// uses a ramune release that matches this CLI, not an unrelated older one.
+		ver := getVersion()
+		if ver == "" || ver == "dev" {
+			ver = "v0.10.0"
+		} else if !strings.HasPrefix(ver, "v") {
+			ver = "v" + ver
+		}
+		goMod += fmt.Sprintf("\nrequire github.com/i2y/ramune %s\n", ver)
 	}
 
 	if err := os.WriteFile(filepath.Join(tmpDir, "go.mod"), []byte(goMod), 0o644); err != nil {
