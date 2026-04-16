@@ -149,7 +149,7 @@ ramune compile server.ts -o myserver --http --minify
 
 The compiled binary embeds the bundled JS via `go:embed`. On macOS, it is automatically codesigned with the JIT entitlement.
 
-Options: `--http` (Ramune.serve event loop), `--minify` (esbuild minification). Output binary is ~21MB (linter/formatter/checker are not included — only the runtime).
+Options: `--http` (Ramune.serve event loop), `--minify` (esbuild minification). Output binary is ~28MB (linter/formatter/checker are not included — only the runtime).
 
 > **Note:** The compiled binary loads JavaScriptCore dynamically at runtime. The target machine must have JSC available (macOS: built-in, Linux: `libjavascriptcoregtk`). Use `-tags quickjs` for cross-platform builds.
 
@@ -1018,6 +1018,6 @@ Ramune includes code from the following projects:
 | [web-infra-dev/rslint](https://github.com/web-infra-dev/rslint) | MIT | Linter | Source copy (`internal/rslint/`) |
 | [evanw/esbuild](https://github.com/evanw/esbuild) | MIT | TypeScript transpilation, bundling | Go module dependency |
 
-License texts for source-copied projects are in `internal/tsgo/LICENSE` and `internal/rslint/LICENSE`.
+License texts for source-copied projects are in `internal/tsgo/LICENSE`, `internal/rslint/LICENSE`, and `internal/rslint/tsgo_pinned/LICENSE` (a separate tsgo copy pinned to rslint's version for its shim bindings).
 
 The Ramune logo includes the Go Gopher, originally designed by [Renée French](https://reneefrench.blogspot.com/), licensed under [Creative Commons Attribution 4.0](https://creativecommons.org/licenses/by/4.0/).
