@@ -218,7 +218,7 @@ func TestCompressionStreamInvalidFormat(t *testing.T) {
 
 	v, err := r.Eval(`
 		try {
-			new CompressionStream('brotli');
+			new CompressionStream('lz4');
 			'no error';
 		} catch(e) {
 			e instanceof TypeError ? 'TypeError' : 'other';

@@ -160,7 +160,12 @@ func webStreamsJSSource() string {
 		if (this._reader && this._reader._closedReject) this._reader._closedReject(e);
 	};
 
-	ReadableStream.prototype.getReader = function() {
+	Object.defineProperty(ReadableStream.prototype, 'locked', {
+		get: function() { return this._locked; }
+	});
+	ReadableStream.prototype.getReader = function(opts) {
+		if (opts && opts.mode === 'byob') throw new TypeError('BYOB readers are not supported');
+		if (opts && opts.mode !== undefined && opts.mode !== 'byob') throw new RangeError('Invalid mode');
 		return new ReadableStreamDefaultReader(this);
 	};
 
@@ -220,53 +225,93 @@ func webStreamsJSSource() string {
 	};
 
 	ReadableStream.prototype.pipeTo = function(dest, options) {
+		if (this._locked) return Promise.reject(new TypeError('ReadableStream is locked'));
+		if (dest._locked) return Promise.reject(new TypeError('WritableStream is locked'));
 		var reader = this.getReader();
 		var writer = dest.getWriter();
 		options = options || {};
 		var signal = options.signal;
+		var shuttingDown = false;
+
 		if (signal && signal.aborted) {
-			reader.cancel(signal.reason);
-			writer.abort(signal.reason);
-			return Promise.reject(signal.reason);
+			var abortErr = signal.reason || new DOMException('The operation was aborted.', 'AbortError');
+			var actions = [];
+			if (!options.preventAbort) actions.push(function() { return writer.abort(abortErr); });
+			if (!options.preventCancel) actions.push(function() { return reader.cancel(abortErr); });
+			return Promise.all(actions.map(function(a) { return a(); })).then(function() {
+				reader.releaseLock(); writer.releaseLock();
+			}, function() {
+				reader.releaseLock(); writer.releaseLock();
+			}).then(function() { throw abortErr; });
 		}
-		var abortHandler;
-		function cleanup() {
-			if (signal && abortHandler) {
-				signal.removeEventListener('abort', abortHandler);
+
+		return new Promise(function(resolve, reject) {
+			var abortHandler;
+			function shutdown(action, originalErr) {
+				if (shuttingDown) return;
+				shuttingDown = true;
+				if (signal && abortHandler) signal.removeEventListener('abort', abortHandler);
+				var p = action ? action() : Promise.resolve();
+				p.then(function() {
+					reader.releaseLock(); writer.releaseLock();
+					if (originalErr) reject(originalErr); else resolve();
+				}, function(e) {
+					reader.releaseLock(); writer.releaseLock();
+					reject(originalErr || e);
+				});
 			}
-		}
-		function pump() {
-			if (signal && signal.aborted) {
-				return Promise.reject(signal.reason);
+
+			function pump() {
+				if (shuttingDown) return;
+				writer.ready.then(function() {
+					if (shuttingDown) return;
+					reader.read().then(function(result) {
+						if (shuttingDown) return;
+						if (result.done) {
+							if (!options.preventClose) {
+								shutdown(function() { return writer.close(); });
+							} else {
+								shutdown();
+							}
+							return;
+						}
+						writer.write(result.value).then(pump, function(err) {
+							if (!options.preventAbort) {
+								shutdown(function() { return reader.cancel(err); }, err);
+							} else {
+								shutdown(null, err);
+							}
+						});
+					}, function(err) {
+						if (!options.preventAbort) {
+							shutdown(function() { return writer.abort(err); }, err);
+						} else {
+							shutdown(null, err);
+						}
+					});
+				});
 			}
-			return reader.read().then(function(result) {
-				if (result.done) {
-					if (!options.preventClose) return writer.close();
-					writer.releaseLock();
-					return;
-				}
-				return writer.write(result.value).then(pump);
-			});
-		}
-		var promise = pump().then(function() {
-			cleanup();
-		}, function(err) {
-			cleanup();
-			if (!options.preventAbort) writer.abort(err);
-			if (!options.preventCancel) reader.cancel(err);
-			throw err;
+
+			if (signal) {
+				abortHandler = function() {
+					var abortErr = signal.reason || new DOMException('The operation was aborted.', 'AbortError');
+					var actions = [];
+					if (!options.preventAbort) actions.push(function() { return writer.abort(abortErr); });
+					if (!options.preventCancel) actions.push(function() { return reader.cancel(abortErr); });
+					shutdown(function() { return Promise.all(actions.map(function(a) { return a(); })); }, abortErr);
+				};
+				signal.addEventListener('abort', abortHandler);
+			}
+			pump();
 		});
-		if (signal) {
-			abortHandler = function() {
-				reader.cancel(signal.reason);
-				writer.abort(signal.reason);
-			};
-			signal.addEventListener('abort', abortHandler);
-		}
-		return promise;
 	};
 
 	ReadableStream.prototype.pipeThrough = function(transform, options) {
+		if (!transform || typeof transform !== 'object') throw new TypeError('parameter 1 is not of type object');
+		if (!(transform.readable instanceof ReadableStream)) throw new TypeError('readable is not a ReadableStream');
+		if (!(transform.writable instanceof WritableStream)) throw new TypeError('writable is not a WritableStream');
+		if (this._locked) throw new TypeError('ReadableStream is locked');
+		if (transform.writable._locked) throw new TypeError('WritableStream is locked');
 		this.pipeTo(transform.writable, options);
 		return transform.readable;
 	};
@@ -369,6 +414,9 @@ func webStreamsJSSource() string {
 		}
 	}
 
+	Object.defineProperty(WritableStream.prototype, 'locked', {
+		get: function() { return this._locked; }
+	});
 	WritableStream.prototype.getWriter = function() {
 		return new WritableStreamDefaultWriter(this);
 	};

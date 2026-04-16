@@ -587,7 +587,10 @@ func eventLoopJSSource() string {
 	globalThis.clearImmediate = function() {};
 
 	if (typeof globalThis.queueMicrotask === 'undefined') {
-		globalThis.queueMicrotask = function(fn) { Promise.resolve().then(fn); };
+		globalThis.queueMicrotask = function(fn) {
+			if (typeof fn !== 'function') throw new TypeError('Failed to execute queueMicrotask: parameter 1 is not of type Function');
+			Promise.resolve().then(fn);
+		};
 	}
 })();
 `

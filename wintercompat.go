@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"io"
 	"sync"
+
+	"github.com/andybalholm/brotli"
 )
 
 // WithWinterTC installs the WinterTC (ECMA-429) Minimum Common Web API
@@ -83,6 +85,8 @@ func goWTCCSCreate(args []any) (any, error) {
 			return nil, err
 		}
 		s.writer = w
+	case "brotli":
+		s.writer = brotli.NewWriter(&s.buf)
 	default:
 		return nil, fmt.Errorf("unsupported compression format: %s", format)
 	}
@@ -242,6 +246,8 @@ func goWTCDSClose(args []any) (any, error) {
 		reader = r
 	case "deflate-raw":
 		reader = flate.NewReader(&s.buf)
+	case "brotli":
+		reader = io.NopCloser(brotli.NewReader(&s.buf))
 	default:
 		return nil, fmt.Errorf("unsupported format: %s", s.format)
 	}
@@ -376,21 +382,27 @@ func winterTCJSSource() string {
 		};
 		globalThis.Event.prototype.stopPropagation = function() {};
 		globalThis.Event.prototype.stopImmediatePropagation = function() { this._stopImmediate = true; };
+		globalThis.Event.prototype.composedPath = function() { return this.target ? [this.target] : []; };
 	}
 	if (typeof globalThis.EventTarget === 'undefined') {
 		globalThis.EventTarget = function EventTarget() {
 			this._listeners = {};
 		};
 		globalThis.EventTarget.prototype.addEventListener = function(type, fn, opts) {
+			if (!fn) return;
 			if (!this._listeners[type]) this._listeners[type] = [];
 			if (this._listeners[type].indexOf(fn) >= 0) return;
+			var entry = fn;
 			if (opts && opts.once) {
 				var self = this;
 				var wrapped = function(e) { self.removeEventListener(type, wrapped); fn.call(self, e); };
 				wrapped._orig = fn;
-				this._listeners[type].push(wrapped);
-			} else {
-				this._listeners[type].push(fn);
+				entry = wrapped;
+			}
+			this._listeners[type].push(entry);
+			if (opts && opts.signal && opts.signal.addEventListener) {
+				var self2 = this, listener = entry;
+				opts.signal.addEventListener('abort', function() { self2.removeEventListener(type, listener._orig || listener); });
 			}
 		};
 		globalThis.EventTarget.prototype.removeEventListener = function(type, fn) {
@@ -410,6 +422,13 @@ func winterTCJSSource() string {
 			return !event.defaultPrevented;
 		};
 	}
+	// Expose EventTarget methods on globalThis (non-browser environments).
+	if (typeof globalThis.addEventListener === 'undefined' && typeof EventTarget === 'function') {
+		var __globalET = new EventTarget();
+		globalThis.addEventListener = function(t, fn, o) { __globalET.addEventListener(t, fn, o); };
+		globalThis.removeEventListener = function(t, fn) { __globalET.removeEventListener(t, fn); };
+		globalThis.dispatchEvent = function(e) { return __globalET.dispatchEvent(e); };
+	}
 	if (typeof globalThis.CustomEvent === 'undefined') {
 		globalThis.CustomEvent = function CustomEvent(type, opts) {
 			globalThis.Event.call(this, type, opts);
@@ -422,7 +441,7 @@ func winterTCJSSource() string {
 	// --- CompressionStream (streaming, per-chunk output via Go sessions) ---
 	if (typeof globalThis.CompressionStream === 'undefined') {
 		globalThis.CompressionStream = function CompressionStream(format) {
-			if (['gzip', 'deflate', 'deflate-raw'].indexOf(format) < 0) {
+			if (['gzip', 'deflate', 'deflate-raw', 'brotli'].indexOf(format) < 0) {
 				throw new TypeError("Failed to construct 'CompressionStream': Unsupported compression format: '" + format + "'");
 			}
 			var id = __go_wtc_cs_create(format);
@@ -445,7 +464,7 @@ func winterTCJSSource() string {
 	// --- DecompressionStream (streaming via Go sessions) ---
 	if (typeof globalThis.DecompressionStream === 'undefined') {
 		globalThis.DecompressionStream = function DecompressionStream(format) {
-			if (['gzip', 'deflate', 'deflate-raw'].indexOf(format) < 0) {
+			if (['gzip', 'deflate', 'deflate-raw', 'brotli'].indexOf(format) < 0) {
 				throw new TypeError("Failed to construct 'DecompressionStream': Unsupported compression format: '" + format + "'");
 			}
 			var id = __go_wtc_ds_create(format);

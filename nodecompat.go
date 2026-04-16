@@ -2221,11 +2221,23 @@ func nodeCompatJSSource() string {
 
 	// --- Blob / File ---
 	if (typeof globalThis.Blob === 'undefined') {
+		function __normalizeMIME(t) {
+			if (!t) return '';
+			var out = '';
+			for (var i = 0; i < t.length; i++) {
+				var c = t.charCodeAt(i);
+				if (c >= 0x20 && c <= 0x7E) out += t[i];
+			}
+			return out.toLowerCase();
+		}
 		function Blob(parts, options) {
 			options = options || {};
-			this.type = options.type || '';
+			this.type = __normalizeMIME(options.type);
 			this._parts = [];
-			if (parts) {
+			if (parts != null) {
+				if (typeof parts === 'string' || typeof parts === 'number' || typeof parts === 'boolean') {
+					throw new TypeError("Failed to construct 'Blob': The provided value cannot be converted to a sequence.");
+				}
 				for (var i = 0; i < parts.length; i++) {
 					var p = parts[i];
 					if (typeof p === 'string') this._parts.push(p);
@@ -2250,14 +2262,15 @@ func nodeCompatJSSource() string {
 			return Promise.resolve(buf.buffer);
 		};
 		Blob.prototype.slice = function(start, end, type) {
-			var t = this._text();
-			var bytes = new TextEncoder().encode(t);
-			start = start || 0; end = end !== undefined ? end : bytes.length;
-			if (start < 0) start = Math.max(bytes.length + start, 0);
-			if (end < 0) end = Math.max(bytes.length + end, 0);
+			var bytes = new TextEncoder().encode(this._text());
+			var size = bytes.length;
+			start = start !== undefined ? start : 0;
+			end = end !== undefined ? end : size;
+			if (start < 0) start = Math.max(size + start, 0); else start = Math.min(start, size);
+			if (end < 0) end = Math.max(size + end, 0); else end = Math.min(end, size);
+			if (start > end) start = end;
 			var sliced = bytes.slice(start, end);
-			var str = new TextDecoder().decode(sliced);
-			return new Blob([str], { type: type !== undefined ? type : this.type });
+			return new Blob([sliced], { type: type !== undefined ? type : '' });
 		};
 		Blob.prototype.stream = function() {
 			var blob = this;
