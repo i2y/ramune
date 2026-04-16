@@ -1,4 +1,4 @@
-.PHONY: all build build-cli build-quickjs fmt fmt-check vet test test-quickjs ci bench bench-go clean sync-tsgo sync-rslint sync
+.PHONY: all build build-cli build-quickjs fmt fmt-check vet test test-quickjs test-wpt ci bench bench-go clean sync-tsgo sync-rslint sync
 
 all: ci
 
@@ -40,6 +40,10 @@ test-quickjs:
 
 test-verbose:
 	go test -v -count=1 -timeout 120s ./...
+
+test-wpt:
+	@test -d test/wpt/resources || { echo "WPT checkout not found. Run:"; echo "  git clone --depth 1 --filter=blob:none --sparse https://github.com/web-platform-tests/wpt.git test/wpt"; echo "  cd test/wpt && git sparse-checkout set resources compression encoding url urlpattern streams WebCryptoAPI webidl webmessaging FileAPI hr-time console html/webappapis/timers html/webappapis/atob html/webappapis/microtask-queuing html/webappapis/structured-clone dom/abort dom/events fetch/api"; exit 1; }
+	go test -run "^TestWPT$$" -count=1 -timeout 300s -v .
 
 ci: fmt build vet test
 

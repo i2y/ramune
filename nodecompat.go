@@ -1357,8 +1357,23 @@ func nodeCompatJSSource() string {
 			}
 			this.searchParams = new URLSearchParams(parsed.query || '');
 		};
+		URL.prototype._buildHref = function() {
+			var h = this.protocol + '//';
+			if (this.username) { h += this.username; if (this.password) h += ':' + this.password; h += '@'; }
+			h += this.host;
+			h += this.pathname;
+			if (this.search) h += this.search;
+			if (this.hash) h += this.hash;
+			this.href = h;
+		};
 		URL.prototype.toString = function() { return this.href; };
 		URL.prototype.toJSON = function() { return this.href; };
+		URL.canParse = function(url, base) {
+			try { new URL(url, base); return true; } catch(e) { return false; }
+		};
+		URL.parse = function(url, base) {
+			try { return new URL(url, base); } catch(e) { return null; }
+		};
 	}
 
 	// --- url (Node.js module) ---
@@ -2040,7 +2055,27 @@ func nodeCompatJSSource() string {
 			addEventListener(event, fn) { this.on(event, fn); }
 			removeEventListener(event, fn) { this.removeListener(event, fn); }
 			throwIfAborted() { if (this.aborted) throw this.reason; }
-			static timeout(ms) { var s = new AbortSignal(); setTimeout(function() { s.aborted = true; s.reason = new Error('TimeoutError'); s.emit('abort'); }, ms); return s; }
+			static timeout(ms) { var s = new AbortSignal(); setTimeout(function() { s.aborted = true; s.reason = new DOMException('The operation timed out.', 'TimeoutError'); s.emit('abort'); }, ms); return s; }
+			static abort(reason) { var s = new AbortSignal(); s.aborted = true; s.reason = reason !== undefined ? reason : new DOMException('The operation was aborted.', 'AbortError'); return s; }
+			static any(signals) {
+				var s = new AbortSignal();
+				function onAbort() {
+					if (s.aborted) return;
+					for (var i = 0; i < signals.length; i++) {
+						if (signals[i].aborted) {
+							s.aborted = true;
+							s.reason = signals[i].reason;
+							s.emit('abort');
+							return;
+						}
+					}
+				}
+				for (var i = 0; i < signals.length; i++) {
+					if (signals[i].aborted) { onAbort(); return s; }
+					signals[i].addEventListener('abort', onAbort);
+				}
+				return s;
+			}
 		}
 
 		globalThis.AbortController = class AbortController {
@@ -2225,15 +2260,17 @@ func nodeCompatJSSource() string {
 			return new Blob([str], { type: type !== undefined ? type : this.type });
 		};
 		Blob.prototype.stream = function() {
-			var text = this._text();
-			return { getReader: function() {
-				var done = false;
-				return { read: function() {
-					if (done) return Promise.resolve({ value: undefined, done: true });
-					done = true;
-					return Promise.resolve({ value: new TextEncoder().encode(text), done: false });
-				}, releaseLock: function() {} };
-			}};
+			var blob = this;
+			return new ReadableStream({
+				start: function(controller) {
+					var data = new TextEncoder().encode(blob._text());
+					if (data.length > 0) controller.enqueue(data);
+					controller.close();
+				}
+			});
+		};
+		Blob.prototype.bytes = function() {
+			return Promise.resolve(new Uint8Array(new TextEncoder().encode(this._text())));
 		};
 		Blob.prototype[Symbol.toStringTag] = 'Blob';
 		globalThis.Blob = Blob;

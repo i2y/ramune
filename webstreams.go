@@ -223,7 +223,22 @@ func webStreamsJSSource() string {
 		var reader = this.getReader();
 		var writer = dest.getWriter();
 		options = options || {};
+		var signal = options.signal;
+		if (signal && signal.aborted) {
+			reader.cancel(signal.reason);
+			writer.abort(signal.reason);
+			return Promise.reject(signal.reason);
+		}
+		var abortHandler;
+		function cleanup() {
+			if (signal && abortHandler) {
+				signal.removeEventListener('abort', abortHandler);
+			}
+		}
 		function pump() {
+			if (signal && signal.aborted) {
+				return Promise.reject(signal.reason);
+			}
 			return reader.read().then(function(result) {
 				if (result.done) {
 					if (!options.preventClose) return writer.close();
@@ -233,10 +248,22 @@ func webStreamsJSSource() string {
 				return writer.write(result.value).then(pump);
 			});
 		}
-		return pump().catch(function(err) {
+		var promise = pump().then(function() {
+			cleanup();
+		}, function(err) {
+			cleanup();
 			if (!options.preventAbort) writer.abort(err);
+			if (!options.preventCancel) reader.cancel(err);
 			throw err;
 		});
+		if (signal) {
+			abortHandler = function() {
+				reader.cancel(signal.reason);
+				writer.abort(signal.reason);
+			};
+			signal.addEventListener('abort', abortHandler);
+		}
+		return promise;
 	};
 
 	ReadableStream.prototype.pipeThrough = function(transform, options) {
@@ -244,7 +271,20 @@ func webStreamsJSSource() string {
 		return transform.readable;
 	};
 
-	// Async iterator support: for await (const chunk of stream)
+	// Async iterator: for await (const chunk of stream)
+	ReadableStream.prototype.values = function(opts) {
+		var reader = this.getReader();
+		var preventCancel = opts && opts.preventCancel;
+		return {
+			next: function() { return reader.read(); },
+			return: function(value) {
+				if (!preventCancel) reader.cancel(value);
+				else reader.releaseLock();
+				return Promise.resolve({ value: value, done: true });
+			},
+			[Symbol.asyncIterator]: function() { return this; }
+		};
+	};
 	ReadableStream.prototype[Symbol.asyncIterator] = function() {
 		var reader = this.getReader();
 		return {
@@ -343,26 +383,32 @@ func webStreamsJSSource() string {
 	};
 
 	WritableStream.prototype._processWrite = function() {
-		if (this._writing || this._writeQueue.length === 0 || this._state !== 'writable') return;
+		if (this._writing || this._writeQueue.length === 0) return;
+		if (this._state !== 'writable' && !this._closeRequested) return;
 		this._writing = true;
 		var entry = this._writeQueue.shift();
 		var self = this;
+		function afterWrite() {
+			self._writing = false;
+			entry.resolve();
+			if (self._writeQueue.length > 0) {
+				self._processWrite();
+			} else if (self._closePending) {
+				var resolve = self._closePending;
+				self._closePending = null;
+				resolve();
+			}
+		}
 		try {
 			var result = this._underlyingSink.write(entry.chunk, this._controller);
 			if (result && typeof result.then === 'function') {
-				result.then(function() {
-					self._writing = false;
-					entry.resolve();
-					self._processWrite();
-				}, function(e) {
+				result.then(afterWrite, function(e) {
 					self._writing = false;
 					entry.reject(e);
 					self._error(e);
 				});
 			} else {
-				this._writing = false;
-				entry.resolve();
-				this._processWrite();
+				afterWrite();
 			}
 		} catch(e) {
 			this._writing = false;
@@ -373,19 +419,29 @@ func webStreamsJSSource() string {
 
 	WritableStream.prototype._close = function() {
 		var self = this;
-		this._state = 'closed';
-		if (this._underlyingSink.close) {
-			try {
-				var result = this._underlyingSink.close();
-				if (result && typeof result.then === 'function') {
-					return result.then(function() {
-						if (self._writer && self._writer._closedResolve) self._writer._closedResolve(undefined);
-					});
-				}
-			} catch(e) { /* ignore close errors */ }
+		function doClose() {
+			self._state = 'closed';
+			if (self._underlyingSink.close) {
+				try {
+					var result = self._underlyingSink.close();
+					if (result && typeof result.then === 'function') {
+						return result.then(function() {
+							if (self._writer && self._writer._closedResolve) self._writer._closedResolve(undefined);
+						});
+					}
+				} catch(e) { /* ignore close errors */ }
+			}
+			if (self._writer && self._writer._closedResolve) self._writer._closedResolve(undefined);
+			return Promise.resolve();
 		}
-		if (this._writer && this._writer._closedResolve) this._writer._closedResolve(undefined);
-		return Promise.resolve();
+		// Drain pending writes before closing.
+		if (this._writing || this._writeQueue.length > 0) {
+			this._closeRequested = true;
+			return new Promise(function(resolve) {
+				self._closePending = resolve;
+			}).then(doClose);
+		}
+		return doClose();
 	};
 
 	WritableStream.prototype._error = function(e) {
@@ -479,11 +535,37 @@ func webStreamsJSSource() string {
 		throw new TypeError('ReadableStream.from requires an iterable');
 	};
 
+	// --- CountQueuingStrategy ---
+	function CountQueuingStrategy(init) {
+		this.highWaterMark = (init && init.highWaterMark !== undefined) ? init.highWaterMark : 1;
+	}
+	CountQueuingStrategy.prototype.size = function() { return 1; };
+
+	// --- ByteLengthQueuingStrategy ---
+	function ByteLengthQueuingStrategy(init) {
+		this.highWaterMark = (init && init.highWaterMark !== undefined) ? init.highWaterMark : 0;
+	}
+	ByteLengthQueuingStrategy.prototype.size = function(chunk) {
+		return chunk.byteLength !== undefined ? chunk.byteLength : chunk.length || 0;
+	};
+
+	ReadableStream.prototype[Symbol.toStringTag] = 'ReadableStream';
+	WritableStream.prototype[Symbol.toStringTag] = 'WritableStream';
+	TransformStream.prototype[Symbol.toStringTag] = 'TransformStream';
+	ReadableStreamDefaultReader.prototype[Symbol.toStringTag] = 'ReadableStreamDefaultReader';
+	ReadableStreamDefaultController.prototype[Symbol.toStringTag] = 'ReadableStreamDefaultController';
+	WritableStreamDefaultWriter.prototype[Symbol.toStringTag] = 'WritableStreamDefaultWriter';
+	WritableStreamDefaultController.prototype[Symbol.toStringTag] = 'WritableStreamDefaultController';
+	CountQueuingStrategy.prototype[Symbol.toStringTag] = 'CountQueuingStrategy';
+	ByteLengthQueuingStrategy.prototype[Symbol.toStringTag] = 'ByteLengthQueuingStrategy';
+
 	globalThis.ReadableStream = ReadableStream;
 	globalThis.WritableStream = WritableStream;
 	globalThis.TransformStream = TransformStream;
 	globalThis.ReadableStreamDefaultReader = ReadableStreamDefaultReader;
 	globalThis.WritableStreamDefaultWriter = WritableStreamDefaultWriter;
+	globalThis.CountQueuingStrategy = CountQueuingStrategy;
+	globalThis.ByteLengthQueuingStrategy = ByteLengthQueuingStrategy;
 })();
 `
 }

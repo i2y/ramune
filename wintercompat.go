@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"sync"
 )
 
 // WithWinterTC installs the WinterTC (ECMA-429) Minimum Common Web API
@@ -26,84 +27,223 @@ func WithWinterTC() Option {
 // Must be called with rt.mu held, after installWebStreams and installNodeCompat
 // (requires TransformStream and Event).
 func (r *Runtime) installWinterTC() error {
-	if err := r.registerFuncLocked("__go_wtc_compress", goWTCCompress); err != nil {
+	// Streaming compression session management.
+	if err := r.registerFuncLocked("__go_wtc_cs_create", goWTCCSCreate); err != nil {
 		return err
 	}
-	if err := r.registerFuncLocked("__go_wtc_decompress", goWTCDecompress); err != nil {
+	if err := r.registerFuncLocked("__go_wtc_cs_write", goWTCCSWrite); err != nil {
+		return err
+	}
+	if err := r.registerFuncLocked("__go_wtc_cs_close", goWTCCSClose); err != nil {
+		return err
+	}
+	// Streaming decompression session management.
+	if err := r.registerFuncLocked("__go_wtc_ds_create", goWTCDSCreate); err != nil {
+		return err
+	}
+	if err := r.registerFuncLocked("__go_wtc_ds_write", goWTCDSWrite); err != nil {
+		return err
+	}
+	if err := r.registerFuncLocked("__go_wtc_ds_close", goWTCDSClose); err != nil {
 		return err
 	}
 	return r.execLocked(winterTCJSSource())
 }
 
-// goWTCCompress: args [format, dataHex] -> hexCompressed
-// Formats: "gzip" (RFC 1952), "deflate" (RFC 1950 zlib), "deflate-raw" (RFC 1951).
-func goWTCCompress(args []any) (any, error) {
-	if len(args) < 2 {
-		return nil, fmt.Errorf("compress: format and data required")
+// --- Streaming compression session management ---
+
+// compSession holds state for a streaming compression session.
+type compSession struct {
+	buf    bytes.Buffer
+	writer io.WriteCloser
+}
+
+var compSessions = struct {
+	mu       sync.Mutex
+	sessions map[int]*compSession
+	nextID   int
+}{sessions: make(map[int]*compSession)}
+
+// goWTCCSCreate: args [format] -> sessionID (float64)
+func goWTCCSCreate(args []any) (any, error) {
+	if len(args) < 1 {
+		return nil, fmt.Errorf("cs_create: format required")
 	}
 	format, _ := args[0].(string)
+
+	s := &compSession{}
+	switch format {
+	case "gzip":
+		s.writer = gzip.NewWriter(&s.buf)
+	case "deflate":
+		s.writer = zlib.NewWriter(&s.buf)
+	case "deflate-raw":
+		w, err := flate.NewWriter(&s.buf, flate.DefaultCompression)
+		if err != nil {
+			return nil, err
+		}
+		s.writer = w
+	default:
+		return nil, fmt.Errorf("unsupported compression format: %s", format)
+	}
+
+	compSessions.mu.Lock()
+	id := compSessions.nextID
+	compSessions.nextID++
+	compSessions.sessions[id] = s
+	compSessions.mu.Unlock()
+
+	return float64(id), nil
+}
+
+// goWTCCSWrite: args [id, dataHex] -> hexCompressed (output available so far)
+func goWTCCSWrite(args []any) (any, error) {
+	if len(args) < 2 {
+		return nil, fmt.Errorf("cs_write: id and data required")
+	}
+	id := int(args[0].(float64))
 	dataHex, _ := args[1].(string)
 	data, err := hex.DecodeString(dataHex)
 	if err != nil {
 		return nil, err
 	}
 
-	var buf bytes.Buffer
-	var w io.WriteCloser
-	switch format {
-	case "gzip":
-		w = gzip.NewWriter(&buf)
-	case "deflate":
-		w = zlib.NewWriter(&buf)
-	case "deflate-raw":
-		var err2 error
-		w, err2 = flate.NewWriter(&buf, flate.DefaultCompression)
-		if err2 != nil {
-			return nil, err2
+	compSessions.mu.Lock()
+	s, ok := compSessions.sessions[id]
+	compSessions.mu.Unlock()
+	if !ok {
+		return nil, fmt.Errorf("cs_write: invalid session %d", id)
+	}
+
+	if _, err := s.writer.Write(data); err != nil {
+		return nil, err
+	}
+	// Flush to produce per-chunk output (like Z_SYNC_FLUSH).
+	if f, ok := s.writer.(interface{ Flush() error }); ok {
+		if err := f.Flush(); err != nil {
+			return nil, err
 		}
-	default:
-		return nil, fmt.Errorf("unsupported compression format: %s", format)
 	}
-	if _, err := w.Write(data); err != nil {
-		w.Close()
-		return nil, err
-	}
-	if err := w.Close(); err != nil {
-		return nil, err
-	}
-	return hex.EncodeToString(buf.Bytes()), nil
+
+	out := make([]byte, s.buf.Len())
+	copy(out, s.buf.Bytes())
+	s.buf.Reset()
+	return hex.EncodeToString(out), nil
 }
 
-// goWTCDecompress: args [format, dataHex] -> hexDecompressed
-func goWTCDecompress(args []any) (any, error) {
-	if len(args) < 2 {
-		return nil, fmt.Errorf("decompress: format and data required")
+// goWTCCSClose: args [id] -> hexRemaining (final flush + cleanup)
+func goWTCCSClose(args []any) (any, error) {
+	if len(args) < 1 {
+		return nil, fmt.Errorf("cs_close: id required")
+	}
+	id := int(args[0].(float64))
+
+	compSessions.mu.Lock()
+	s, ok := compSessions.sessions[id]
+	if ok {
+		delete(compSessions.sessions, id)
+	}
+	compSessions.mu.Unlock()
+	if !ok {
+		return nil, fmt.Errorf("cs_close: invalid session %d", id)
+	}
+
+	if err := s.writer.Close(); err != nil {
+		return nil, err
+	}
+	return hex.EncodeToString(s.buf.Bytes()), nil
+}
+
+// --- Streaming decompression session management ---
+
+// decompSession accumulates compressed data and decompresses on close.
+type decompSession struct {
+	format string
+	buf    bytes.Buffer
+}
+
+var decompSessions = struct {
+	mu       sync.Mutex
+	sessions map[int]*decompSession
+	nextID   int
+}{sessions: make(map[int]*decompSession)}
+
+// goWTCDSCreate: args [format] -> sessionID
+func goWTCDSCreate(args []any) (any, error) {
+	if len(args) < 1 {
+		return nil, fmt.Errorf("ds_create: format required")
 	}
 	format, _ := args[0].(string)
+
+	s := &decompSession{format: format}
+
+	decompSessions.mu.Lock()
+	id := decompSessions.nextID
+	decompSessions.nextID++
+	decompSessions.sessions[id] = s
+	decompSessions.mu.Unlock()
+
+	return float64(id), nil
+}
+
+// goWTCDSWrite: args [id, dataHex] -> "" (accumulate compressed data)
+func goWTCDSWrite(args []any) (any, error) {
+	if len(args) < 2 {
+		return nil, fmt.Errorf("ds_write: id and data required")
+	}
+	id := int(args[0].(float64))
 	dataHex, _ := args[1].(string)
-	compressed, err := hex.DecodeString(dataHex)
+	data, err := hex.DecodeString(dataHex)
 	if err != nil {
 		return nil, err
 	}
 
+	decompSessions.mu.Lock()
+	s, ok := decompSessions.sessions[id]
+	decompSessions.mu.Unlock()
+	if !ok {
+		return nil, fmt.Errorf("ds_write: invalid session %d", id)
+	}
+
+	s.buf.Write(data)
+	return "", nil
+}
+
+// goWTCDSClose: args [id] -> hexDecompressed (decompress all accumulated data)
+func goWTCDSClose(args []any) (any, error) {
+	if len(args) < 1 {
+		return nil, fmt.Errorf("ds_close: id required")
+	}
+	id := int(args[0].(float64))
+
+	decompSessions.mu.Lock()
+	s, ok := decompSessions.sessions[id]
+	if ok {
+		delete(decompSessions.sessions, id)
+	}
+	decompSessions.mu.Unlock()
+	if !ok {
+		return nil, fmt.Errorf("ds_close: invalid session %d", id)
+	}
+
 	var reader io.ReadCloser
-	switch format {
+	switch s.format {
 	case "gzip":
-		r, err := gzip.NewReader(bytes.NewReader(compressed))
+		r, err := gzip.NewReader(&s.buf)
 		if err != nil {
 			return nil, err
 		}
 		reader = r
 	case "deflate":
-		r, err := zlib.NewReader(bytes.NewReader(compressed))
+		r, err := zlib.NewReader(&s.buf)
 		if err != nil {
 			return nil, err
 		}
 		reader = r
 	case "deflate-raw":
-		reader = flate.NewReader(bytes.NewReader(compressed))
+		reader = flate.NewReader(&s.buf)
 	default:
-		return nil, fmt.Errorf("unsupported compression format: %s", format)
+		return nil, fmt.Errorf("unsupported format: %s", s.format)
 	}
 	defer reader.Close()
 	out, err := io.ReadAll(reader)
@@ -143,6 +283,80 @@ func winterTCJSSource() string {
 			offset += chunks[i].length;
 		}
 		return merged;
+	}
+
+	// --- DOMException (full polyfill with legacy error codes) ---
+	if (typeof globalThis.DOMException === 'undefined' || !globalThis.DOMException.ABORT_ERR) {
+		var _domExCodes = {
+			IndexSizeError: 1, HierarchyRequestError: 3, WrongDocumentError: 4,
+			InvalidCharacterError: 5, NoModificationAllowedError: 7, NotFoundError: 8,
+			NotSupportedError: 9, InUseAttributeError: 10, InvalidStateError: 11,
+			SyntaxError: 12, InvalidModificationError: 13, NamespaceError: 14,
+			InvalidAccessError: 15, SecurityError: 18, NetworkError: 19,
+			AbortError: 20, URLMismatchError: 21, QuotaExceededError: 22,
+			TimeoutError: 23, InvalidNodeTypeError: 24, DataCloneError: 25
+		};
+		var _domExConsts = {
+			INDEX_SIZE_ERR: 1, HIERARCHY_REQUEST_ERR: 3, WRONG_DOCUMENT_ERR: 4,
+			INVALID_CHARACTER_ERR: 5, NO_MODIFICATION_ALLOWED_ERR: 7, NOT_FOUND_ERR: 8,
+			NOT_SUPPORTED_ERR: 9, INUSE_ATTRIBUTE_ERR: 10, INVALID_STATE_ERR: 11,
+			SYNTAX_ERR: 12, INVALID_MODIFICATION_ERR: 13, NAMESPACE_ERR: 14,
+			INVALID_ACCESS_ERR: 15, SECURITY_ERR: 18, NETWORK_ERR: 19,
+			ABORT_ERR: 20, URL_MISMATCH_ERR: 21, QUOTA_EXCEEDED_ERR: 22,
+			TIMEOUT_ERR: 23, INVALID_NODE_TYPE_ERR: 24, DATA_CLONE_ERR: 25
+		};
+		globalThis.DOMException = function DOMException(message, name) {
+			var err = new Error(message || '');
+			Object.setPrototypeOf(err, DOMException.prototype);
+			Object.defineProperty(err, 'name', { value: name || 'Error', enumerable: false, configurable: true });
+			Object.defineProperty(err, 'code', { value: _domExCodes[name] || 0, enumerable: false, configurable: true });
+			return err;
+		};
+		globalThis.DOMException.prototype = Object.create(Error.prototype);
+		globalThis.DOMException.prototype.constructor = globalThis.DOMException;
+		var _ck = Object.keys(_domExConsts);
+		for (var _i = 0; _i < _ck.length; _i++) {
+			globalThis.DOMException[_ck[_i]] = _domExConsts[_ck[_i]];
+			globalThis.DOMException.prototype[_ck[_i]] = _domExConsts[_ck[_i]];
+		}
+	}
+
+	// --- atob / btoa (WPT spec-compliant) ---
+	if (typeof globalThis.btoa === 'undefined') {
+		var _b64chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+		globalThis.btoa = function btoa(str) {
+			if (str === undefined) throw new DOMException('The string to be encoded contains characters outside of the Latin1 range.', 'InvalidCharacterError');
+			str = String(str);
+			for (var i = 0; i < str.length; i++) {
+				if (str.charCodeAt(i) > 255) throw new DOMException('The string to be encoded contains characters outside of the Latin1 range.', 'InvalidCharacterError');
+			}
+			var out = '', i = 0;
+			while (i < str.length) {
+				var a = str.charCodeAt(i++), b = i < str.length ? str.charCodeAt(i++) : NaN, c = i < str.length ? str.charCodeAt(i++) : NaN;
+				var n = (a << 16) | ((isNaN(b) ? 0 : b) << 8) | (isNaN(c) ? 0 : c);
+				out += _b64chars[(n >> 18) & 63] + _b64chars[(n >> 12) & 63];
+				out += isNaN(b) ? '=' : _b64chars[(n >> 6) & 63];
+				out += isNaN(c) ? '=' : _b64chars[n & 63];
+			}
+			return out;
+		};
+	}
+	if (typeof globalThis.atob === 'undefined') {
+		globalThis.atob = function atob(str) {
+			str = String(str).replace(/[\t\n\f\r ]/g, '');
+			if (str.length % 4 === 1) throw new DOMException("The string to be decoded is not correctly encoded.", 'InvalidCharacterError');
+			var out = '', i = 0, lookup = {};
+			var chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=';
+			for (var j = 0; j < chars.length; j++) lookup[chars[j]] = j;
+			while (i < str.length) {
+				var a = lookup[str[i++]], b = lookup[str[i++]], c = lookup[str[i++]], d = lookup[str[i++]];
+				if (a === undefined || b === undefined) throw new DOMException("The string to be decoded is not correctly encoded.", 'InvalidCharacterError');
+				out += String.fromCharCode(((a & 63) << 2) | (b >> 4));
+				if (c !== 64 && c !== undefined) out += String.fromCharCode(((b & 15) << 4) | (c >> 2));
+				if (d !== 64 && d !== undefined) out += String.fromCharCode(((c & 3) << 6) | d);
+			}
+			return out;
+		};
 	}
 
 	// --- Minimal Event/EventTarget (if not already provided by NodeCompat) ---
@@ -205,33 +419,49 @@ func winterTCJSSource() string {
 		globalThis.CustomEvent.prototype.constructor = globalThis.CustomEvent;
 	}
 
-	// --- CompressionStream / DecompressionStream (Web Compression API) ---
-	function __wtcCodecStream(name, goFn) {
-		return function(format) {
+	// --- CompressionStream (streaming, per-chunk output via Go sessions) ---
+	if (typeof globalThis.CompressionStream === 'undefined') {
+		globalThis.CompressionStream = function CompressionStream(format) {
 			if (['gzip', 'deflate', 'deflate-raw'].indexOf(format) < 0) {
-				throw new TypeError("Failed to construct '" + name + "': Unsupported compression format: '" + format + "'");
+				throw new TypeError("Failed to construct 'CompressionStream': Unsupported compression format: '" + format + "'");
 			}
-			var chunks = [];
+			var id = __go_wtc_cs_create(format);
 			var ts = new TransformStream({
 				transform: function(chunk, controller) {
 					var u8 = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk.buffer ? chunk.buffer : chunk);
-					chunks.push(u8);
+					var hexResult = __go_wtc_cs_write(id, __wtcU8ToHex(u8));
+					if (hexResult.length > 0) controller.enqueue(__wtcHexToU8(hexResult));
 				},
 				flush: function(controller) {
-					var merged = __wtcMergeChunks(chunks);
-					var hexResult = goFn(format, __wtcU8ToHex(merged));
-					controller.enqueue(__wtcHexToU8(hexResult));
+					var hexResult = __go_wtc_cs_close(id);
+					if (hexResult.length > 0) controller.enqueue(__wtcHexToU8(hexResult));
 				}
 			});
 			this.readable = ts.readable;
 			this.writable = ts.writable;
 		};
 	}
-	if (typeof globalThis.CompressionStream === 'undefined') {
-		globalThis.CompressionStream = __wtcCodecStream('CompressionStream', __go_wtc_compress);
-	}
+
+	// --- DecompressionStream (streaming via Go sessions) ---
 	if (typeof globalThis.DecompressionStream === 'undefined') {
-		globalThis.DecompressionStream = __wtcCodecStream('DecompressionStream', __go_wtc_decompress);
+		globalThis.DecompressionStream = function DecompressionStream(format) {
+			if (['gzip', 'deflate', 'deflate-raw'].indexOf(format) < 0) {
+				throw new TypeError("Failed to construct 'DecompressionStream': Unsupported compression format: '" + format + "'");
+			}
+			var id = __go_wtc_ds_create(format);
+			var ts = new TransformStream({
+				transform: function(chunk, controller) {
+					var u8 = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk.buffer ? chunk.buffer : chunk);
+					__go_wtc_ds_write(id, __wtcU8ToHex(u8));
+				},
+				flush: function(controller) {
+					var hexResult = __go_wtc_ds_close(id);
+					if (hexResult.length > 0) controller.enqueue(__wtcHexToU8(hexResult));
+				}
+			});
+			this.readable = ts.readable;
+			this.writable = ts.writable;
+		};
 	}
 
 	// --- MessageEvent ---
