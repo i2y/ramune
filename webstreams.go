@@ -120,7 +120,8 @@ func webStreamsJSSource() string {
 
 	ReadableStream.prototype._pullIfNeeded = function() {
 		if (this._pulling || this._closeRequested || this._state !== 'readable') return;
-		if (this._pendingReads.length === 0 && this._queue.length >= this._highWaterMark) return;
+		var hasPendingReads = this._pendingReads.length > 0 || (this._byobPendingReads && this._byobPendingReads.length > 0);
+		if (!hasPendingReads && this._queue.length >= this._highWaterMark) return;
 		if (!this._underlyingSource.pull) return;
 		this._pulling = true;
 		var self = this;
@@ -155,6 +156,12 @@ func webStreamsJSSource() string {
 		while (this._pendingReads.length > 0) {
 			this._pendingReads.shift().resolve({ value: undefined, done: true });
 		}
+		if (this._byobPendingReads) {
+			while (this._byobPendingReads.length > 0) {
+				var entry = this._byobPendingReads.shift();
+				entry.resolve({ value: new Uint8Array(entry.view.buffer, entry.view.byteOffset, 0), done: true });
+			}
+		}
 		if (this._reader && this._reader._closedResolve) this._reader._closedResolve(undefined);
 	};
 
@@ -163,6 +170,11 @@ func webStreamsJSSource() string {
 		this._storedError = e;
 		while (this._pendingReads.length > 0) {
 			this._pendingReads.shift().reject(e);
+		}
+		if (this._byobPendingReads) {
+			while (this._byobPendingReads.length > 0) {
+				this._byobPendingReads.shift().reject(e);
+			}
 		}
 		if (this._reader && this._reader._closedReject) this._reader._closedReject(e);
 	};
@@ -255,6 +267,8 @@ func webStreamsJSSource() string {
 			}).then(function() { throw abortErr; });
 		}
 
+		function releaseBoth() { reader.releaseLock(); writer.releaseLock(); }
+
 		return new Promise(function(resolve, reject) {
 			var abortHandler;
 			function shutdown(action, originalErr) {
@@ -263,10 +277,10 @@ func webStreamsJSSource() string {
 				if (signal && abortHandler) signal.removeEventListener('abort', abortHandler);
 				var p = action ? action() : Promise.resolve();
 				p.then(function() {
-					reader.releaseLock(); writer.releaseLock();
+					releaseBoth();
 					if (originalErr) reject(originalErr); else resolve();
 				}, function(e) {
-					reader.releaseLock(); writer.releaseLock();
+					releaseBoth();
 					reject(originalErr || e);
 				});
 			}
@@ -286,7 +300,7 @@ func webStreamsJSSource() string {
 							return;
 						}
 						writer.write(result.value).then(pump, function(err) {
-							if (!options.preventAbort) {
+							if (!options.preventCancel) {
 								shutdown(function() { return reader.cancel(err); }, err);
 							} else {
 								shutdown(null, err);
@@ -525,7 +539,6 @@ func webStreamsJSSource() string {
 		this._stream = stream;
 		this._closeRequested = false;
 		this._byobRequest = null;
-		this._pendingPullIntos = [];
 	}
 	ReadableByteStreamController.prototype.enqueue = function(chunk) {
 		if (this._closeRequested) throw new TypeError('Cannot enqueue after close');
@@ -569,7 +582,6 @@ func webStreamsJSSource() string {
 		this.view = view;
 	}
 	ReadableStreamBYOBRequest.prototype.respond = function(bytesWritten) {
-		// Signal that bytesWritten bytes have been written into this.view
 		var u8 = new Uint8Array(this.view.buffer, this.view.byteOffset, bytesWritten);
 		this._controller.enqueue(u8);
 		this.view = null;

@@ -922,16 +922,22 @@ func webCryptoJSSource() string {
 			((parseInt(hex.substr(16,2),16) & 0x3f | 0x80).toString(16)) + hex.substr(18,2) + '-' + hex.substr(20,12);
 	};
 	Crypto.prototype[Symbol.toStringTag] = 'Crypto';
-	CryptoKey.prototype = {};
 	CryptoKey.prototype[Symbol.toStringTag] = 'CryptoKey';
+
+	function SubtleCrypto() {}
+	var _sk = Object.keys(subtle);
+	for (var _si = 0; _si < _sk.length; _si++) {
+		SubtleCrypto.prototype[_sk[_si]] = subtle[_sk[_si]];
+	}
+	SubtleCrypto.prototype[Symbol.toStringTag] = 'SubtleCrypto';
 
 	if (!globalThis.crypto || !globalThis.crypto.subtle) {
 		var _c = new Crypto();
-		_c.subtle = subtle;
+		_c.subtle = new SubtleCrypto();
 		globalThis.crypto = _c;
 	}
 	globalThis.Crypto = Crypto;
-	globalThis.SubtleCrypto = subtle.constructor;
+	globalThis.SubtleCrypto = SubtleCrypto;
 	globalThis.CryptoKey = CryptoKey;
 })();
 `
