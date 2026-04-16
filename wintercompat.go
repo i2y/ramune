@@ -638,6 +638,20 @@ func winterTCJSSource() string {
 	if (globalThis.onunhandledrejection === undefined) globalThis.onunhandledrejection = null;
 	if (globalThis.onrejectionhandled === undefined) globalThis.onrejectionhandled = null;
 
+	// --- WebAssembly.compileStreaming / instantiateStreaming polyfill ---
+	if (typeof WebAssembly !== 'undefined') {
+		if (!WebAssembly.compileStreaming) {
+			WebAssembly.compileStreaming = function(source) {
+				return Promise.resolve(source).then(function(r) { return r.arrayBuffer(); }).then(WebAssembly.compile);
+			};
+		}
+		if (!WebAssembly.instantiateStreaming) {
+			WebAssembly.instantiateStreaming = function(source, imports) {
+				return Promise.resolve(source).then(function(r) { return r.arrayBuffer(); }).then(function(b) { return WebAssembly.instantiate(b, imports); });
+			};
+		}
+	}
+
 	// --- URLPattern (Web Standard) ---
 	if (typeof globalThis.URLPattern === 'undefined') {
 		function _patternToRegex(pat, isPath) {
