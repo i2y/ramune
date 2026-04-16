@@ -282,3 +282,59 @@ func TestBunJSONCParse(t *testing.T) {
 		t.Fatalf("got %s", s)
 	}
 }
+
+// Regression test for Headers constructor accepting Headers-like shims
+// (e.g. Hono's HeaderRecord) by iterating entries() rather than storing by
+// reference. Prior behaviour dropped Content-Type from Hono responses.
+func TestHeadersConstructorShapes(t *testing.T) {
+	r := sharedNodeCompat(t)
+
+	v, err := r.Eval(`
+		var results = {};
+
+		// 1. Plain record
+		var h1 = new Headers({ "Content-Type": "application/json", "X-Foo": "bar" });
+		results.plain = [h1.get("content-type"), h1.get("x-foo")];
+
+		// 2. Headers instance copy — must be independent
+		var h2 = new Headers(h1);
+		results.copy = [h2.get("content-type"), h2.get("x-foo"), h1 !== h2 && h2._h !== h1._h];
+
+		// 3. Iterable of [name, value] pairs
+		var h3 = new Headers([["content-type", "text/html"], ["x-foo", "baz"]]);
+		results.pairs = [h3.get("content-type"), h3.get("x-foo")];
+
+		// 4. Headers-like shim exposing entries() (matches Hono's HeaderRecord).
+		class FakeHeaders {
+			constructor(dict) { this._h = dict; }
+			get(n) { return this._h[n.toLowerCase()] ?? null; }
+			forEach(cb) { for (var k in this._h) cb(this._h[k], k); }
+			*entries() { for (var k in this._h) yield [k, this._h[k]]; }
+		}
+		var fake = new FakeHeaders({ "content-type": "text/html; charset=UTF-8" });
+		var resp = new Response("hi", { headers: fake });
+		results.shim = [resp.headers.get("content-type"), resp.headers._h !== fake];
+
+		// 5. Array-valued record (e.g. set-cookie)
+		var h5 = new Headers({ "set-cookie": ["a=1", "b=2"] });
+		results.array = h5.get("set-cookie");
+
+		// 6. null / undefined init
+		var h6 = new Headers();
+		var h7 = new Headers(null);
+		var h8 = new Headers(undefined);
+		results.empty = [h6.get("x") === null, h7.get("x") === null, h8.get("x") === null];
+
+		JSON.stringify(results);
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+
+	s, _ := v.GoString()
+	want := `{"plain":["application/json","bar"],"copy":["application/json","bar",true],"pairs":["text/html","baz"],"shim":["text/html; charset=UTF-8",true],"array":"a=1, b=2","empty":[true,true,true]}`
+	if s != want {
+		t.Fatalf("got  %s\nwant %s", s, want)
+	}
+}

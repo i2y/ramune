@@ -1049,11 +1049,35 @@ func bunCompatJSSource() string {
 
 	if (typeof Headers === 'undefined') {
 		globalThis.Headers = function(init) {
-			this._h = {};
-			if (init) for (var k in init) this._h[k.toLowerCase()] = init[k];
+			this._h = Object.create(null);
+			if (init == null) return;
+			if (init instanceof Headers) {
+				var self = this;
+				init.forEach(function(v, k) { self._h[k.toLowerCase()] = String(v); });
+				return;
+			}
+			if (typeof init[Symbol.iterator] === 'function') {
+				for (var pair of init) {
+					if (!pair || pair.length !== 2) throw new TypeError('Headers: invalid pair');
+					this._h[String(pair[0]).toLowerCase()] = String(pair[1]);
+				}
+				return;
+			}
+			if (typeof init.entries === 'function') {
+				for (var e of init.entries()) {
+					this._h[String(e[0]).toLowerCase()] = String(e[1]);
+				}
+				return;
+			}
+			var keys = Object.keys(init);
+			for (var i = 0; i < keys.length; i++) {
+				var k = keys[i], v = init[k];
+				if (typeof v === 'string') this._h[k.toLowerCase()] = v;
+				else if (Array.isArray(v) && v.length) this._h[k.toLowerCase()] = v.join(', ');
+			}
 		};
 		Headers.prototype.get = function(k) { return this._h[k.toLowerCase()] || null; };
-		Headers.prototype.set = function(k, v) { this._h[k.toLowerCase()] = v; };
+		Headers.prototype.set = function(k, v) { this._h[k.toLowerCase()] = String(v); };
 		Headers.prototype.has = function(k) { return k.toLowerCase() in this._h; };
 		Headers.prototype.delete = function(k) { delete this._h[k.toLowerCase()]; };
 		Headers.prototype.forEach = function(cb) { var h = this._h; for (var k in h) cb(h[k], k); };
