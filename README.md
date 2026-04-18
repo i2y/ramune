@@ -4,13 +4,64 @@
 
 # Ramune
 
-A JavaScript/TypeScript runtime and embeddable JS engine for Go. Dual backend: **JavaScriptCore** (JIT, macOS/Linux) via [purego](https://github.com/ebitengine/purego) and **QuickJS** (pure Go, cross-platform incl. Windows) via [modernc.org/quickjs](https://pkg.go.dev/modernc.org/quickjs) — no Cgo required for either. Type checker and formatter ([typescript-go](https://github.com/microsoft/typescript-go)), linter ([rslint](https://github.com/web-infra-dev/rslint)), bundler ([esbuild](https://github.com/evanw/esbuild)), and all Node.js polyfills are built in with zero external tool dependencies.
+> **Self-hosted Cloudflare-Workers-compatible runtime that embeds and extends in Go.**
+
+Author handlers as Workers-style ES modules, run them on your own
+hardware, and extend the `env` object with any Go library — Redis,
+Postgres, S3, SMTP, NATS, your own gRPC service. No Cgo, no Docker,
+no Node.
+
+```ts
+// worker.ts
+export default {
+  async fetch(request, env, ctx) {
+    const url = new URL(request.url);
+    const name = url.searchParams.get("name") ?? "world";
+    env.KV.put(`visit:${Date.now()}`, name);
+    ctx.waitUntil(env.EMAIL.send({ to: "me@example.com", body: name }));
+    return Response.json({ hello: name });
+  },
+} satisfies WorkersHandler;
+```
+
+```bash
+ramune serve worker.ts              # built-in env.KV / env.DB / env.SECRETS
+# or embed in Go:
+handler, _ := workers.Register(rt, "worker.ts", src,
+    workers.WithSQLite(".ramune/data.db"),
+    workers.WithExtraEnvJS(emailBinding),   // your own env.EMAIL, env.QUEUE, env.R2...
+)
+http.ListenAndServe(":3000", handler)
+```
+
+## Why Ramune?
+
+- **Self-hosted Workers.** Migrate Cloudflare Workers code to your own
+  VM, bare metal, or air-gapped deployment. `export default { fetch,
+  scheduled }` runs unchanged; `ctx.waitUntil`, `env.KV`, `env.DB`
+  (D1-compatible), `env.SECRETS`, streaming, cron are all there.
+- **`env` is pluggable.** `env.KV` / `env.DB` are built on Go
+  interfaces (`KVBackend`, `DBBackend`); swap them for Redis, Postgres,
+  DynamoDB, anything. Invent your own bindings — `env.QUEUE`,
+  `env.EMAIL`, `env.AI`, `env.DURABLE` — by registering Go callbacks.
+  See [`workers/BINDINGS.md`](workers/BINDINGS.md).
+- **Single binary deploy.** `ramune compile` bundles handler +
+  runtime into one statically-linked executable for tiny VMs.
+- **Full Go interop.** Workers are authored in TypeScript; everything
+  underneath is Go. Call any Go library, including the stdlib and your
+  existing services.
+- **Also a complete JS/TS runtime and embeddable library.** `ramune
+  run` / `test` / `check` / `fmt` / `lint` / `repl` / `compile` with
+  tsgo + rslint + esbuild built in. `ramune.New()` gives you a JS
+  engine for any Go program.
+
+Dual backend: **JavaScriptCore** (JIT, macOS/Linux) via [purego](https://github.com/ebitengine/purego) and **QuickJS** (pure Go, cross-platform incl. Windows) via [modernc.org/quickjs](https://pkg.go.dev/modernc.org/quickjs) — no Cgo required for either. Type checker and formatter ([typescript-go](https://github.com/microsoft/typescript-go)), linter ([rslint](https://github.com/web-infra-dev/rslint)), bundler ([esbuild](https://github.com/evanw/esbuild)), and all Node.js polyfills are built in with zero external tool dependencies.
 
 Named after [Ramune](https://en.wikipedia.org/wiki/Ramune), a Japanese carbonated soft drink served in a Codd-neck bottle.
 
 ```bash
-ramune run server.ts          # Run TypeScript
-ramune serve worker.ts        # Serve Workers-style module (export default { fetch })
+ramune serve worker.ts        # Serve Workers-style module
+ramune run server.ts          # Run TypeScript (classic)
 ramune test                   # Run tests
 ramune check app.ts           # Type-check
 ramune fmt .                  # Format
@@ -23,10 +74,20 @@ ramune skills install         # Install Agent Skills for AI agents
 
 ## What is Ramune?
 
-Ramune is two things:
+Ramune is **three** things, with one narrative:
 
-1. **A JS/TS runtime** like Bun or Deno, but built in Go
-2. **An embeddable JS engine** for Go applications
+1. **A self-hosted Workers runtime** — `ramune serve worker.ts` gives
+   you Cloudflare-Workers-compatible handlers, backed by SQLite by
+   default, extensible with any Go library. Scope:
+   [WinterCG](https://wintercg.org/) + fetch + `env.DB` / `env.KV` /
+   `env.SECRETS` + `ctx.waitUntil` + cron. Durable Objects / Queues /
+   R2 / AI Gateway are **not shipped** — they are implemented as
+   user-supplied `env.*` bindings so the core stays small and you
+   aren't blocked on us.
+2. **A JS/TS runtime** like Bun or Deno, but built in Go — `ramune
+   run`, `test`, `check`, `fmt`, `lint`, `repl`, `compile`.
+3. **An embeddable JS engine** for Go applications — `ramune.New()` in
+   any Go program.
 
 Two backends, same API:
 
@@ -307,8 +368,9 @@ ramune run build   # runs "scripts.build"
 
 ### Workers-style Modules (`ramune serve`)
 
-Serve a Cloudflare-Workers-style ES-module handler — export a default
-object with `fetch(request, env, ctx)` and the CLI wires it up:
+The flagship command. Serve a Cloudflare-Workers-style ES-module
+handler — export a default object with `fetch(request, env, ctx)` and
+the CLI wires it up:
 
 ```ts
 // worker.ts
@@ -351,7 +413,10 @@ namespace = "sessions"
 
 See [`examples/workers/`](examples/workers/) for hello, SSE, Hono, and
 a full HTML guestbook. Type declarations live in
-[`workers/workers.d.ts`](workers/workers.d.ts).
+[`workers/workers.d.ts`](workers/workers.d.ts). For non-SQLite
+backends (Redis, Postgres, …) and user-defined bindings
+(`env.QUEUE`, `env.EMAIL`, …), see the embed API below and the
+[custom binding guide](workers/BINDINGS.md).
 
 ## Embed in Go
 
@@ -539,9 +604,9 @@ app.get('/slow', async (c) => {
 
 ### Workers-style Modules (`ramune/workers`)
 
-For Cloudflare-Workers-style handlers (`export default { fetch }`), the
-`github.com/i2y/ramune/workers` subpackage returns an `http.Handler`
-that slots into any Go HTTP server:
+The Go embed API for Workers-style handlers — returns an `http.Handler`
+that slots into any Go HTTP server (`net/http`, chi, Echo, gRPC
+gateway, …):
 
 ```go
 import "github.com/i2y/ramune/workers"
@@ -554,25 +619,55 @@ handler, err := workers.Register(rt, "worker.ts", string(src),
     workers.WithSQLite(".ramune/data.db"),
     workers.WithWaitUntilTimeout(30*time.Second),
 )
-if err != nil { log.Fatal(err) }
 http.ListenAndServe(":3000", handler)
 ```
 
 `ctx.waitUntil(promise)` is honoured — the HTTP response ships
 immediately while the executor drains pending promises. For multi-VM
 setups, `workers.Prepare` runs esbuild once and `workers.AttachPrepared`
-binds to each Runtime. Pluggable storage:
+binds to each Runtime.
+
+**Swap env.KV / env.DB for anything.** The built-in SQLite path is
+built on `KVBackend` / `DBBackend` Go interfaces; implement them with
+Redis, Postgres, DynamoDB, or an in-memory map:
 
 ```go
+// type KVBackend interface { Get/Put/Delete/List ... }
+// type DBBackend interface { Query/Exec ... }
 workers.Register(rt, "w.ts", src,
-    workers.WithKVBackend(myRedisKV),   // implements workers.KVBackend
-    workers.WithDBBackend(myPostgres),  // implements workers.DBBackend
+    workers.WithKVBackend(myRedisKV),
+    workers.WithDBBackend(myPostgres),
 )
 ```
 
-`workers.WithSQLite` itself is a convenience built on the same two
-interfaces. `workers.LoadRamuneTOML` parses the same `ramune.toml`
-schema the CLI uses. The CLI-side wrapper is `ramune serve` (above).
+**Invent your own bindings.** Anything a CF Workers binding does —
+`env.QUEUE.send`, `env.EMAIL.send`, `env.R2.put`, `env.AI.run`,
+`env.DURABLE.get` — is a few lines of Go. Register a callback with
+`RegisterFunc`, inject a small JS facade via `WithExtraEnvJS`, and
+handler code uses `env.FOO` naturally:
+
+```go
+rt.RegisterFunc("__env_email_send", func(args []any) (any, error) {
+    // wire up SMTP / SendGrid / SES here
+    return nil, myMailer.Send(opts)
+})
+
+handler, _ := workers.Register(rt, "w.ts", src,
+    workers.WithExtraEnvJS(`
+        globalThis.__extraEnvBindings = function(env) {
+            env.EMAIL = { send: opts => __env_email_send(opts) };
+        };
+    `),
+)
+```
+
+Full walkthrough with TypeScript types and the composition pattern
+for stacking multiple bindings:
+[`workers/BINDINGS.md`](workers/BINDINGS.md). Runnable example:
+[`examples/workers/custom-binding/`](examples/workers/custom-binding/).
+
+`workers.LoadRamuneTOML` parses the same `ramune.toml` schema the CLI
+uses. The CLI-side wrapper is `ramune serve` (above).
 
 ### Multi-core Parallelism
 

@@ -1,5 +1,7 @@
 # Ramune — Full Documentation
 
+Self-hosted Cloudflare-Workers-compatible runtime that embeds and extends in Go. Primary use case: author handlers as Workers-style ES modules (`export default { fetch(req, env, ctx), scheduled }`) and deploy them to your own hardware with Go interop. Scope: [WinterCG](https://wintercg.org/) + fetch + `env.DB` / `env.KV` / `env.SECRETS` + `ctx.waitUntil` + cron. Advanced CF bindings (Durable Objects / Queues / R2 / AI Gateway) are **not shipped** — they are implemented as user-supplied `env.*` bindings via `RegisterFunc` + `WithExtraEnvJS` so the core stays small. Ramune is also a complete JS/TS runtime (`run` / `test` / `check` / `fmt` / `lint` / `repl` / `compile`) and an embeddable JS engine for any Go program.
+
 > Ramune is a JavaScript/TypeScript runtime and embeddable JS engine for Go. Dual backend: JavaScriptCore (JIT, macOS/Linux) via [purego](https://github.com/ebitengine/purego) and QuickJS (pure Go, cross-platform incl. Windows) via [modernc.org/quickjs](https://pkg.go.dev/modernc.org/quickjs) — no Cgo required for either.
 
 ## Install
@@ -325,6 +327,39 @@ workers.Register(rt, "w.ts", src,
 - `workers.ExtractModuleConfig(rt)` inspects the default export's `route` / `cron` / `fetch` / `scheduled` fields (skips framework methods like Hono's `.route()`).
 - TypeScript declarations live in `workers/workers.d.ts` (`Env`, `WorkersHandler`, `ExecutionContext`, `D1Database`, `KVNamespace`, `Secrets`, `ScheduledEvent`).
 - The CLI wrapper is `ramune serve`.
+
+### Custom `env` bindings (`workers.WithExtraEnvJS` + `RegisterFunc`)
+
+Full extensibility story for CF Workers features Ramune does not ship (Durable Objects, Queues, R2, AI Gateway, Service Bindings, Hyperdrive). Three pieces:
+
+1. **Go callback** — `rt.RegisterFunc("__env_foo_op", fn)` does the actual work (HTTP call, DB query, S3 put...).
+2. **JS facade** — passed via `workers.WithExtraEnvJS(js)`; it mutates the env object through the `globalThis.__extraEnvBindings(env)` hook.
+3. **TypeScript augmentation** (optional) — `interface Env { FOO: ... }` in a `.d.ts` merges into the built-in `Env`.
+
+```go
+// Example: env.EMAIL with a user-supplied Sender
+rt.RegisterFunc("__env_email_send", func(args []any) (any, error) {
+    b, _ := json.Marshal(args[0])
+    var opts struct{ To, Subject, Body string }
+    _ = json.Unmarshal(b, &opts)
+    return nil, mailer.Send(opts.To, opts.Subject, opts.Body)
+})
+
+const facadeJS = `
+globalThis.__extraEnvBindings = (function(prev) {
+    return function(env) {
+        if (prev) prev(env);           // compose with other bindings
+        env.EMAIL = {
+            send: function(opts) { return __env_email_send(opts); },
+        };
+    };
+})(globalThis.__extraEnvBindings);
+`
+
+handler, _ := workers.Register(rt, "w.ts", src, workers.WithExtraEnvJS(facadeJS))
+```
+
+The IIFE composition around `prev` lets multiple packages stack bindings (`mailbinding.FacadeJS + queuebinding.FacadeJS + blobbinding.FacadeJS`) without collisions. `workers.WithSQLite` is a convenience built on this same pattern — it installs `KVBackend` + `DBBackend` via `WithKVBackend` / `WithDBBackend`, which both use the env-builder under the hood. See `workers/BINDINGS.md` and `examples/workers/custom-binding/` for the full walkthrough.
 
 ### Permissions
 
