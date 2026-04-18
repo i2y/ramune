@@ -1,0 +1,12 @@
+# Example ramune.toml sitting next to the workers examples.
+#
+# The `ramune serve` command reads this file to get npm dependencies,
+# permissions, and env bindings. Fields omitted here fall back to
+# defaults (all permissions granted, no named KV bindings).
+
+[dependencies]
+hono = "*"
+
+[[kv_namespaces]]
+binding = "SESSIONS"
+namespace = "sessions"
