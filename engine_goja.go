@@ -27,7 +27,7 @@ var (
 	gojaLowerCache = make(map[string]string)
 )
 
-const gojaLowerCap = 256
+const gojaLowerCap = 1024
 
 // isGojaParseError reports whether err came from goja's parser (vs a runtime
 // exception). Only parse errors trigger the esbuild-lowering retry; runtime
@@ -38,7 +38,7 @@ func isGojaParseError(err error) bool {
 	}
 	msg := err.Error()
 	return strings.Contains(msg, "SyntaxError") ||
-		strings.Contains(msg, "Line ") && strings.Contains(msg, "col ") ||
+		(strings.Contains(msg, "Line ") && strings.Contains(msg, "col ")) ||
 		strings.Contains(msg, "Unexpected")
 }
 
@@ -498,12 +498,14 @@ func (r *Runtime) safeRunString(code string) (result goja.Value, err error) {
 		if lerr != nil {
 			return nil, err
 		}
+		// esbuild produced identical output (source was already ES2017-compatible),
+		// so a retry would hit the same parse error; return the original instead.
 		if lowered == code {
 			return nil, err
 		}
 		result, err = r.vm.RunString(lowered)
 	}
-	return
+	return result, err
 }
 
 // safeCallable wraps a goja.Callable invocation with the same recovery path
