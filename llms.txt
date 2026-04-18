@@ -15,7 +15,8 @@ Two backends, same API:
 
 ## CLI Runtime
 
-- [CLI (cmd/ramune)](https://github.com/i2y/ramune/blob/main/cmd/ramune/main.go): `ramune run`, `ramune serve`, `ramune eval`, `ramune repl`, `ramune test`, `ramune check`, `ramune fmt`, `ramune lint`, `ramune build`, `ramune compile`, `ramune transpile`, `ramune bench`, `ramune x`, `ramune init/add/remove/install`, `ramune setup-jit`, `ramune skills install`
+- [CLI (cmd/ramune)](https://github.com/i2y/ramune/blob/main/cmd/ramune/main.go): `ramune run`, `ramune serve`, `ramune eval`, `ramune repl`, `ramune test`, `ramune build`, `ramune bench`, `ramune x`, `ramune init/add/remove/install`, `ramune setup-jit`, `ramune skills install`. Dispatches to the separate `ramune-toolchain` binary for `check` / `fmt` / `lint` / `compile` / `transpile` / `typegen` (keeps the main ramune binary free of the tsgo + rslint + gotranspiler init cost).
+- [Toolchain CLI (cmd/ramune-toolchain)](https://github.com/i2y/ramune/blob/main/cmd/ramune-toolchain/main.go): `check` (tsgo type check), `fmt` (tsgo formatter), `lint` (rslint), `compile` (bundle handler + runtime into a single Go binary, supports `--native` TS→Go for extension modules), `transpile` (TS→Go source), `typegen` (Go→.d.ts). Install alongside `ramune` via `go install github.com/i2y/ramune/cmd/ramune-toolchain@latest`.
 - TypeScript/TSX support via esbuild transpilation
 - ESM (import/export) and CommonJS support with esbuild Build API bundling
 - `ramune compile` — compile JS/TS to standalone Go binary via go:embed

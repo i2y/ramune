@@ -1,4 +1,4 @@
-.PHONY: all build build-cli build-quickjs fmt fmt-check vet test test-quickjs test-wpt ci bench bench-go clean sync-tsgo sync-tsgo-pinned sync-rslint sync
+.PHONY: all build build-cli build-toolchain build-quickjs fmt fmt-check vet test test-quickjs test-wpt ci bench bench-go clean sync-tsgo sync-tsgo-pinned sync-rslint sync
 
 all: ci
 
@@ -9,9 +9,17 @@ build:
 # JSC's JIT compiler requires this entitlement for full performance.
 VERSION ?= 0.11.1
 
-build-cli:
+build-cli: build-toolchain
 	go build -ldflags "-X main.version=$(VERSION)" -o ramune ./cmd/ramune
 	codesign --force --sign - --entitlements entitlements.plist ramune 2>/dev/null || true
+
+# ramune-toolchain is a separate binary containing check / fmt / lint /
+# transpile / typegen / compile. Keeping its tsgo + rslint + gotranspiler
+# footprint out of the main ramune CLI saves ~7-10ms of startup on every run.
+# ramune dispatches to this binary via exec for those subcommands.
+build-toolchain:
+	go build -ldflags "-X main.version=$(VERSION)" -o ramune-toolchain ./cmd/ramune-toolchain
+	codesign --force --sign - --entitlements entitlements.plist ramune-toolchain 2>/dev/null || true
 
 build-quickjs:
 	go build -tags quickjs -ldflags "-X main.version=$(VERSION)" -o ramune-qjs ./cmd/ramune

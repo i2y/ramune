@@ -9,14 +9,18 @@ Foundation for Workers-style platforms in Go, embeddable and extensible; Cloudfl
 ```
 # JSC backend (default, macOS/Linux)
 go install github.com/i2y/ramune/cmd/ramune@latest
+go install github.com/i2y/ramune/cmd/ramune-toolchain@latest  # needed for check / fmt / lint / compile / transpile / typegen
 ramune setup-jit   # macOS only: enable JSC JIT for full performance
 
 # QuickJS backend (Windows / zero-dependency)
 go install -tags quickjs github.com/i2y/ramune/cmd/ramune@latest
+go install -tags quickjs github.com/i2y/ramune/cmd/ramune-toolchain@latest  # optional
 
 # Smaller binary
 go install -tags nosqlite -ldflags="-s -w" github.com/i2y/ramune/cmd/ramune@latest
 ```
+
+The `ramune` binary (~30MB) holds the runtime. `ramune-toolchain` (~60MB) is a separate dev-only binary that `ramune` exec-dispatches to for `check` / `fmt` / `lint` / `compile` / `transpile` / `typegen`. Splitting the tsgo + rslint + gotranspiler trees out of the main binary keeps `ramune run` / `serve` / `eval` startup fast. If you only run / serve / eval / repl / test, you can skip `ramune-toolchain`.
 
 ## CLI Commands
 

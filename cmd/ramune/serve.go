@@ -26,18 +26,18 @@ import (
 func serveCmd(args []string) {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	var (
-		packages                                             packageList
-		port                                                 int
-		workerCount                                          int
-		sqlitePath                                           string
-		noSQLite                                             bool
-		configPath                                           string
-		noConfig                                             bool
-		secretsPrefix                                        string
-		waitUntilTimeout                                     time.Duration
-		envFile                                              string
-		sandbox                                              bool
-		allowRead, allowWrite, allowNet, allowEnv, allowRun  string
+		packages                                            packageList
+		port                                                int
+		workerCount                                         int
+		sqlitePath                                          string
+		noSQLite                                            bool
+		configPath                                          string
+		noConfig                                            bool
+		secretsPrefix                                       string
+		waitUntilTimeout                                    time.Duration
+		envFile                                             string
+		sandbox                                             bool
+		allowRead, allowWrite, allowNet, allowEnv, allowRun string
 	)
 	fs.Var(&packages, "p", "npm package to include (repeatable; merged with ramune.toml)")
 	fs.IntVar(&port, "port", 3000, "listening port")

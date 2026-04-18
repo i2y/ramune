@@ -151,6 +151,7 @@ JavaScriptCore is built into macOS — no extra dependencies.
 
 ```bash
 go install github.com/i2y/ramune/cmd/ramune@latest
+go install github.com/i2y/ramune/cmd/ramune-toolchain@latest  # for check / fmt / lint / compile / transpile / typegen
 ramune setup-jit   # enable JIT (~10x faster, recommended)
 ```
 
@@ -159,6 +160,7 @@ ramune setup-jit   # enable JIT (~10x faster, recommended)
 ```bash
 sudo apt install libjavascriptcoregtk-4.1-dev   # JSC runtime (required)
 go install github.com/i2y/ramune/cmd/ramune@latest
+go install github.com/i2y/ramune/cmd/ramune-toolchain@latest  # for check / fmt / lint / compile / transpile / typegen
 ```
 
 Multi-runtime (RuntimePool, worker_threads) works out of the box on x86_64. On arm64, gcc is required for cgo signal forwarding (`apt install gcc`).
@@ -167,6 +169,7 @@ Multi-runtime (RuntimePool, worker_threads) works out of the box on x86_64. On a
 
 ```bash
 go install -tags quickjs github.com/i2y/ramune/cmd/ramune@latest
+go install -tags quickjs github.com/i2y/ramune/cmd/ramune-toolchain@latest  # optional: check / fmt / lint / compile
 ```
 
 The QuickJS backend uses [modernc.org/quickjs](https://pkg.go.dev/modernc.org/quickjs) (pure Go, ES2023). No shared libraries needed — works on **Windows**, macOS, Linux, and FreeBSD. Trade-off: no JIT, so CPU-bound code is slower (see [Performance](#performance)).
@@ -176,6 +179,8 @@ The QuickJS backend uses [modernc.org/quickjs](https://pkg.go.dev/modernc.org/qu
 ```bash
 go install -tags nosqlite -ldflags="-s -w" github.com/i2y/ramune/cmd/ramune@latest
 ```
+
+The main `ramune` binary above is ~30MB and holds the runtime; `ramune-toolchain` (~60MB) is a separate development-only binary for `check` / `fmt` / `lint` / `compile` / `transpile` / `typegen`. If you only need `ramune run` / `serve` / `eval` / `repl` / `test`, you can skip installing `ramune-toolchain` entirely.
 
 `-tags nosqlite` excludes bun:sqlite. `-ldflags="-s -w"` strips debug info. Combine with `-tags quickjs,nosqlite` for the smallest possible binary.
 
@@ -893,11 +898,11 @@ Relative performance on Apple M4 Max with JIT enabled. Absolute numbers shift wi
 
 | Workload | Ramune vs Node.js | Ramune vs Bun |
 |---|---|---|
-| Hello World startup | ~1.1x slower | ~2.8x slower |
-| Fibonacci(35) CPU | ~1.3x faster | ~1.3x slower |
-| JSON 10K objects | comparable | ~2.3x slower |
-| Crypto SHA256 x1000 | ~1.2x slower | ~2.1x slower |
-| File I/O x100 | ~1.1x slower | ~1.9x slower |
+| Hello World startup | ~1.1x faster | ~2.4x slower |
+| Fibonacci(35) CPU | ~1.3x faster | ~1.2x slower |
+| JSON 10K objects | ~1.2x faster | ~2x slower |
+| Crypto SHA256 x1000 | comparable | ~2x slower |
+| File I/O x100 | comparable | ~1.7x slower |
 | HTTP req/s (single) | ~1.1x slower | ~1.7x slower |
 
 Single-runtime HTTP is below Bun but competitive with Node.js. For throughput see [Multi-Runtime Pool](#multi-runtime-pool) below: Ramune runs N JS VMs in parallel on separate OS threads, where Bun and Node stay single-threaded.

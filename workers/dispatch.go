@@ -389,4 +389,3 @@ func registerScheduled(rt *ramune.Runtime, cacheKey, expr string) error {
 	)
 	return rt.Exec(js)
 }
-
