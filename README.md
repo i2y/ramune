@@ -927,8 +927,8 @@ Ramune runs multiple JS VMs in parallel on separate OS threads (Bun/Node are sin
 | Workers | Scaling vs 1 worker |
 |---------|---------------------|
 | 1 | 1.0x (baseline) |
-| 2 | ~1.5x |
-| 3 | ~1.6x |
+| 2 | ~1.4x |
+| 3 | ~1.5x |
 
 Measured with a JSON generate/filter/map handler (200 objects per request). Scaling plateaus around 3 workers due to JSC JIT contention and purego FFI overhead; absolute req/s depends on your workload (run `make bench` to measure).
 
