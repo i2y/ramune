@@ -724,8 +724,8 @@ Unlike Bun/Node (single-threaded), Ramune runs multiple JSC VMs in parallel on s
 pool, _ := ramune.NewPool(4, ramune.NodeCompat())
 defer pool.Close()
 
-pool.Eval("computeHeavy()")                     // round-robin dispatch
-pool.Broadcast("globalThis.config = {debug: true}")  // run on all
+pool.Eval("Math.PI * 2")                        // round-robin to one VM
+pool.Broadcast("globalThis.config = {debug: true}")  // run on every VM
 
 // Multi-worker HTTP server
 pool.ListenAndServe(":3000", `
@@ -1107,7 +1107,7 @@ Status is experimental; generated code may need manual fixes for complex codebas
 - **HTTP self-fetch**: Ramune.serve() handlers cannot fetch their own server (same JS context deadlock).
 - **Windows**: JSC backend not available. Use `-tags quickjs` for Windows support.
 - **Linux multi-runtime (JSC)**: Architecture-dependent signal handling. On arm64, `CGO_ENABLED=1` and gcc are required for multi-runtime (cgo's signal forwarding is needed for JSC's GC). On x86_64, multi-runtime works without cgo (`CGO_ENABLED=0`).
-- **Multi-worker scaling (JSC)**: Scaling flattens around 4+ workers on macOS due to JSC shared-cache threading constraints. Linux (libjavascriptcoregtk) may differ.
+- **Multi-worker scaling (JSC)**: Scaling flattens around 3-4 workers on macOS due to JSC JIT contention and purego FFI overhead. Linux (libjavascriptcoregtk) may differ.
 - **QuickJS backend**: No JIT; CPU-bound JS is orders of magnitude slower than JSC (see [Performance](#quickjs-backend--tags-quickjs)). Error stack traces not available. Best for embedding/scripting, not compute-heavy workloads.
 - **Native module instance lifecycle**: Struct instances returned to JS are not automatically freed when the JS object is garbage collected. Instances are cleaned up when `Runtime.Close()` is called. For long-running servers creating many short-lived struct instances, this may cause increased memory usage.
 
