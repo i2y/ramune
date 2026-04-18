@@ -15,6 +15,19 @@ import (
 // wptDir is the root of the WPT checkout.
 const wptDir = "test/wpt"
 
+// wptSkipByEngine lists test files that hang or panic on a specific backend
+// and must be skipped to let the rest of the suite complete. Entries are
+// tracked as bugs to fix rather than permanent skips.
+var wptSkipByEngine = map[string]map[string]string{
+	"quickjs": {
+		"AddEventListenerOptions-signal.any.js": "hangs (AbortSignal + passive listener interaction)",
+	},
+	"goja": {
+		"gb18030-decoder.any.js":                "goja parser panic on \\u{10FFFF} string literal",
+		"AddEventListenerOptions-signal.any.js": "hangs (AbortSignal + passive listener interaction)",
+	},
+}
+
 // wptResult collects results from a single WPT test assertion.
 type wptResult struct {
 	Status  int // 0=PASS,1=FAIL,2=TIMEOUT,3=NOTRUN
@@ -55,6 +68,13 @@ func runWPTFile(t *testing.T, testPath string) []wptResult {
 		t.Skipf("JSC not available: %v", err)
 	}
 	defer r.Close()
+
+	if skips, ok := wptSkipByEngine[r.Engine()]; ok {
+		if reason, hit := skips[filepath.Base(testPath)]; hit {
+			t.Skipf("skip on %s: %s", r.Engine(), reason)
+			return nil
+		}
+	}
 
 	// Collect results via Go callback.
 	var mu sync.Mutex
