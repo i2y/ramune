@@ -10,6 +10,7 @@ Named after [Ramune](https://en.wikipedia.org/wiki/Ramune), a Japanese carbonate
 
 ```bash
 ramune run server.ts          # Run TypeScript
+ramune serve worker.ts        # Serve Workers-style module (export default { fetch })
 ramune test                   # Run tests
 ramune check app.ts           # Type-check
 ramune fmt .                  # Format
@@ -304,6 +305,54 @@ ramune run dev     # runs "scripts.dev" from package.json
 ramune run build   # runs "scripts.build"
 ```
 
+### Workers-style Modules (`ramune serve`)
+
+Serve a Cloudflare-Workers-style ES-module handler — export a default
+object with `fetch(request, env, ctx)` and the CLI wires it up:
+
+```ts
+// worker.ts
+export default {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext) {
+    const url = new URL(request.url);
+    return Response.json({ hello: url.searchParams.get("name") ?? "world" });
+  },
+} satisfies WorkersHandler;
+```
+
+```bash
+ramune serve worker.ts                    # listens on :3000
+ramune serve --port 8080 worker.ts        # custom port
+ramune serve --workers 4 worker.ts        # N runtimes, round-robined
+ramune serve --sqlite :memory:  worker.ts # non-persistent env.DB/env.KV
+```
+
+`ctx.waitUntil(promise)` keeps the executor alive after the response
+goes out. `env.SECRETS` reads `RAMUNE_SECRET_*` env vars. `env.DB`
+(D1-compatible) and `env.KV` (Workers-KV-like) are backed by SQLite
+at `.ramune/data.db` by default. Works with Hono directly
+(`export default app`).
+
+An optional `ramune.toml` next to the entry declares dependencies,
+permissions, and named KV bindings:
+
+```toml
+[dependencies]
+hono = "*"
+
+[permissions]
+net = "granted"
+read = "denied"
+
+[[kv_namespaces]]
+binding = "SESSIONS"
+namespace = "sessions"
+```
+
+See [`examples/workers/`](examples/workers/) for hello, SSE, Hono, and
+a full HTML guestbook. Type declarations live in
+[`workers/workers.d.ts`](workers/workers.d.ts).
+
 ## Embed in Go
 
 Ramune is also a Go library. Embed JavaScript in your Go application and expose any Go library to JS — database drivers, image processing, gRPC clients, ML inference, etc.
@@ -487,6 +536,43 @@ app.get('/slow', async (c) => {
     return c.json({ ok: true });
 });
 ```
+
+### Workers-style Modules (`ramune/workers`)
+
+For Cloudflare-Workers-style handlers (`export default { fetch }`), the
+`github.com/i2y/ramune/workers` subpackage returns an `http.Handler`
+that slots into any Go HTTP server:
+
+```go
+import "github.com/i2y/ramune/workers"
+
+rt, _ := ramune.New(ramune.NodeCompat(), ramune.WithFetch())
+defer rt.Close()
+
+src, _ := os.ReadFile("worker.ts")
+handler, err := workers.Register(rt, "worker.ts", string(src),
+    workers.WithSQLite(".ramune/data.db"),
+    workers.WithWaitUntilTimeout(30*time.Second),
+)
+if err != nil { log.Fatal(err) }
+http.ListenAndServe(":3000", handler)
+```
+
+`ctx.waitUntil(promise)` is honoured — the HTTP response ships
+immediately while the executor drains pending promises. For multi-VM
+setups, `workers.Prepare` runs esbuild once and `workers.AttachPrepared`
+binds to each Runtime. Pluggable storage:
+
+```go
+workers.Register(rt, "w.ts", src,
+    workers.WithKVBackend(myRedisKV),   // implements workers.KVBackend
+    workers.WithDBBackend(myPostgres),  // implements workers.DBBackend
+)
+```
+
+`workers.WithSQLite` itself is a convenience built on the same two
+interfaces. `workers.LoadRamuneTOML` parses the same `ramune.toml`
+schema the CLI uses. The CLI-side wrapper is `ramune serve` (above).
 
 ### Multi-core Parallelism
 
