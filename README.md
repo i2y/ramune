@@ -142,7 +142,7 @@ Three backends, same API:
 | **JIT** | Yes | No | No |
 | **Platforms** | macOS, Linux | macOS, Linux, **Windows**, FreeBSD | macOS, Linux, **Windows**, FreeBSD |
 | **System deps** | macOS: none. Linux: libjavascriptcoregtk | None | None |
-| **Spec coverage** | ES2023 | ES2023 | ~ES2017 (~94% ES spec); esbuild lowers newer syntax |
+| **Spec coverage** | ES2023 | ES2023 | ES2023 effective (goja native ~ES2017; esbuild lowers newer syntax transparently on Eval) |
 | **Best for** | Performance, HTTP servers | Embedding, scripting, portability | Pure-Go embedding, Windows-native, no cgo signal forwarding |
 
 All three are pure Go at build time: `go build` needs no C toolchain. Runtime deps differ: JSC resolves the system JavaScriptCore (zero install on macOS, `libjavascriptcoregtk-4.1` on Linux); QuickJS and goja have none.
@@ -186,7 +186,7 @@ The QuickJS backend uses [modernc.org/quickjs](https://pkg.go.dev/modernc.org/qu
 go install -tags goja github.com/i2y/ramune/cmd/ramune@latest
 ```
 
-The goja backend wraps [dop251/goja](https://github.com/dop251/goja) unchanged, so it's a **drop-in for existing goja users**: scripts and Go interop code that run on goja directly run on Ramune with `-tags goja` with no behavioral change, and can later switch to `-tags quickjs` or the default JSC build to gain throughput without touching the handler code. goja is a reflection-based Go JS interpreter with ~94% ECMAScript coverage. Appropriate when you want **pure-Go embedding on Windows** without any shared libraries and want to avoid the cgo signal-forwarding requirement that JSC needs on Linux/arm64. CLI commands auto-lower modern JS (private class fields, top-level await, etc.) to ES2017 via esbuild so source code that works on JSC/QuickJS keeps working here.
+The goja backend wraps [dop251/goja](https://github.com/dop251/goja) unchanged, so it's a **drop-in for existing goja users**: scripts and Go interop code that run on goja directly run on Ramune with `-tags goja` with no behavioral change, and can later switch to `-tags quickjs` or the default JSC build to gain throughput without touching the handler code. goja is a reflection-based Go JS interpreter with ~94% ECMAScript coverage. Appropriate when you want **pure-Go embedding on Windows** without any shared libraries and want to avoid the cgo signal-forwarding requirement that JSC needs on Linux/arm64. Modern JS syntax that goja's parser rejects (private class fields, top-level await, `Object.hasOwn`, logical assignment, etc.) is transparently lowered to ES2017 via esbuild on first-encounter parse failure in `Runtime.Eval` / `Runtime.Exec` — both CLI and library paths see the same effective ES2023 surface, and the lowered result is cached so repeated source is amortized.
 
 ### Smaller binary
 
@@ -1178,7 +1178,7 @@ Status is experimental; generated code may need manual fixes for complex codebas
 - **Linux multi-runtime (JSC)**: Architecture-dependent signal handling. On arm64, `CGO_ENABLED=1` and gcc are required for multi-runtime (cgo's signal forwarding is needed for JSC's GC). On x86_64, multi-runtime works without cgo (`CGO_ENABLED=0`).
 - **Multi-worker scaling (JSC)**: Scaling flattens around 3-4 workers on macOS due to JSC JIT contention and purego FFI overhead. Linux (libjavascriptcoregtk) may differ.
 - **QuickJS backend**: No JIT; CPU-bound JS is orders of magnitude slower than JSC (see [Performance](#quickjs-backend--tags-quickjs)). Error stack traces not available. Best for embedding/scripting, not compute-heavy workloads.
-- **goja backend**: ~94% ECMAScript spec coverage (no SharedArrayBuffer, Atomics, or WebAssembly; no raw `for await` parsing without lowering). esbuild lowers private class fields, top-level await, and other post-ES2017 syntax at `run`/`eval` time. Some subsystems are stubbed (WebSocket upgrade path). No JS error stack traces exposed to Go.
+- **goja backend**: No WebAssembly (JSC-only). Post-ES2017 syntax (private class fields, top-level await, etc.) is auto-lowered to ES2017 via esbuild at `Runtime.Eval`/`Exec` time on first parse failure and cached, so user code rarely hits goja's native parser limits in practice. Some subsystems are stubbed (WebSocket upgrade path). No JS error stack traces exposed to Go.
 - **Native module instance lifecycle**: Struct instances returned to JS are not automatically freed when the JS object is garbage collected. Instances are cleaned up when `Runtime.Close()` is called. For long-running servers creating many short-lived struct instances, this may cause increased memory usage.
 
 ## Requirements

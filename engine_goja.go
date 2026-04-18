@@ -9,11 +9,71 @@ import (
 	"io"
 	"os"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 
 	"github.com/dop251/goja"
+	esbuild "github.com/evanw/esbuild/pkg/api"
 )
+
+// gojaLowerCache stores esbuild-lowered source keyed by the original source.
+// Lowering is deterministic so the cache is shared across Runtimes (safe under
+// the pool use-case where multiple goja Runtimes may encounter the same user
+// source). When the cache reaches gojaLowerCap entries the whole map is reset
+// - lowering is cheap to recompute and this keeps the eviction logic simple.
+var (
+	gojaLowerMu    sync.RWMutex
+	gojaLowerCache = make(map[string]string)
+)
+
+const gojaLowerCap = 256
+
+// isGojaParseError reports whether err came from goja's parser (vs a runtime
+// exception). Only parse errors trigger the esbuild-lowering retry; runtime
+// errors are returned as-is.
+func isGojaParseError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "SyntaxError") ||
+		strings.Contains(msg, "Line ") && strings.Contains(msg, "col ") ||
+		strings.Contains(msg, "Unexpected")
+}
+
+// lowerForGoja runs esbuild Transform at ES2017 target so modern JS source
+// (private class fields, top-level await, Object.hasOwn, etc.) becomes parseable
+// by goja. Result is cached by source string - same source reused inside a hot
+// loop only pays the esbuild cost once.
+func lowerForGoja(src string) (string, error) {
+	gojaLowerMu.RLock()
+	if cached, ok := gojaLowerCache[src]; ok {
+		gojaLowerMu.RUnlock()
+		return cached, nil
+	}
+	gojaLowerMu.RUnlock()
+
+	result := esbuild.Transform(src, esbuild.TransformOptions{
+		Target:        esbuild.ES2017,
+		Loader:        esbuild.LoaderJS,
+		LegalComments: esbuild.LegalCommentsNone,
+		Sourcemap:     esbuild.SourceMapNone,
+	})
+	if len(result.Errors) > 0 {
+		return "", fmt.Errorf("esbuild lower: %s", result.Errors[0].Text)
+	}
+	lowered := string(result.Code)
+
+	gojaLowerMu.Lock()
+	if len(gojaLowerCache) >= gojaLowerCap {
+		gojaLowerCache = make(map[string]string, gojaLowerCap)
+	}
+	gojaLowerCache[src] = lowered
+	gojaLowerMu.Unlock()
+
+	return lowered, nil
+}
 
 // Engine returns the name of the JS engine backend.
 func (r *Runtime) Engine() string { return "goja" }
@@ -418,11 +478,13 @@ func (r *Runtime) Exec(code string) error {
 	return err
 }
 
-// safeRunString wraps goja's RunString with panic recovery. goja's parser has
-// corner-case panics (e.g. U+10FFFF Unicode code-point escape literal,
-// dop251/goja parser/lexer.go) that bypass the normal (Value, error) contract;
-// recovering here keeps the engine goroutine alive and surfaces the panic as
-// a JSError on the caller side.
+// safeRunString wraps goja's RunString with panic recovery plus transparent
+// esbuild ES2017 lowering on parse failure. goja accepts ES5.1 + a subset of
+// ES6+; for source that uses private class fields, top-level await, or other
+// ES2022/2023 syntax we retry once with esbuild-lowered code. Lowered result
+// is cached (see gojaLowerCache) so the esbuild cost is amortized for
+// repeated source. Runtime errors (TypeError, ReferenceError) are returned
+// without retry.
 func (r *Runtime) safeRunString(code string) (result goja.Value, err error) {
 	defer func() {
 		if rec := recover(); rec != nil {
@@ -430,7 +492,18 @@ func (r *Runtime) safeRunString(code string) (result goja.Value, err error) {
 			result = nil
 		}
 	}()
-	return r.vm.RunString(code)
+	result, err = r.vm.RunString(code)
+	if err != nil && isGojaParseError(err) {
+		lowered, lerr := lowerForGoja(code)
+		if lerr != nil {
+			return nil, err
+		}
+		if lowered == code {
+			return nil, err
+		}
+		result, err = r.vm.RunString(lowered)
+	}
+	return
 }
 
 // safeCallable wraps a goja.Callable invocation with the same recovery path
