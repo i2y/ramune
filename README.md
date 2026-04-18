@@ -45,8 +45,12 @@ http.ListenAndServe(":3000", handler)
   DynamoDB, anything. Invent your own bindings — `env.QUEUE`,
   `env.EMAIL`, `env.AI`, `env.DURABLE` — by registering Go callbacks.
   See [`workers/BINDINGS.md`](workers/BINDINGS.md).
-- **Single binary deploy.** `ramune compile` bundles handler +
-  runtime into one statically-linked executable for tiny VMs.
+- **No Cgo, single binary.** Pure Go throughout: JSC via
+  [`purego`](https://github.com/ebitengine/purego), QuickJS via
+  `modernc.org/quickjs`. `go build` cross-compiles to any
+  `GOOS`/`GOARCH` without a C toolchain; the QuickJS backend runs
+  on `FROM scratch` Docker. `ramune compile` bundles handler +
+  runtime into a single statically-linked executable.
 - **Full Go interop.** Workers are authored in TypeScript; everything
   underneath is Go. Call any Go library, including the stdlib and your
   existing services.
