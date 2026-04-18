@@ -1,9 +1,10 @@
-//go:build !goja && !qjswasm
+//go:build qjswasm && !quickjs && !goja
 
 package ramune
 
 import "github.com/evanw/esbuild/pkg/api"
 
 // esbuildTarget returns the esbuild JS target appropriate for the active
-// backend. JSC and QuickJS both accept modern JS; goja needs lowering.
+// backend. QuickJS-NG supports the full ES2023 surface so we keep modern
+// JS intact just like the JSC and modernc QuickJS backends.
 func esbuildTarget() api.Target { return api.ESNext }
