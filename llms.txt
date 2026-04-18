@@ -15,7 +15,7 @@ Two backends, same API:
 
 ## CLI Runtime
 
-- [CLI (cmd/ramune)](https://github.com/i2y/ramune/blob/main/cmd/ramune/main.go): `ramune run`, `ramune eval`, `ramune repl`, `ramune test`, `ramune check`, `ramune fmt`, `ramune lint`, `ramune build`, `ramune compile`, `ramune transpile`, `ramune bench`, `ramune x`, `ramune init/add/remove/install`, `ramune setup-jit`, `ramune skills install`
+- [CLI (cmd/ramune)](https://github.com/i2y/ramune/blob/main/cmd/ramune/main.go): `ramune run`, `ramune serve`, `ramune eval`, `ramune repl`, `ramune test`, `ramune check`, `ramune fmt`, `ramune lint`, `ramune build`, `ramune compile`, `ramune transpile`, `ramune bench`, `ramune x`, `ramune init/add/remove/install`, `ramune setup-jit`, `ramune skills install`
 - TypeScript/TSX support via esbuild transpilation
 - ESM (import/export) and CommonJS support with esbuild Build API bundling
 - `ramune compile` — compile JS/TS to standalone Go binary via go:embed
@@ -23,6 +23,7 @@ Two backends, same API:
 - `ramune transpile` — transpile TypeScript source files to Go source code
 - `ramune typegen go:pkg... -o types.d.ts` — generate TypeScript .d.ts declarations from Go packages
 - `ramune run --workers N` — multi-worker HTTP serving with parallel JSC VMs
+- `ramune serve <entry.ts>` — Cloudflare-Workers-style ES-module handler (`export default { fetch(request, env, ctx), scheduled(event, env, ctx) }`). Reads optional `ramune.toml`, supports `--workers N` (round-robin across independent runtimes), `--sqlite <path>` (default `.ramune/data.db`) for env.DB / env.KV, `--sandbox` + `--allow-*`. Works with Hono directly.
 - `ramune run --env-file` — .env file auto-loading (like Bun/Deno)
 - `ramune run <script>` — package.json scripts runner
 - package.json entry point, dependency resolution, and `exports` field support
@@ -61,6 +62,7 @@ Two backends, same API:
 - [GC Config (types.go)](https://github.com/i2y/ramune/blob/main/types.go): WithGC(GCConfig) — GCInterval, GCPercent for JSC GC tuning
 - [Permissions (permissions.go)](https://github.com/i2y/ramune/blob/main/permissions.go): WithPermissions() — read/write/net/env/run access control
 - [RuntimePool (pool.go)](https://github.com/i2y/ramune/blob/main/pool.go): NewPool(n) for multi-core parallel JS execution with HTTP dispatch
+- [Workers Subpackage (workers/)](https://github.com/i2y/ramune/tree/main/workers): `workers.Register(rt, file, src, opts...)` returns an `http.Handler` for Cloudflare-Workers-style ES-module handlers. `workers.Prepare` + `workers.AttachPrepared` share one esbuild transpile across N runtimes. `ctx.waitUntil(promise)` holds the executor post-response up to `WithWaitUntilTimeout`. `WithSQLite(path)` installs D1-compatible env.DB and Workers-KV-like env.KV; `WithKVBackend` / `WithDBBackend` accept user-supplied `KVBackend` / `DBBackend` implementations (Redis, Postgres, in-memory...). `workers.d.ts` declares `Env`, `WorkersHandler`, `ExecutionContext`, `D1Database`, `KVNamespace`. `LoadRamuneTOML` / `ApplyRamuneTOML` parse the declarative `[dependencies]` / `[permissions]` / `[[kv_namespaces]]` schema.
 
 ## Event Loop & Async
 

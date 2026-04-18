@@ -24,6 +24,7 @@ ramune run -w file.ts        Watch mode (auto-restart on changes)
 ramune run --check file.ts   Type-check then run
 ramune run --sandbox file.ts Deny all permissions
 ramune run --workers 4 srv.ts Multi-worker HTTP server
+ramune serve <entry.ts>      Workers-style ES-module handler (export default { fetch })
 ramune eval "expr"           Evaluate expression (JS/TS)
 ramune test [dir]            Run test files (*.test.ts, *.spec.js)
 ramune check [file|dir]      Type-check with tsgo
@@ -49,6 +50,8 @@ Compile options: `-o output`, `--minify`, `--http` (Ramune.serve event loop), `-
 Transpile options: `-o outdir`, `--module name`, `--compile` (transpile + build binary).
 
 Typegen options: `-o output.d.ts` (default: `go.d.ts`). Accepts `go:pkg` or `pkg` syntax.
+
+Serve options: `--port N` (default 3000), `--workers N` (independent runtimes, round-robin), `--sqlite <path>` (default `.ramune/data.db`), `--no-sqlite`, `--config <path>` (default `ramune.toml`), `--no-config`, `--secrets-prefix <p>` (default `RAMUNE_SECRET_`), `--wait-until-timeout <dur>` (default 30s, 0=forever), `--env-file`, `--sandbox`, `--allow-read/write/net/env/run`. Reads optional `ramune.toml` for `[dependencies]`, `[permissions]`, `[[kv_namespaces]]`.
 
 ## TypeScript-to-Go Transpiler (Experimental)
 
@@ -282,6 +285,46 @@ ramune.WithGC(ramune.GCConfig{
     GCPercent:  100,    // Go GOGC value (default: 100)
 })
 ```
+
+### Workers-style Modules (`github.com/i2y/ramune/workers`)
+
+Cloudflare-Workers-style handlers — author a module that `export default { fetch, scheduled }` and serve it inside any Go HTTP server.
+
+```go
+import "github.com/i2y/ramune/workers"
+
+// Single runtime
+handler, err := workers.Register(rt, "worker.ts", src,
+    workers.WithSQLite(".ramune/data.db"),    // env.DB + env.KV
+    workers.WithWaitUntilTimeout(30*time.Second),
+    workers.WithSecretsPrefix("APP_"),         // env.SECRETS source
+)
+http.ListenAndServe(":3000", handler)
+
+// N runtimes (esbuild runs once, attached to each)
+p, _ := workers.Prepare("worker.ts", src)
+for i := 0; i < 4; i++ {
+    rt, _ := ramune.New(ramune.NodeCompat(), ramune.WithFetch())
+    h, _ := workers.AttachPrepared(rt, p, workers.WithSQLite("db.db"))
+    // ... wire h into a round-robin mux
+}
+
+// Pluggable backends (Redis, Postgres, in-memory ...)
+// type KVBackend interface { Get/Put/Delete/List }
+// type DBBackend interface { Query/Exec }  // ? placeholders
+workers.Register(rt, "w.ts", src,
+    workers.WithKVBackend(myRedisKV),
+    workers.WithDBBackend(myPostgres),
+)
+```
+
+- `ctx.waitUntil(p)` keeps the executor alive post-response until `p` settles or `WithWaitUntilTimeout` fires.
+- `env.SECRETS` is a frozen map of env vars matching `WithSecretsPrefix` (default `RAMUNE_SECRET_`).
+- `WithSQLite` is a convenience — `sqliteKV` / `sqliteSQLBackend` satisfy the same `KVBackend` / `DBBackend` interfaces as user-supplied backends.
+- `workers.LoadRamuneTOML(path)` + `workers.ApplyRamuneTOML(toml)` parse the same `[dependencies]` / `[permissions]` / `[[kv_namespaces]]` schema the CLI uses.
+- `workers.ExtractModuleConfig(rt)` inspects the default export's `route` / `cron` / `fetch` / `scheduled` fields (skips framework methods like Hono's `.route()`).
+- TypeScript declarations live in `workers/workers.d.ts` (`Env`, `WorkersHandler`, `ExecutionContext`, `D1Database`, `KVNamespace`, `Secrets`, `ScheduledEvent`).
+- The CLI wrapper is `ramune serve`.
 
 ### Permissions
 
