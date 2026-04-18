@@ -18,6 +18,7 @@ import (
 	"bufio"
 	"embed"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -91,9 +92,8 @@ func main() {
 }
 
 // execToolchain dispatches a subcommand to the ramune-toolchain binary, which
-// owns the tsgo + rslint + gotranspiler trees. Keeping those out of the main
-// ramune binary shaves ~7-10ms off startup (see commit log). Looks beside the
-// current executable first, then $PATH.
+// owns the tsgo + rslint + gotranspiler trees. Looks beside the current
+// executable first, then $PATH.
 func execToolchain(subcmd string, args []string) {
 	toolchain := ""
 	if exe, err := os.Executable(); err == nil {
@@ -116,7 +116,8 @@ func execToolchain(subcmd string, args []string) {
 	c.Stdout = os.Stdout
 	c.Stderr = os.Stderr
 	if err := c.Run(); err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
 			os.Exit(exitErr.ExitCode())
 		}
 		fmt.Fprintf(os.Stderr, "ramune-toolchain error: %v\n", err)
@@ -430,8 +431,6 @@ func runCmd(args []string) {
 			filename, filename[:strings.LastIndex(filename, "/")]))
 	}
 
-	// Type-check if requested (delegates to ramune-toolchain to keep the
-	// main ramune binary free of tsgo init cost).
 	if typeCheck && isTypeScript(filename) {
 		execToolchain("check-single", []string{filename})
 	}

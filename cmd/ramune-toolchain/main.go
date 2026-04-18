@@ -91,8 +91,6 @@ func main() {
 	}
 }
 
-// ---- Helpers (duplicated from cmd/ramune/main.go, intentional small copy) ----
-
 func isTypeScript(filename string) bool {
 	ext := filepath.Ext(filename)
 	return ext == ".ts" || ext == ".tsx"
@@ -203,60 +201,52 @@ func findRamuneModPath() string {
 	return ""
 }
 
-// ---- Subcommand implementations (copied from cmd/ramune/main.go) ----
-
-func checkCmd(args []string) {
-	if len(args) < 1 {
-		args = []string{"."}
+// collectFiles walks the given targets, skipping node_modules, and returns
+// all paths passing filter. If normalize is true, paths are returned as
+// tspath.NormalizePath(filepath.Abs(path)).
+func collectFiles(targets []string, filter func(string) bool, normalize bool) ([]string, error) {
+	normOne := func(p string) string {
+		if !normalize {
+			return p
+		}
+		abs, _ := filepath.Abs(p)
+		return tspath.NormalizePath(abs)
 	}
-
 	var files []string
-	for _, arg := range args {
+	for _, arg := range targets {
 		info, err := os.Stat(arg)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			os.Exit(1)
+			return nil, err
 		}
 		if info.IsDir() {
 			filepath.Walk(arg, func(path string, fi os.FileInfo, err error) error {
 				if fi != nil && fi.IsDir() && fi.Name() == "node_modules" {
 					return filepath.SkipDir
 				}
-				if isTypeScript(path) {
-					files = append(files, path)
+				if filter(path) {
+					files = append(files, normOne(path))
 				}
 				return nil
 			})
 		} else {
-			files = append(files, arg)
+			files = append(files, normOne(arg))
 		}
 	}
+	return files, nil
+}
 
-	if len(files) == 0 {
-		fmt.Fprintln(os.Stderr, "No TypeScript files found")
-		os.Exit(1)
-	}
-
-	absFiles := make([]string, len(files))
-	for i, f := range files {
-		abs, _ := filepath.Abs(f)
-		absFiles[i] = tspath.NormalizePath(abs)
-	}
-
+// typeCheckFiles runs tsgo's semantic + syntactic diagnostics over the
+// given normalized absolute paths, emitting each diagnostic via emit.
+func typeCheckFiles(normalizedPaths []string, emit func(string)) {
 	cwd, _ := os.Getwd()
 	fs := osvfs.FS()
 	host := compiler.NewCachedFSCompilerHost(cwd, fs, "", nil, nil)
 
-	compilerOpts := &core.CompilerOptions{
-		NoEmit: core.TSTrue,
-		Strict: core.TSTrue,
-	}
-
-	config := tsoptions.NewParsedCommandLine(compilerOpts, absFiles, tspath.ComparePathsOptions{
+	opts := &core.CompilerOptions{NoEmit: core.TSTrue, Strict: core.TSTrue}
+	config := tsoptions.NewParsedCommandLine(opts, normalizedPaths, tspath.ComparePathsOptions{
 		UseCaseSensitiveFileNames: fs.UseCaseSensitiveFileNames(),
 		CurrentDirectory:          cwd,
 	})
-
 	program := compiler.NewProgram(compiler.ProgramOptions{
 		Config:         config,
 		Host:           host,
@@ -264,8 +254,6 @@ func checkCmd(args []string) {
 	})
 
 	ctx := context.Background()
-	hasErrors := false
-
 	for _, sourceFile := range program.SourceFiles() {
 		if sourceFile.IsDeclarationFile {
 			continue
@@ -273,17 +261,36 @@ func checkCmd(args []string) {
 		diags := program.GetSemanticDiagnostics(ctx, sourceFile)
 		diags = append(diags, program.GetSyntacticDiagnostics(ctx, sourceFile)...)
 		for _, d := range diags {
-			hasErrors = true
 			if d.File() != nil {
 				line, col := scanner.GetECMALineAndUTF16CharacterOfPosition(d.File(), d.Pos())
-				fmt.Fprintf(os.Stderr, "%s(%d,%d): error TS%d: %s\n",
-					d.File().FileName(), line+1, col+1, d.Code(), d.String())
+				emit(fmt.Sprintf("%s(%d,%d): error TS%d: %s",
+					d.File().FileName(), line+1, col+1, d.Code(), d.String()))
 			} else {
-				fmt.Fprintf(os.Stderr, "error TS%d: %s\n", d.Code(), d.String())
+				emit(fmt.Sprintf("error TS%d: %s", d.Code(), d.String()))
 			}
 		}
 	}
+}
 
+func checkCmd(args []string) {
+	if len(args) < 1 {
+		args = []string{"."}
+	}
+	files, err := collectFiles(args, isTypeScript, true)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	if len(files) == 0 {
+		fmt.Fprintln(os.Stderr, "No TypeScript files found")
+		os.Exit(1)
+	}
+
+	hasErrors := false
+	typeCheckFiles(files, func(msg string) {
+		hasErrors = true
+		fmt.Fprintln(os.Stderr, msg)
+	})
 	if hasErrors {
 		os.Exit(1)
 	}
@@ -299,31 +306,11 @@ func lintCmd(args []string) {
 	if len(targets) == 0 {
 		targets = []string{"."}
 	}
-
-	var files []string
-	for _, arg := range targets {
-		info, err := os.Stat(arg)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			os.Exit(1)
-		}
-		if info.IsDir() {
-			filepath.Walk(arg, func(path string, fi os.FileInfo, err error) error {
-				if fi != nil && fi.IsDir() && fi.Name() == "node_modules" {
-					return filepath.SkipDir
-				}
-				if isJSOrTS(path) {
-					abs, _ := filepath.Abs(path)
-					files = append(files, tspath.NormalizePath(abs))
-				}
-				return nil
-			})
-		} else {
-			abs, _ := filepath.Abs(arg)
-			files = append(files, tspath.NormalizePath(abs))
-		}
+	files, err := collectFiles(targets, isJSOrTS, true)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
 	}
-
 	if len(files) == 0 {
 		fmt.Fprintln(os.Stderr, "No JS/TS files found")
 		os.Exit(1)
@@ -422,48 +409,10 @@ func lintCmd(args []string) {
 
 func runTypeCheck(filename string) error {
 	absPath, _ := filepath.Abs(filename)
-	normalized := tspath.NormalizePath(absPath)
-
-	cwd, _ := os.Getwd()
-	fs := osvfs.FS()
-	host := compiler.NewCachedFSCompilerHost(cwd, fs, "", nil, nil)
-
-	compilerOpts := &core.CompilerOptions{
-		NoEmit: core.TSTrue,
-		Strict: core.TSTrue,
-	}
-
-	config := tsoptions.NewParsedCommandLine(compilerOpts, []string{normalized}, tspath.ComparePathsOptions{
-		UseCaseSensitiveFileNames: fs.UseCaseSensitiveFileNames(),
-		CurrentDirectory:          cwd,
-	})
-
-	program := compiler.NewProgram(compiler.ProgramOptions{
-		Config:         config,
-		Host:           host,
-		SingleThreaded: core.TSTrue,
-	})
-
-	ctx := context.Background()
 	var errs []string
-
-	for _, sourceFile := range program.SourceFiles() {
-		if sourceFile.IsDeclarationFile {
-			continue
-		}
-		diags := program.GetSemanticDiagnostics(ctx, sourceFile)
-		diags = append(diags, program.GetSyntacticDiagnostics(ctx, sourceFile)...)
-		for _, d := range diags {
-			if d.File() != nil {
-				line, col := scanner.GetECMALineAndUTF16CharacterOfPosition(d.File(), d.Pos())
-				errs = append(errs, fmt.Sprintf("%s(%d,%d): error TS%d: %s",
-					d.File().FileName(), line+1, col+1, d.Code(), d.String()))
-			} else {
-				errs = append(errs, fmt.Sprintf("error TS%d: %s", d.Code(), d.String()))
-			}
-		}
-	}
-
+	typeCheckFiles([]string{tspath.NormalizePath(absPath)}, func(msg string) {
+		errs = append(errs, msg)
+	})
 	if len(errs) > 0 {
 		return fmt.Errorf("%s", strings.Join(errs, "\n"))
 	}
@@ -479,29 +428,11 @@ func fmtCmd(args []string) {
 	if len(targets) == 0 {
 		targets = []string{"."}
 	}
-
-	var files []string
-	for _, arg := range targets {
-		info, err := os.Stat(arg)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			os.Exit(1)
-		}
-		if info.IsDir() {
-			filepath.Walk(arg, func(path string, fi os.FileInfo, err error) error {
-				if fi != nil && fi.IsDir() && fi.Name() == "node_modules" {
-					return filepath.SkipDir
-				}
-				if isJSOrTS(path) {
-					files = append(files, path)
-				}
-				return nil
-			})
-		} else {
-			files = append(files, arg)
-		}
+	files, err := collectFiles(targets, isJSOrTS, false)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
 	}
-
 	if len(files) == 0 {
 		fmt.Fprintln(os.Stderr, "No JS/TS files found")
 		os.Exit(1)
@@ -687,6 +618,27 @@ func typegenCmd(args []string) {
 	fmt.Fprintf(os.Stderr, "wrote %s\n", outFile)
 }
 
+// accumulateNativeFuncs appends the native-import line and bridge-code block
+// for a single native extension module to imports/modules, prints the discovery
+// summary and any generic warnings, and is a no-op when funcs is empty.
+func accumulateNativeFuncs(modName, pkgImport, pkgAlias string, funcs []gotranspiler.ExportedFunc, imports, modules *string) {
+	if len(funcs) == 0 {
+		return
+	}
+	*imports += gotranspiler.GenerateNativeImport(pkgImport, pkgAlias)
+	*modules += gotranspiler.GenerateBridgeCode("native:"+modName, pkgAlias, funcs)
+	nonGeneric := 0
+	for _, f := range funcs {
+		if !f.Generic {
+			nonGeneric++
+		}
+	}
+	fmt.Fprintf(os.Stderr, "native: %s → %d functions\n", modName, nonGeneric)
+	for _, w := range gotranspiler.GenericWarnings(funcs) {
+		fmt.Fprintln(os.Stderr, w)
+	}
+}
+
 func compileCmd(args []string) {
 	fs := flag.NewFlagSet("compile", flag.ExitOnError)
 	var output string
@@ -791,21 +743,7 @@ func compileCmd(args []string) {
 			fmt.Fprintf(os.Stderr, "native discovery error (%s): %v\n", nf, err)
 			os.Exit(1)
 		}
-		if len(funcs) > 0 {
-			pkgImport := "ramune-compiled-app/" + pkgAlias
-			nativeImports += gotranspiler.GenerateNativeImport(pkgImport, pkgAlias)
-			nativeModules += gotranspiler.GenerateBridgeCode("native:"+baseName, pkgAlias, funcs)
-			nonGeneric := 0
-			for _, f := range funcs {
-				if !f.Generic {
-					nonGeneric++
-				}
-			}
-			fmt.Fprintf(os.Stderr, "native: %s → %d functions\n", baseName, nonGeneric)
-			for _, w := range gotranspiler.GenericWarnings(funcs) {
-				fmt.Fprintln(os.Stderr, w)
-			}
-		}
+		accumulateNativeFuncs(baseName, "ramune-compiled-app/"+pkgAlias, pkgAlias, funcs, &nativeImports, &nativeModules)
 	} else if len(nativeFiles) > 1 {
 		projResult, err := gotranspiler.TranspileProject(nativeFiles, "__none__", "", "ramune-compiled-app")
 		if err != nil {
@@ -838,18 +776,7 @@ func compileCmd(args []string) {
 				modName = filepath.Base(dir)
 				pkgImport = "ramune-compiled-app/" + dir
 			}
-			nativeImports += gotranspiler.GenerateNativeImport(pkgImport, pkgAlias)
-			nativeModules += gotranspiler.GenerateBridgeCode("native:"+modName, pkgAlias, funcs)
-			nonGeneric := 0
-			for _, f := range funcs {
-				if !f.Generic {
-					nonGeneric++
-				}
-			}
-			fmt.Fprintf(os.Stderr, "native: %s → %d functions\n", modName, nonGeneric)
-			for _, w := range gotranspiler.GenericWarnings(funcs) {
-				fmt.Fprintln(os.Stderr, w)
-			}
+			accumulateNativeFuncs(modName, pkgImport, pkgAlias, funcs, &nativeImports, &nativeModules)
 		}
 	}
 
