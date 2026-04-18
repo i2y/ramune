@@ -122,6 +122,8 @@ func cliMain() {
 	switch os.Args[1] {
 	case "run":
 		runCmd(os.Args[2:])
+	case "serve":
+		serveCmd(os.Args[2:])
 	case "eval":
 		evalCmd(os.Args[2:])
 	case "repl":
@@ -180,6 +182,7 @@ func printUsage() {
 
 Commands:
   run [file]        Run a JS/TS file (or package.json entry point)
+  serve [file]      Serve a Workers-style module (export default { fetch })
   eval "<expr>"     Evaluate an expression (JS/TS)
   test [pattern]    Run test files (*.test.ts, *.spec.js, etc.)
   check [file|dir]  Type-check TypeScript files with tsgo
@@ -213,6 +216,8 @@ Examples:
   ramune run                     # uses package.json entry point
   ramune run -w server.ts        # watch mode
   ramune run --workers 4 server.ts  # multi-worker HTTP server
+  ramune serve worker.ts             # serve a Workers-style module
+  ramune serve -p hono worker.ts     # with an npm dependency
   ramune eval "const x: number = 42; x"
   ramune test                    # run all test files
   ramune repl`)
