@@ -100,20 +100,56 @@ func WithSQLite(path string) Option {
 	return func(c *Config) { c.SQLitePath = path }
 }
 
-// Register attaches a Workers-style module to rt and returns an
-// http.Handler that dispatches matching requests through the module's
-// fetch export. If the module declares a cron expression and a
-// scheduled() function, that handler is registered on the runtime's
-// cron manager (requires Ramune's cron support to be available).
-//
-// Register may be called multiple times on the same Runtime with
-// different modules; the Go-side bindings are installed once per
-// Runtime and the module code is cached under a filename-derived key.
+// Prepared is a transpiled Workers module ready to attach to one or
+// more Runtimes. Transpile runs esbuild once; each Runtime reuses the
+// same output via AttachPrepared. Callers with a single Runtime can
+// use the Register shortcut which bundles Prepare + AttachPrepared.
+type Prepared struct {
+	filename    string
+	cacheKey    string
+	transformed string
+}
+
+// Prepare runs esbuild on the source and returns a Prepared module
+// that can be attached to one or more Runtimes via AttachPrepared.
+// Use this when serving a single entry across N independent VMs
+// (ramune serve --workers N) to avoid running esbuild per VM.
+func Prepare(filename, code string) (*Prepared, error) {
+	if !IsWorkersStyle(code) {
+		return nil, fmt.Errorf("workers: %s is not a Workers-style module (no \"export default\")", filename)
+	}
+	transformed, err := TranspileModule(filename, code)
+	if err != nil {
+		return nil, err
+	}
+	return &Prepared{
+		filename:    filename,
+		cacheKey:    moduleCacheKey(filename),
+		transformed: transformed,
+	}, nil
+}
+
+// Register is a convenience that wraps Prepare + AttachPrepared. It
+// returns an http.Handler that dispatches matching requests through
+// the module's fetch export. If the module declares a cron expression
+// and a scheduled() function, that handler is installed on the
+// runtime's cron manager (requires Ramune's cron support).
 //
 // The returned handler uses Go's http.ServeMux to apply the module's
 // route pattern (Go 1.22+ syntax: /foo/{id}, /bar/{rest...}). If the
 // module omits route, the handler matches every path.
 func Register(rt *ramune.Runtime, filename, code string, opts ...Option) (http.Handler, error) {
+	p, err := Prepare(filename, code)
+	if err != nil {
+		return nil, err
+	}
+	return AttachPrepared(rt, p, opts...)
+}
+
+// AttachPrepared binds a previously-prepared module to rt. Safe to call
+// with the same Prepared on multiple Runtimes; each gets its own copy
+// of the module globals.
+func AttachPrepared(rt *ramune.Runtime, p *Prepared, opts ...Option) (http.Handler, error) {
 	cfg := defaultConfig()
 	for _, o := range opts {
 		o(&cfg)
@@ -125,41 +161,31 @@ func Register(rt *ramune.Runtime, filename, code string, opts ...Option) (http.H
 		return nil, err
 	}
 
-	if !IsWorkersStyle(code) {
-		return nil, fmt.Errorf("workers: %s is not a Workers-style module (no \"export default\")", filename)
-	}
-
-	transformed, err := TranspileModule(filename, code)
-	if err != nil {
-		return nil, err
-	}
-
 	if err := installBindings(rt, &cfg); err != nil {
 		return nil, fmt.Errorf("workers: install bindings: %w", err)
 	}
 
-	if err := rt.Exec(transformed); err != nil {
-		return nil, fmt.Errorf("workers: evaluate %s: %w", filename, err)
+	if err := rt.Exec(p.transformed); err != nil {
+		return nil, fmt.Errorf("workers: evaluate %s: %w", p.filename, err)
 	}
 
-	cacheKey := moduleCacheKey(filename)
-	mod, err := extractModuleConfig(rt)
+	mod, err := ExtractModuleConfig(rt)
 	if err != nil {
 		return nil, err
 	}
 
-	// Move the default export to a stable cache key so dispatches can
-	// locate it, then clean up the transient __workers_export global.
+	// Move the default export to a stable cache key and clean up the
+	// transient __workers_export global.
 	persist := fmt.Sprintf(
 		`(function(){ if (typeof __workers_export !== "undefined") { globalThis[%q] = __workers_export.default; delete globalThis.__workers_export; } })();`,
-		cacheKey,
+		p.cacheKey,
 	)
 	if err := rt.Exec(persist); err != nil {
 		return nil, fmt.Errorf("workers: persist default export: %w", err)
 	}
 
 	if mod.HasScheduled && mod.Cron != "" {
-		if err := registerScheduled(rt, cacheKey, mod.Cron); err != nil {
+		if err := registerScheduled(rt, p.cacheKey, mod.Cron); err != nil {
 			return nil, fmt.Errorf("workers: register scheduled: %w", err)
 		}
 	}
@@ -175,13 +201,9 @@ func Register(rt *ramune.Runtime, filename, code string, opts ...Option) (http.H
 		route = "/"
 	}
 
-	dispatch := newFetchDispatcher(rt, cacheKey, cfg)
+	dispatch := newFetchDispatcher(rt, p.cacheKey, cfg)
 	mux := http.NewServeMux()
 	mux.Handle(route, dispatch)
-	// Register a second pattern for sub-paths when route is "/" — the
-	// default ServeMux treats "/" as the catch-all so no extra work is
-	// needed. For explicit routes, the user opts in to Go 1.22 {...}
-	// wildcards themselves.
 	return mux, nil
 }
 

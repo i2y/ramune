@@ -4,37 +4,30 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net/http"
 	"strings"
 	"sync"
 
 	"github.com/i2y/ramune"
 )
 
-// installOnce tracks which Runtimes have already had the bindings
+// installedRuntimes tracks which Runtimes have had the bindings
 // installed so Register can be called multiple times with different
-// modules on the same Runtime without re-registering.
-var installOnce sync.Map // *ramune.Runtime → *installedBinds
+// modules on the same Runtime. Later Register calls reuse the Go
+// callbacks and only re-exec ExtraEnvJS / refresh SecretsPrefix.
+var installedRuntimes sync.Map // *ramune.Runtime → *installedBinds
 
 type installedBinds struct {
-	cfg Config
+	// secretsPrefix is read by __env_list_secrets on every request.
+	// Held by pointer so Register calls can update it in place.
+	secretsPrefix string
 }
 
 // installBindings registers the Go callback functions and JS helpers
-// that every Workers-style module depends on.
-//
-// Called at Register time. Safe to call repeatedly on the same Runtime
-// — only the first call actually registers the Go callbacks; later
-// calls can still update the effective SecretsPrefix via the stored
-// config.
+// that every Workers-style module depends on. Safe to call repeatedly
+// on the same Runtime.
 func installBindings(rt *ramune.Runtime, cfg *Config) error {
-	if prior, ok := installOnce.Load(rt); ok {
-		// Update the prefix if the caller supplied a new one. Mutating
-		// through the stored pointer lets the Go callbacks pick up the
-		// change at the next invocation.
-		b := prior.(*installedBinds)
-		b.cfg.SecretsPrefix = cfg.SecretsPrefix
-		// ExtraEnvJS may differ per module — re-exec it.
+	if prior, ok := installedRuntimes.Load(rt); ok {
+		prior.(*installedBinds).secretsPrefix = cfg.SecretsPrefix
 		if cfg.ExtraEnvJS != "" {
 			if err := rt.Exec(cfg.ExtraEnvJS); err != nil {
 				return fmt.Errorf("workers: re-install extra env JS: %w", err)
@@ -43,8 +36,8 @@ func installBindings(rt *ramune.Runtime, cfg *Config) error {
 		return nil
 	}
 
-	b := &installedBinds{cfg: *cfg}
-	installOnce.Store(rt, b)
+	b := &installedBinds{secretsPrefix: cfg.SecretsPrefix}
+	installedRuntimes.Store(rt, b)
 
 	if err := registerRequestBinds(rt); err != nil {
 		return err
@@ -58,10 +51,12 @@ func installBindings(rt *ramune.Runtime, cfg *Config) error {
 	if err := rt.Exec(envJSCode); err != nil {
 		return fmt.Errorf("workers: install env JS: %w", err)
 	}
-	// Order matters: SQLite installs both KV + DB backends, then any
-	// explicit KVBackend/DBBackend override. SQLitePath is mutually
-	// exclusive with the backend options (validated in Register), so
-	// only one branch of each pair actually runs.
+	if err := rt.Exec(fetchDispatchJS); err != nil {
+		return fmt.Errorf("workers: install fetch dispatch JS: %w", err)
+	}
+	// SQLite installs both KV + DB backends; WithKVBackend/WithDBBackend
+	// install the relevant one independently. SQLitePath is mutually
+	// exclusive with the typed options (validated in Register).
 	if cfg.SQLitePath != "" {
 		if err := installSQLiteBinds(rt, cfg); err != nil {
 			return fmt.Errorf("workers: install sqlite binds: %w", err)
@@ -85,9 +80,18 @@ func installBindings(rt *ramune.Runtime, cfg *Config) error {
 	return nil
 }
 
+// regFunc wraps RegisterFunc with a uniform error prefix used by every
+// workers callback installation site.
+func regFunc(rt *ramune.Runtime, name string, fn ramune.GoFunc) error {
+	if err := rt.RegisterFunc(name, fn); err != nil {
+		return fmt.Errorf("workers: RegisterFunc %s: %w", name, err)
+	}
+	return nil
+}
+
 // registerRequestBinds installs the read-side request helpers.
 func registerRequestBinds(rt *ramune.Runtime) error {
-	if err := rt.RegisterFunc("__readGoRequestBody", func(args []any) (any, error) {
+	if err := regFunc(rt, "__readGoRequestBody", func(args []any) (any, error) {
 		state, err := stateFromArgs(args, "__readGoRequestBody")
 		if err != nil {
 			return "", err
@@ -101,10 +105,10 @@ func registerRequestBinds(rt *ramune.Runtime) error {
 		}
 		return string(data), nil
 	}); err != nil {
-		return fmt.Errorf("workers: RegisterFunc __readGoRequestBody: %w", err)
+		return err
 	}
 
-	if err := rt.RegisterFunc("__getGoRequestHeaders", func(args []any) (any, error) {
+	return regFunc(rt, "__getGoRequestHeaders", func(args []any) (any, error) {
 		state, err := stateFromArgs(args, "__getGoRequestHeaders")
 		if err != nil {
 			return map[string]any{}, nil
@@ -113,7 +117,6 @@ func registerRequestBinds(rt *ramune.Runtime) error {
 		for k, v := range state.r.Header {
 			switch len(v) {
 			case 0:
-				// drop
 			case 1:
 				headers[k] = v[0]
 			default:
@@ -121,103 +124,62 @@ func registerRequestBinds(rt *ramune.Runtime) error {
 			}
 		}
 		return headers, nil
-	}); err != nil {
-		return fmt.Errorf("workers: RegisterFunc __getGoRequestHeaders: %w", err)
-	}
-
-	return nil
+	})
 }
 
 // registerResponseBinds installs the write-side response helpers plus
 // the signal-closing __detachResponse used to release the HTTP handler.
 func registerResponseBinds(rt *ramune.Runtime) error {
-	if err := rt.RegisterFunc("__detachResponse", func(args []any) (any, error) {
-		reqID, ok := toInt64(argAt(args, 0))
-		if !ok {
-			return nil, nil
-		}
-		if v, ok := requestRegistry.Load(reqID); ok {
-			v.(*requestState).signal()
+	if err := regFunc(rt, "__detachResponse", func(args []any) (any, error) {
+		if reqID, ok := toInt64(argAt(args, 0)); ok {
+			if v, ok := requestRegistry.Load(reqID); ok {
+				v.(*requestState).signal()
+			}
 		}
 		return nil, nil
 	}); err != nil {
-		return fmt.Errorf("workers: RegisterFunc __detachResponse: %w", err)
+		return err
 	}
 
-	if err := rt.RegisterFunc("__writeWorkerResponse", func(args []any) (any, error) {
+	if err := regFunc(rt, "__writeWorkerResponse", func(args []any) (any, error) {
 		state, err := stateFromArgs(args, "__writeWorkerResponse")
 		if err != nil {
 			return nil, err
 		}
-		status := intArg(args, 1, 200)
-		headersJSON := stringArg(args, 2)
-		body := stringArg(args, 3)
-		applyHeaders(state, headersJSON)
-		state.statusMu.Lock()
-		if !state.started {
-			state.w.WriteHeader(status)
-			state.started = true
-		}
-		state.statusMu.Unlock()
-		if body != "" {
-			if _, err := io.WriteString(state.w, body); err != nil {
-				return nil, nil // client gone; drop silently
-			}
-			state.statusMu.Lock()
-			state.written = true
-			state.statusMu.Unlock()
+		applyHeaders(state, stringArg(args, 2))
+		state.writeHeader(intArg(args, 1, 200))
+		if body := stringArg(args, 3); body != "" {
+			state.writeBody(body)
 		}
 		return nil, nil
 	}); err != nil {
-		return fmt.Errorf("workers: RegisterFunc __writeWorkerResponse: %w", err)
+		return err
 	}
 
-	if err := rt.RegisterFunc("__writeWorkerResponseStart", func(args []any) (any, error) {
+	if err := regFunc(rt, "__writeWorkerResponseStart", func(args []any) (any, error) {
 		state, err := stateFromArgs(args, "__writeWorkerResponseStart")
 		if err != nil {
 			return nil, err
 		}
-		status := intArg(args, 1, 200)
-		headersJSON := stringArg(args, 2)
-		applyHeaders(state, headersJSON)
-		state.statusMu.Lock()
-		if !state.started {
-			state.w.WriteHeader(status)
-			state.started = true
-		}
-		state.statusMu.Unlock()
-		if state.flusher != nil {
-			state.flusher.Flush()
-		}
+		applyHeaders(state, stringArg(args, 2))
+		state.writeHeader(intArg(args, 1, 200))
+		state.flush()
 		return nil, nil
 	}); err != nil {
-		return fmt.Errorf("workers: RegisterFunc __writeWorkerResponseStart: %w", err)
+		return err
 	}
 
-	if err := rt.RegisterFunc("__writeWorkerResponseChunk", func(args []any) (any, error) {
+	return regFunc(rt, "__writeWorkerResponseChunk", func(args []any) (any, error) {
 		state, err := stateFromArgs(args, "__writeWorkerResponseChunk")
 		if err != nil {
 			return nil, err
 		}
-		text := stringArg(args, 1)
-		if text == "" {
-			return nil, nil
-		}
-		if _, err := io.WriteString(state.w, text); err != nil {
-			return nil, nil // client gone
-		}
-		state.statusMu.Lock()
-		state.written = true
-		state.statusMu.Unlock()
-		if state.flusher != nil {
-			state.flusher.Flush()
+		if text := stringArg(args, 1); text != "" {
+			state.writeBody(text)
+			state.flush()
 		}
 		return nil, nil
-	}); err != nil {
-		return fmt.Errorf("workers: RegisterFunc __writeWorkerResponseChunk: %w", err)
-	}
-
-	return nil
+	})
 }
 
 // applyHeaders parses a JSON header map and sets it on the response.
@@ -286,10 +248,3 @@ func stringArg(args []any, i int) string {
 	return ""
 }
 
-// ensureHandler keeps a reference to http.Handler-only helpers so the
-// import is not pruned when build tags disable some features.
-var _ http.Handler = (*dummyHandler)(nil)
-
-type dummyHandler struct{}
-
-func (dummyHandler) ServeHTTP(http.ResponseWriter, *http.Request) {}

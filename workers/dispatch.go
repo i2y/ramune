@@ -1,11 +1,11 @@
 package workers
 
 import (
+	"encoding/json"
 	"fmt"
-	"log/slog"
+	"io"
 	"net/http"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -56,18 +56,21 @@ func TranspileModule(filename string, code string) (string, error) {
 	return string(result.Code), nil
 }
 
-// moduleConfig mirrors the subset of the default export that Register
-// inspects once. All other fields are accessed from JS per-request.
-type moduleConfig struct {
+// ModuleConfig is the subset of a Workers-style module's default export
+// that callers read once at Register time. Framework methods (Hono's
+// route() / etc.) are filtered out so only primitive strings land here.
+type ModuleConfig struct {
 	Route        string
 	Cron         string
 	HasFetch     bool
 	HasScheduled bool
 }
 
-// extractModuleConfig reads the default export from rt (which must
-// have just evaluated the IIFE) and returns the relevant fields.
-func extractModuleConfig(rt *ramune.Runtime) (*moduleConfig, error) {
+// ExtractModuleConfig reads __workers_export.default from rt, which
+// must have just evaluated the IIFE emitted by TranspileModule.
+// Exposed so embedders that run their own dispatch (e.g. Soda) can
+// reuse the Ramune inspection instead of duplicating it.
+func ExtractModuleConfig(rt *ramune.Runtime) (*ModuleConfig, error) {
 	val, err := rt.Eval("__workers_export && __workers_export.default")
 	if err != nil {
 		return nil, fmt.Errorf("workers: read default export: %w", err)
@@ -81,33 +84,39 @@ func extractModuleConfig(rt *ramune.Runtime) (*moduleConfig, error) {
 		return nil, fmt.Errorf("workers: default export is null/undefined")
 	}
 
-	out := &moduleConfig{}
-	if r := val.Attr("route"); r != nil {
-		// Hono and other frameworks expose a route() method on their app
-		// objects; skip anything that is not a primitive string so the
-		// framework's methods don't get mistaken for a path pattern.
-		if !r.IsNull() && !r.IsUndefined() && !r.IsFunction() {
-			s, _ := r.GoString()
-			out.Route = s
-		}
-		r.Close()
-	}
-	if c := val.Attr("cron"); c != nil {
-		if !c.IsNull() && !c.IsUndefined() && !c.IsFunction() {
-			s, _ := c.GoString()
-			out.Cron = s
-		}
-		c.Close()
-	}
-	if f := val.Attr("fetch"); f != nil {
-		out.HasFetch = f.IsFunction()
-		f.Close()
-	}
-	if s := val.Attr("scheduled"); s != nil {
-		out.HasScheduled = s.IsFunction()
-		s.Close()
-	}
+	out := &ModuleConfig{}
+	out.Route = readStringAttr(val, "route")
+	out.Cron = readStringAttr(val, "cron")
+	out.HasFetch = hasFunctionAttr(val, "fetch")
+	out.HasScheduled = hasFunctionAttr(val, "scheduled")
 	return out, nil
+}
+
+// readStringAttr returns the named attr's string value, or "" when the
+// attr is missing, null, undefined, or a function. The function guard
+// matters because frameworks like Hono expose a .route() method on
+// their app instance — without the check it would be coerced to its
+// source via toString().
+func readStringAttr(v *ramune.Value, name string) string {
+	a := v.Attr(name)
+	if a == nil {
+		return ""
+	}
+	defer a.Close()
+	if a.IsNull() || a.IsUndefined() || a.IsFunction() {
+		return ""
+	}
+	s, _ := a.GoString()
+	return s
+}
+
+func hasFunctionAttr(v *ramune.Value, name string) bool {
+	a := v.Attr(name)
+	if a == nil {
+		return false
+	}
+	defer a.Close()
+	return a.IsFunction()
 }
 
 // nextRequestID issues monotonic request identifiers used to key the
@@ -142,6 +151,38 @@ func (s *requestState) signal() {
 	if !s.signalOnce {
 		s.signalOnce = true
 		close(s.signalCh)
+	}
+}
+
+// writeHeader emits status+headers once. Subsequent calls are no-ops —
+// matching net/http's contract that WriteHeader is invoked at most once.
+func (s *requestState) writeHeader(status int) {
+	s.statusMu.Lock()
+	defer s.statusMu.Unlock()
+	if s.started {
+		return
+	}
+	s.w.WriteHeader(status)
+	s.started = true
+}
+
+// writeBody sends a chunk of body text, marking the response as having
+// written bytes (so errCh failures don't double-emit an error status).
+// Client-disconnect errors are dropped silently.
+func (s *requestState) writeBody(text string) {
+	if _, err := io.WriteString(s.w, text); err != nil {
+		return
+	}
+	s.statusMu.Lock()
+	s.written = true
+	s.statusMu.Unlock()
+}
+
+// flush calls http.Flusher.Flush when the writer supports it. For
+// buffered writers (httptest default) this is a no-op.
+func (s *requestState) flush() {
+	if s.flusher != nil {
+		s.flusher.Flush()
 	}
 }
 
@@ -202,132 +243,104 @@ func newFetchDispatcher(rt *ramune.Runtime, cacheKey string, cfg Config) http.Ha
 	}
 }
 
-// buildFetchCode produces the JS snippet executed for each request.
-// The per-request IDs and URL/method are injected via strconv+json so
-// no escaping helpers are needed at runtime.
+// fetchDispatchJS installs globalThis.__wkDispatch once per Runtime so
+// that per-request dispatch only parses a short call expression. The
+// function is idempotent: running it twice on the same Runtime simply
+// re-assigns the global.
+const fetchDispatchJS = `
+(function() {
+	globalThis.__wkDispatch = async function(__rid, __method, __url, __cacheKey, __waitMs) {
+		var __wk = globalThis[__cacheKey];
+		if (!__wk || typeof __wk.fetch !== "function") {
+			__writeWorkerResponse(__rid, 500, "{}", "workers: fetch handler missing");
+			__detachResponse(__rid);
+			return;
+		}
+		var __headers = __getGoRequestHeaders(__rid);
+		var __body = (__method !== "GET" && __method !== "HEAD")
+			? __readGoRequestBody(__rid) : undefined;
+		var __request = new Request(__url, {
+			method: __method, headers: __headers, body: __body
+		});
+		var __env = __buildEnv();
+		var __pending = [];
+		var __ctx = {
+			waitUntil: function(p) {
+				if (p && typeof p.then === "function") __pending.push(p);
+			},
+			passThroughOnException: function() {}
+		};
+		try {
+			var __response = await __wk.fetch(__request, __env, __ctx);
+			if (!__response || typeof __response !== "object") {
+				__writeWorkerResponse(__rid, 204, "{}", "");
+			} else {
+				var __rh = {};
+				if (__response.headers && typeof __response.headers.forEach === "function") {
+					__response.headers.forEach(function(v, k) { __rh[k] = v; });
+				}
+				var __respBody = __response.body;
+				if (__respBody && typeof __respBody.getReader === "function") {
+					__writeWorkerResponseStart(__rid, __response.status || 200, JSON.stringify(__rh));
+					var __reader = __respBody.getReader();
+					var __dec = new TextDecoder();
+					while (true) {
+						var __read = await __reader.read();
+						if (__read.done) break;
+						var __text = typeof __read.value === "string"
+							? __read.value
+							: __dec.decode(__read.value, {stream: true});
+						if (__text) __writeWorkerResponseChunk(__rid, __text);
+					}
+				} else {
+					var __rb = "";
+					if (typeof __response.text === "function") {
+						__rb = await __response.text();
+					} else if (__respBody != null) {
+						__rb = String(__respBody);
+					}
+					__writeWorkerResponse(__rid, __response.status || 200, JSON.stringify(__rh), __rb);
+				}
+			}
+		} catch (__e) {
+			__writeWorkerResponse(__rid, 500, "{}", "workers: " + (__e && __e.stack ? __e.stack : String(__e)));
+		} finally {
+			__detachResponse(__rid);
+		}
+		if (__pending.length) {
+			var __wait = Promise.allSettled(__pending);
+			if (__waitMs > 0) {
+				var __timeoutP = new Promise(function(resolve){ setTimeout(resolve, __waitMs); });
+				await Promise.race([__wait, __timeoutP]);
+			} else {
+				await __wait;
+			}
+		}
+	};
+})();
+`
+
+// buildFetchCode returns the per-request JS that invokes
+// __wkDispatch. Only the reqID and small URL/method literals are
+// serialized — the heavy template lives in fetchDispatchJS and is
+// installed once per Runtime.
 func buildFetchCode(reqID int64, r *http.Request, cacheKey string, waitUntilMs int64) string {
 	return fmt.Sprintf(
-		`(async function() {
-			var __rid = %d;
-			var __method = %s;
-			var __url = %s;
-			var __wk = globalThis[%q];
-			if (!__wk || typeof __wk.fetch !== "function") {
-				__writeWorkerResponse(__rid, 500, "{}", "workers: fetch handler missing");
-				__detachResponse(__rid);
-				return;
-			}
-			var __headers = __getGoRequestHeaders(__rid);
-			var __body = (__method !== "GET" && __method !== "HEAD")
-				? __readGoRequestBody(__rid) : undefined;
-			var __request = new Request(__url, {
-				method: __method, headers: __headers, body: __body
-			});
-			var __env = __buildEnv();
-			var __pending = [];
-			var __ctx = {
-				waitUntil: function(p) {
-					if (p && typeof p.then === "function") __pending.push(p);
-				},
-				passThroughOnException: function() {}
-			};
-			try {
-				var __response = await __wk.fetch(__request, __env, __ctx);
-				if (!__response || typeof __response !== "object") {
-					__writeWorkerResponse(__rid, 204, "{}", "");
-				} else {
-					var __rh = {};
-					if (__response.headers && typeof __response.headers.forEach === "function") {
-						__response.headers.forEach(function(v, k) { __rh[k] = v; });
-					}
-					var __respBody = __response.body;
-					if (__respBody && typeof __respBody.getReader === "function") {
-						__writeWorkerResponseStart(__rid, __response.status || 200, JSON.stringify(__rh));
-						var __reader = __respBody.getReader();
-						var __dec = new TextDecoder();
-						while (true) {
-							var __read = await __reader.read();
-							if (__read.done) break;
-							var __text = typeof __read.value === "string"
-								? __read.value
-								: __dec.decode(__read.value, {stream: true});
-							if (__text) __writeWorkerResponseChunk(__rid, __text);
-						}
-					} else {
-						var __rb = "";
-						if (typeof __response.text === "function") {
-							__rb = await __response.text();
-						} else if (__respBody != null) {
-							__rb = String(__respBody);
-						}
-						__writeWorkerResponse(__rid, __response.status || 200, JSON.stringify(__rh), __rb);
-					}
-				}
-			} catch (__e) {
-				__writeWorkerResponse(__rid, 500, "{}", "workers: " + (__e && __e.stack ? __e.stack : String(__e)));
-			} finally {
-				__detachResponse(__rid);
-			}
-			if (__pending.length) {
-				var __wait = Promise.allSettled(__pending);
-				var __timeoutMs = %d;
-				if (__timeoutMs > 0) {
-					var __timeoutP = new Promise(function(resolve){ setTimeout(resolve, __timeoutMs); });
-					await Promise.race([__wait, __timeoutP]);
-				} else {
-					await __wait;
-				}
-			}
-		})()`,
+		"__wkDispatch(%d, %s, %s, %s, %d)",
 		reqID,
 		jsString(r.Method),
 		jsString(fullRequestURL(r)),
-		cacheKey,
+		jsString(cacheKey),
 		waitUntilMs,
 	)
 }
 
-// jsString produces a JS string literal via JSON encoding, which gives
-// us correct escaping for free.
+// jsString produces a double-quoted JS string literal. json.Marshal
+// on a Go string always emits a JSON string, which is also a valid
+// JS string literal (escapes ", \, control chars, <>&).
 func jsString(s string) string {
-	// json.Marshal of a string always produces a double-quoted JS
-	// literal compatible with both JS and JSON.
-	var sb strings.Builder
-	sb.Grow(len(s) + 2)
-	sb.WriteByte('"')
-	for _, r := range s {
-		switch r {
-		case '\\':
-			sb.WriteString(`\\`)
-		case '"':
-			sb.WriteString(`\"`)
-		case '\n':
-			sb.WriteString(`\n`)
-		case '\r':
-			sb.WriteString(`\r`)
-		case '\t':
-			sb.WriteString(`\t`)
-		case 0:
-			sb.WriteString(`\u0000`)
-		default:
-			if r < 0x20 {
-				sb.WriteString(`\u`)
-				sb.WriteString(padHex4(int(r)))
-			} else {
-				sb.WriteRune(r)
-			}
-		}
-	}
-	sb.WriteByte('"')
-	return sb.String()
-}
-
-func padHex4(n int) string {
-	s := strconv.FormatInt(int64(n), 16)
-	for len(s) < 4 {
-		s = "0" + s
-	}
-	return s
+	b, _ := json.Marshal(s)
+	return string(b)
 }
 
 // fullRequestURL reconstructs an absolute URL from an incoming request.
@@ -374,14 +387,6 @@ func registerScheduled(rt *ramune.Runtime, cacheKey, expr string) error {
 		})();`,
 		id, expr, cacheKey, expr,
 	)
-	if err := rt.Exec(js); err != nil {
-		return err
-	}
-	return nil
+	return rt.Exec(js)
 }
 
-// logger chooses a slog.Logger from ramune if one is exposed, falling
-// back to the default. Used only for diagnostic output from Register.
-func logger() *slog.Logger {
-	return slog.Default()
-}

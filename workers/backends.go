@@ -77,7 +77,7 @@ func validateBackends(cfg *Config) error {
 // calls into them. Reused by the SQLite path and by user-supplied
 // KVBackend values.
 func installKVBackend(rt *ramune.Runtime, b KVBackend) error {
-	if err := rt.RegisterFunc("__env_kv_get", func(args []any) (any, error) {
+	if err := regFunc(rt, "__env_kv_get", func(args []any) (any, error) {
 		ns, _ := args[0].(string)
 		key, _ := args[1].(string)
 		if ns == "" || key == "" {
@@ -92,9 +92,9 @@ func installKVBackend(rt *ramune.Runtime, b KVBackend) error {
 		}
 		return v, nil
 	}); err != nil {
-		return fmt.Errorf("workers: RegisterFunc __env_kv_get: %w", err)
+		return err
 	}
-	if err := rt.RegisterFunc("__env_kv_put", func(args []any) (any, error) {
+	if err := regFunc(rt, "__env_kv_put", func(args []any) (any, error) {
 		if len(args) < 3 {
 			return nil, fmt.Errorf("__env_kv_put: namespace, key, value required")
 		}
@@ -106,9 +106,9 @@ func installKVBackend(rt *ramune.Runtime, b KVBackend) error {
 		}
 		return nil, b.Put(ns, key, val)
 	}); err != nil {
-		return fmt.Errorf("workers: RegisterFunc __env_kv_put: %w", err)
+		return err
 	}
-	if err := rt.RegisterFunc("__env_kv_delete", func(args []any) (any, error) {
+	if err := regFunc(rt, "__env_kv_delete", func(args []any) (any, error) {
 		if len(args) < 2 {
 			return nil, nil
 		}
@@ -119,9 +119,9 @@ func installKVBackend(rt *ramune.Runtime, b KVBackend) error {
 		}
 		return nil, b.Delete(ns, key)
 	}); err != nil {
-		return fmt.Errorf("workers: RegisterFunc __env_kv_delete: %w", err)
+		return err
 	}
-	if err := rt.RegisterFunc("__env_kv_list", func(args []any) (any, error) {
+	if err := regFunc(rt, "__env_kv_list", func(args []any) (any, error) {
 		if len(args) < 1 {
 			return map[string]any{"keys": []any{}}, nil
 		}
@@ -149,7 +149,7 @@ func installKVBackend(rt *ramune.Runtime, b KVBackend) error {
 		}
 		return map[string]any{"keys": out}, nil
 	}); err != nil {
-		return fmt.Errorf("workers: RegisterFunc __env_kv_list: %w", err)
+		return err
 	}
 	return rt.Exec(kvBuilderJS)
 }
@@ -158,7 +158,7 @@ func installKVBackend(rt *ramune.Runtime, b KVBackend) error {
 // implementation that routes calls through it. Reused by SQLite and
 // user-supplied DBBackend values.
 func installDBBackend(rt *ramune.Runtime, b DBBackend) error {
-	if err := rt.RegisterFunc("__env_db_exec", func(args []any) (any, error) {
+	if err := regFunc(rt, "__env_db_exec", func(args []any) (any, error) {
 		if len(args) < 1 {
 			return nil, fmt.Errorf("__env_db_exec: sql required")
 		}
@@ -204,7 +204,7 @@ func installDBBackend(rt *ramune.Runtime, b DBBackend) error {
 			},
 		}, nil
 	}); err != nil {
-		return fmt.Errorf("workers: RegisterFunc __env_db_exec: %w", err)
+		return err
 	}
 	return rt.Exec(dbBuilderJS)
 }

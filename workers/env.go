@@ -13,11 +13,12 @@ import (
 const defaultSecretsPrefix = "RAMUNE_SECRET_"
 
 // registerEnvBinds installs the Go-side helpers that back the JS
-// __buildEnv() factory. Only env.SECRETS is supported here; env.DB and
-// env.KV are wired up by Phase 2 in env_sqlite.go.
+// __buildEnv() factory. Only env.SECRETS is registered here — env.DB
+// and env.KV are installed separately via installSQLiteBinds or
+// installKVBackend / installDBBackend.
 func registerEnvBinds(rt *ramune.Runtime, b *installedBinds) error {
 	return rt.RegisterFunc("__env_list_secrets", func(args []any) (any, error) {
-		prefix := b.cfg.SecretsPrefix
+		prefix := b.secretsPrefix
 		if prefix == "" {
 			prefix = defaultSecretsPrefix
 		}
@@ -38,15 +39,9 @@ func registerEnvBinds(rt *ramune.Runtime, b *installedBinds) error {
 	})
 }
 
-// envJSCode is the JS-side factory for the env object passed to each
-// fetch/scheduled invocation.
-//
-// Phase 1: only __buildEnvSecrets is populated. __buildEnvDB and
-// __buildEnvKV are left as sentinel stubs so user code that tries to
-// use env.DB / env.KV without opting into SQLite gets a clear error
-// rather than "undefined is not a function".
-//
-// Phase 2 overrides these stubs when WithSQLite is used.
+// envJSCode installs the JS-side factory for the env object passed to
+// each fetch/scheduled invocation. __buildEnvDB and __buildEnvKV are
+// stubs that throw unless a SQLite path or typed backend is configured.
 const envJSCode = `
 (function() {
 	var __cachedSecrets = null;

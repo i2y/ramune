@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -160,9 +161,15 @@ func serveCmd(args []string) {
 	}
 }
 
-// spawnServeWorkers creates N Runtimes, each with its own workers.Register
-// binding. Returns the per-worker handlers and a close function list.
+// spawnServeWorkers creates N Runtimes in parallel, attaches the same
+// pre-transpiled module to each, and returns the per-worker handlers
+// plus close functions.
 func spawnServeWorkers(n int, entryAbs, src string, deps []string, perms *ramune.Permissions, wkOpts []workers.Option) ([]http.Handler, []func() error, error) {
+	prepared, err := workers.Prepare(entryAbs, src)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	rtOpts := []ramune.Option{ramune.NodeCompat(), ramune.WithFetch()}
 	if len(deps) > 0 {
 		rtOpts = append(rtOpts, ramune.Dependencies(deps...))
@@ -171,25 +178,52 @@ func spawnServeWorkers(n int, entryAbs, src string, deps []string, perms *ramune
 		rtOpts = append(rtOpts, ramune.WithPermissions(perms))
 	}
 
+	type result struct {
+		i       int
+		handler http.Handler
+		closer  func() error
+		err     error
+	}
+	results := make([]result, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			rt, err := ramune.New(rtOpts...)
+			if err != nil {
+				results[i] = result{i: i, err: fmt.Errorf("ramune.New worker %d: %w", i, err)}
+				return
+			}
+			h, err := workers.AttachPrepared(rt, prepared, wkOpts...)
+			if err != nil {
+				rt.Close()
+				results[i] = result{i: i, err: fmt.Errorf("workers.AttachPrepared worker %d: %w", i, err)}
+				return
+			}
+			results[i] = result{i: i, handler: h, closer: rt.Close}
+		}(i)
+	}
+	wg.Wait()
+
 	handlers := make([]http.Handler, 0, n)
 	closers := make([]func() error, 0, n)
-	for i := 0; i < n; i++ {
-		rt, err := ramune.New(rtOpts...)
-		if err != nil {
-			for _, c := range closers {
-				_ = c()
+	var firstErr error
+	for _, r := range results {
+		if r.err != nil {
+			if firstErr == nil {
+				firstErr = r.err
 			}
-			return nil, nil, fmt.Errorf("ramune.New worker %d: %w", i, err)
+			continue
 		}
-		closers = append(closers, rt.Close)
-		h, err := workers.Register(rt, entryAbs, src, wkOpts...)
-		if err != nil {
-			for _, c := range closers {
-				_ = c()
-			}
-			return nil, nil, fmt.Errorf("workers.Register worker %d: %w", i, err)
+		handlers = append(handlers, r.handler)
+		closers = append(closers, r.closer)
+	}
+	if firstErr != nil {
+		for _, c := range closers {
+			_ = c()
 		}
-		handlers = append(handlers, h)
+		return nil, nil, firstErr
 	}
 	return handlers, closers, nil
 }
