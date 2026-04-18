@@ -262,7 +262,9 @@ Options: `--http` (Ramune.serve event loop), `--minify` (esbuild minification). 
 
 > **Note:** The compiled binary loads JavaScriptCore dynamically at runtime. The target machine must have JSC available (macOS: built-in, Linux: `libjavascriptcoregtk`). Use `-tags quickjs` for cross-platform builds.
 
-### Native Extension Modules
+### Native Extension Modules (Experimental)
+
+> **Note:** This workflow uses the [TypeScript-to-Go transpiler](./TRANSPILER.md) under the hood and inherits its experimental status. Simple typed functions (primitives, structs, typed slices) work reliably; generics, decorators, and deep class inheritance may produce Go code that needs manual fixes.
 
 Compile performance-critical TypeScript functions to native Go code and call them from JavaScript at full compiled speed:
 

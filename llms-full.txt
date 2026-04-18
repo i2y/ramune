@@ -141,7 +141,9 @@ ramune typegen go:fmt go:net/http -o go.d.ts
 
 Generates `declare module "go:fmt" { ... }` with function signatures, interfaces, constants, and type mappings (number, string, boolean, Record, tuples for multi-return, Error | null for error returns).
 
-## Native Extension Modules
+## Native Extension Modules (Experimental)
+
+Experimental: uses the TypeScript-to-Go transpiler internally, so it inherits the transpiler's experimental status. Simple typed functions (primitives, structs, typed slices) work reliably; generics, decorators, and deep class inheritance may produce Go code that needs manual fixes.
 
 Compile TypeScript functions to native Go code callable from JS at full compiled speed:
 
