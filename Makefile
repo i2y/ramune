@@ -7,7 +7,7 @@ build:
 
 # Build the CLI binary with JIT entitlement (macOS).
 # JSC's JIT compiler requires this entitlement for full performance.
-VERSION ?= 0.12.0
+VERSION ?= 0.12.1
 
 build-cli: build-toolchain
 	go build -ldflags "-X main.version=$(VERSION)" -o ramune ./cmd/ramune
