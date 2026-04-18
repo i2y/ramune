@@ -735,8 +735,6 @@ pool.ListenAndServe(":3000", `
 `)
 ```
 
-With CPU-heavy handlers, 3 workers achieve **2.7x throughput** vs single-threaded Bun.
-
 Worker threads are also supported:
 
 ```js
@@ -751,7 +749,7 @@ Ramune provides its own API namespace. `Bun.*` is available as an alias for back
 
 | API | Status |
 |-----|--------|
-| `Ramune.serve({port, fetch, websocket})` | Supported (Go net/http backend, 101K req/s) |
+| `Ramune.serve({port, fetch, websocket})` | Supported (Go net/http backend, see [Performance](#performance)) |
 | `Ramune.file(path)` | Supported (text, json, exists, size) |
 | `Ramune.write(path, data)` | Supported |
 | `Ramune.password.hash/verify` | Supported (bcrypt) |
@@ -907,6 +905,8 @@ Relative performance on Apple M4 Max with JIT enabled. Absolute numbers shift wi
 
 Single-runtime HTTP is below Bun but competitive with Node.js. For throughput see [Multi-Runtime Pool](#multi-runtime-pool) below: Ramune runs N JS VMs in parallel on separate OS threads, where Bun and Node stay single-threaded.
 
+Raw throughput is only one axis. Ramune's edge over Bun is Go-native embedding (`ramune.New()` in any Go program), Workers-style compatibility out of the box, and multi-core scaling within one process; Bun offers none of these.
+
 ### QuickJS backend (`-tags quickjs`)
 
 Same machine, no JIT. Without a JIT compiler, QuickJS is orders of magnitude slower on CPU-heavy benchmarks (Fibonacci, JSON); I/O-bound workloads stay close because the heavy lifting happens in Go. Best suited for embedding, scripting, Windows, and `FROM scratch` Docker deployments where zero runtime deps matter more than raw JS execution speed.
@@ -938,8 +938,8 @@ Ramune with JSC+JIT vs other Go-embedded JS runtimes:
 
 | Workload | Ramune (JSC+JIT) | QuickJS | goja | otto |
 |---|---|---|---|---|
-| Fibonacci(35) | baseline | ~100x slower | ~65x slower | ~850x slower |
-| JSON 10K objects | baseline | ~30x slower | ~12x slower | ~30x slower |
+| Fibonacci(35) | 1x (ref) | ~100x slower | ~65x slower | ~850x slower |
+| JSON 10K objects | 1x (ref) | ~30x slower | ~12x slower | ~30x slower |
 
 JSC with JIT is the fastest Go-embedded JS runtime by 1-2 orders of magnitude on CPU-heavy code. QuickJS (pure Go interpreter) is comparable to goja for JSON workloads and much slower on CPU-heavy code. otto is the slowest across all tests.
 
@@ -1108,7 +1108,7 @@ Status is experimental; generated code may need manual fixes for complex codebas
 - **Windows**: JSC backend not available. Use `-tags quickjs` for Windows support.
 - **Linux multi-runtime (JSC)**: Architecture-dependent signal handling. On arm64, `CGO_ENABLED=1` and gcc are required for multi-runtime (cgo's signal forwarding is needed for JSC's GC). On x86_64, multi-runtime works without cgo (`CGO_ENABLED=0`).
 - **Multi-worker scaling (JSC)**: Scaling flattens around 4+ workers on macOS due to JSC shared-cache threading constraints. Linux (libjavascriptcoregtk) may differ.
-- **QuickJS backend**: No JIT — CPU-bound JS is ~67x slower than JSC. Error stack traces not available. Best for embedding/scripting, not compute-heavy workloads.
+- **QuickJS backend**: No JIT; CPU-bound JS is orders of magnitude slower than JSC (see [Performance](#quickjs-backend--tags-quickjs)). Error stack traces not available. Best for embedding/scripting, not compute-heavy workloads.
 - **Native module instance lifecycle**: Struct instances returned to JS are not automatically freed when the JS object is garbage collected. Instances are cleaned up when `Runtime.Close()` is called. For long-running servers creating many short-lived struct instances, this may cause increased memory usage.
 
 ## Requirements
@@ -1129,7 +1129,8 @@ Make targets for working on Ramune itself (contributor setup):
 make ci          # fmt + build + vet + test
 make test-wpt    # WPT conformance tests (requires test/wpt checkout)
 make build-cli   # build with JIT entitlement (macOS)
-make bench       # benchmark vs Bun/Node
+make bench       # CLI benchmarks vs Bun/Node (hyperfine + wrk)
+make bench-go    # compare vs goja / otto (Go-embedded runtimes)
 make sync        # sync typescript-go & rslint from submodules
 ```
 
