@@ -1,20 +1,20 @@
-//go:build quickjs && !goja
+//go:build goja
 
 package ramune
 
 import (
 	"fmt"
 
-	"modernc.org/quickjs"
+	"github.com/dop251/goja"
 )
 
-// vmManager manages isolated QuickJS contexts for the vm module.
+// vmManager manages isolated goja runtimes for the vm module.
 type vmManager struct {
-	contexts map[string]*quickjs.VM
+	contexts map[string]*goja.Runtime
 }
 
 func newVMManager() *vmManager {
-	return &vmManager{contexts: make(map[string]*quickjs.VM)}
+	return &vmManager{contexts: make(map[string]*goja.Runtime)}
 }
 
 func (r *Runtime) installVM() error {
@@ -27,10 +27,7 @@ func (r *Runtime) installVM() error {
 				name = s
 			}
 		}
-		vm, err := quickjs.NewVM()
-		if err != nil {
-			return nil, fmt.Errorf("vm.createContext: %w", err)
-		}
+		vm := goja.New()
 		r.vmMgr.contexts[name] = vm
 		return name, nil
 	}); err != nil {
@@ -47,7 +44,14 @@ func (r *Runtime) installVM() error {
 		if !ok {
 			return nil, fmt.Errorf("vm.runInContext: context %q not found", name)
 		}
-		return vm.Eval(code, quickjs.EvalGlobal)
+		result, err := vm.RunString(code)
+		if err != nil {
+			return nil, err
+		}
+		if result == nil || goja.IsUndefined(result) || goja.IsNull(result) {
+			return nil, nil
+		}
+		return result.Export(), nil
 	}); err != nil {
 		return err
 	}
@@ -74,8 +78,10 @@ func vmJSSource() string {
 	vm.Script = function(code) { this.code = code; };
 	vm.Script.prototype.runInContext = function(ctx) { return vm.runInContext(this.code, ctx); };
 	vm.Script.prototype.runInNewContext = function(sandbox) { return vm.runInNewContext(this.code, sandbox); };
-	require._modules['vm'] = vm;
-	require._modules['node:vm'] = vm;
+	if (globalThis.require && globalThis.require._modules) {
+		globalThis.require._modules['vm'] = vm;
+		globalThis.require._modules['node:vm'] = vm;
+	}
 })();
 `
 }

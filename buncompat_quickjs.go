@@ -1,9 +1,8 @@
-//go:build quickjs
+//go:build quickjs && !goja
 
 package ramune
 
 import (
-	"strconv"
 	"time"
 
 	"modernc.org/quickjs"
@@ -48,7 +47,7 @@ func (s *bunServerState) handleSingleRequest(r *Runtime, req pendingHTTPReq) {
 	}
 
 	if raw == "__async__" {
-		asyncKey := "__resp" + strconv.Itoa(req.ID)
+		asyncKey := asyncRespKey(req.ID)
 		setupCode := `globalThis.__bunPendingPromise.then(` +
 			`function(v){globalThis['` + asyncKey + `']=__bunExtract(v);},` +
 			`function(e){globalThis['` + asyncKey + `']='500\n{}\n'+String(e);});` +

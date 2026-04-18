@@ -1,4 +1,4 @@
-.PHONY: all build build-cli build-toolchain build-quickjs fmt fmt-check vet test test-quickjs test-wpt ci bench bench-go clean sync-tsgo sync-tsgo-pinned sync-rslint sync
+.PHONY: all build build-cli build-toolchain build-quickjs build-goja fmt fmt-check vet test test-quickjs test-goja test-wpt ci bench bench-go clean sync-tsgo sync-tsgo-pinned sync-rslint sync
 
 all: ci
 
@@ -24,6 +24,9 @@ build-toolchain:
 build-quickjs:
 	go build -tags quickjs -ldflags "-X main.version=$(VERSION)" -o ramune-qjs ./cmd/ramune
 
+build-goja:
+	go build -tags goja -ldflags "-X main.version=$(VERSION)" -o ramune-goja ./cmd/ramune
+
 fmt:
 	find . -name '*.go' -not -path './third_party/*' -not -path './internal/tsgo/*' -not -path './internal/rslint/*' | xargs gofmt -w
 
@@ -45,6 +48,9 @@ test-quickjs:
 	go test -tags quickjs -run "^TestHTTPCreateServer" -count=1 -timeout 60s .
 	go test -tags quickjs -run "^TestWorker" -count=1 -timeout 60s .
 	go test -tags quickjs -run "^Test[^DWHP]|^TestPool|^TestPerm|^TestProcess" -count=1 -timeout 120s .
+
+test-goja:
+	go test -tags goja -count=1 -timeout 120s .
 
 test-verbose:
 	go test -v -count=1 -timeout 120s ./...

@@ -1101,6 +1101,9 @@ func TestStreamClassExtends(t *testing.T) {
 
 func TestStreamAsyncIterator(t *testing.T) {
 	r := sharedNodeCompat(t)
+	if r.Engine() == "goja" {
+		t.Skip("goja parser does not accept raw `for await`; requires esbuild lowering")
+	}
 
 	v, err := r.EvalAsync(`
 		(async function() {

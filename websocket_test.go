@@ -141,6 +141,10 @@ func TestWebSocketEcho(t *testing.T) {
 	if err != nil {
 		t.Skipf("JSC not available: %v", err)
 	}
+	if rt.Engine() == "goja" {
+		rt.Close()
+		t.Skip("WebSocket upgrade path not yet wired for goja backend")
+	}
 	defer rt.Close()
 
 	// Start server with WebSocket support.
@@ -251,6 +255,10 @@ func TestWebSocketNonUpgradeRequest(t *testing.T) {
 	rt, err := ramune.New(ramune.NodeCompat())
 	if err != nil {
 		t.Skipf("JSC not available: %v", err)
+	}
+	if rt.Engine() == "goja" {
+		rt.Close()
+		t.Skip("WebSocket upgrade path not yet wired for goja backend")
 	}
 	defer rt.Close()
 

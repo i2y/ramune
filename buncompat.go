@@ -271,7 +271,8 @@ type pendingHTTPReq struct {
 	ID          int
 	Method      string
 	URL         string
-	HeadersJSON string // pre-marshaled off the JSC thread
+	HeadersJSON string            // pre-marshaled off the JSC thread (JSC/QuickJS paths)
+	Headers     map[string]string // raw map (goja path passes directly via reflect to skip JSON round-trip)
 	Body        string
 }
 
@@ -327,6 +328,7 @@ func (s *bunServerState) start(port int) (int, error) {
 				Method:      r.Method,
 				URL:         r.URL.String(),
 				HeadersJSON: string(hdJSON),
+				Headers:     headers,
 				Body:        string(body),
 			}
 
@@ -362,6 +364,7 @@ func (s *bunServerState) start(port int) (int, error) {
 			Method:      r.Method,
 			URL:         r.URL.String(),
 			HeadersJSON: string(hdJSON),
+			Headers:     headers,
 			Body:        string(body),
 		}
 
@@ -534,6 +537,13 @@ func compressBody(data []byte, encoding string) ([]byte, error) {
 
 func escJS(s string) string {
 	return jsEscaper.Replace(s)
+}
+
+// asyncRespKey names the global slot where an async handler's resolved response
+// is stored while the event loop drains. Shared across backends so the JS
+// wiring in buncompat.go and the Go-side lookup stay in sync.
+func asyncRespKey(reqID int) string {
+	return "__resp" + strconv.Itoa(reqID)
 }
 
 // parseHTTPResponse parses the response string from JS handler.

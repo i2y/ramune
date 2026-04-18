@@ -1,79 +1,82 @@
-//go:build !quickjs && !goja
+//go:build goja
 
 package ramune
 
-import "unsafe"
+import "github.com/dop251/goja"
 
 // EvalFloat64 evaluates JS code and returns the result as float64.
 func (cc *CallbackContext) EvalFloat64(code string) (float64, error) {
-	result, err := cc.rt.evalScriptLocked(code, "CallbackEval")
+	result, err := cc.rt.vm.RunString(code)
 	if err != nil {
 		return 0, err
 	}
-	return cc.rt.jsValueToNumber(cc.rt.ctx, result, 0), nil
+	if result == nil {
+		return 0, nil
+	}
+	return result.ToFloat(), nil
 }
 
 // EvalString evaluates JS code and returns the result as string.
 func (cc *CallbackContext) EvalString(code string) (string, error) {
-	result, err := cc.rt.evalScriptLocked(code, "CallbackEval")
+	result, err := cc.rt.vm.RunString(code)
 	if err != nil {
 		return "", err
 	}
-	return cc.rt.jsValueToGoString(result), nil
+	if result == nil {
+		return "", nil
+	}
+	return result.String(), nil
 }
 
 // EvalBool evaluates JS code and returns the result as bool.
 func (cc *CallbackContext) EvalBool(code string) (bool, error) {
-	result, err := cc.rt.evalScriptLocked(code, "CallbackEval")
+	result, err := cc.rt.vm.RunString(code)
 	if err != nil {
 		return false, err
 	}
-	return cc.rt.jsValueToBoolean(cc.rt.ctx, result), nil
+	if result == nil {
+		return false, nil
+	}
+	return result.ToBoolean(), nil
 }
 
 // Eval evaluates JS code and returns the result as any (Go value).
 func (cc *CallbackContext) Eval(code string) (any, error) {
-	result, err := cc.rt.evalScriptLocked(code, "CallbackEval")
+	result, err := cc.rt.vm.RunString(code)
 	if err != nil {
 		return nil, err
 	}
-	return cc.rt.jsToGo(result)
+	if result == nil || goja.IsUndefined(result) || goja.IsNull(result) {
+		return nil, nil
+	}
+	return result.Export(), nil
 }
 
 // Exec executes JavaScript code, discarding the result.
 func (cc *CallbackContext) Exec(code string) error {
-	_, err := cc.rt.evalScriptLocked(code, "CallbackExec")
+	_, err := cc.rt.vm.RunString(code)
 	return err
 }
 
 // GetProperty reads a property from the global object.
 func (cc *CallbackContext) GetProperty(name string) (any, error) {
-	global := cc.rt.jsContextGetGlobalObject(cc.rt.ctx)
-	propName := cc.rt.jsStringCreateWithUTF8CString(name)
-	defer cc.rt.jsStringRelease(propName)
-	var exc uintptr
-	val := cc.rt.jsObjectGetProperty(cc.rt.ctx, global, propName, uintptr(unsafe.Pointer(&exc)))
-	if val == 0 {
+	v := cc.rt.vm.Get(name)
+	if v == nil || goja.IsUndefined(v) || goja.IsNull(v) {
 		return nil, nil
 	}
-	return cc.rt.jsToGo(val)
+	return v.Export(), nil
 }
 
 // SetProperty sets a property on the global object.
 func (cc *CallbackContext) SetProperty(name string, value any) error {
-	global := cc.rt.jsContextGetGlobalObject(cc.rt.ctx)
-	propName := cc.rt.jsStringCreateWithUTF8CString(name)
-	defer cc.rt.jsStringRelease(propName)
 	jsVal, err := cc.rt.goToJS(value)
 	if err != nil {
 		return err
 	}
-	cc.rt.jsObjectSetProperty(cc.rt.ctx, global, propName, jsVal, 0, 0)
-	return nil
+	return cc.rt.vm.Set(name, jsVal)
 }
 
-// RegisterFuncWithContext registers a Go function that receives a CallbackContext,
-// allowing safe JSC access from within the callback without deadlocking.
+// RegisterFuncWithContext registers a Go function that receives a CallbackContext.
 func (r *Runtime) RegisterFuncWithContext(name string, fn GoFuncWithContext) error {
 	cc := &CallbackContext{rt: r}
 	return r.RegisterFunc(name, func(args []any) (any, error) {

@@ -1,0 +1,13 @@
+//go:build goja
+
+package main
+
+import "github.com/evanw/esbuild/pkg/api"
+
+// esbuildTarget returns the esbuild JS target appropriate for the active
+// backend. Goja has complete ES5 and nearly complete ES2015+ coverage but
+// does not implement every ES2022+ feature (private class fields, top-level
+// await, static blocks, Object.hasOwn). Lowering to ES2017 is esbuild's
+// highest-compat output that still keeps arrow functions, destructuring,
+// async/await, etc. intact -- goja handles that subset cleanly.
+func esbuildTarget() api.Target { return api.ES2017 }

@@ -723,7 +723,7 @@ func replCmd(args []string) {
 		// Transpile TypeScript.
 		evalCode := multiline
 		if result := api.Transform(evalCode, api.TransformOptions{
-			Loader: api.LoaderTS, Target: api.ESNext,
+			Loader: api.LoaderTS, Target: esbuildTarget(),
 		}); len(result.Errors) == 0 && len(result.Code) > 0 {
 			evalCode = string(result.Code)
 		}
@@ -972,7 +972,7 @@ func transformTypeScript(filename string, code []byte) ([]byte, error) {
 	result := api.Transform(string(code), api.TransformOptions{
 		Sourcefile: filepath.Base(filename),
 		Loader:     loader,
-		Target:     api.ESNext,
+		Target:     esbuildTarget(),
 	})
 	if len(result.Errors) > 0 {
 		msgs := make([]string, len(result.Errors))
@@ -1117,7 +1117,7 @@ func transformESM(filename string, code []byte) ([]byte, error) {
 		Sourcefile: filepath.Base(absPath),
 		Loader:     api.LoaderJS,
 		Format:     api.FormatESModule,
-		Target:     api.ESNext,
+		Target:     esbuildTarget(),
 	})
 
 	result := struct {
@@ -1723,7 +1723,7 @@ func evalCmd(args []string) {
 	// Transpile TypeScript type annotations if present.
 	if result := api.Transform(expr, api.TransformOptions{
 		Loader: api.LoaderTS,
-		Target: api.ESNext,
+		Target: esbuildTarget(),
 	}); len(result.Errors) == 0 && len(result.Code) > 0 {
 		jsCode := strings.TrimRight(string(result.Code), "\n\r\t ")
 		// If the result contains multiple statements, wrap in an IIFE

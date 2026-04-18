@@ -1,4 +1,4 @@
-//go:build darwin && !quickjs
+//go:build darwin && !quickjs && !goja
 
 package ramune
 

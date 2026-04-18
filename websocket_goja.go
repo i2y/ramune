@@ -1,12 +1,10 @@
-//go:build quickjs && !goja
+//go:build goja
 
 package ramune
 
 import (
 	"fmt"
 	"strconv"
-
-	"modernc.org/quickjs"
 )
 
 // processWSEvents processes pending WebSocket events by calling JS handlers.
@@ -34,7 +32,6 @@ func (s *bunServerState) processWSEvents(r *Runtime) {
 		default:
 			continue
 		}
-
-		r.vm.Eval(code, quickjs.EvalGlobal)
+		r.safeRunString(code)
 	}
 }

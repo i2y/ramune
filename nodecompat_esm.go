@@ -56,7 +56,7 @@ func transformSource(filename, source string, loader api.Loader, format api.Form
 	opts := api.TransformOptions{
 		Sourcefile: filepath.Base(filename),
 		Loader:     loader,
-		Target:     api.ESNext,
+		Target:     esbuildTarget(),
 	}
 	if format != api.FormatDefault {
 		opts.Format = format

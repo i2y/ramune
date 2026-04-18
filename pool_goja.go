@@ -1,4 +1,4 @@
-//go:build quickjs && !goja
+//go:build goja
 
 package ramune
 
@@ -6,8 +6,6 @@ import (
 	"encoding/json"
 	"strconv"
 	"strings"
-
-	"modernc.org/quickjs"
 )
 
 // workerLoop processes requests from the worker's dedicated channel.
@@ -51,15 +49,15 @@ func (p *RuntimePool) workerLoop(rt *Runtime, ch <-chan poolHTTPReq) {
 // handleRequest calls the JS handler on a specific Runtime.
 func (p *RuntimePool) handleRequest(r *Runtime, req poolHTTPReq) httpResponse {
 	code := `__poolHandleFast("` + escJS(req.method) + `","` + escJS(req.url) + `","` + escJS(req.body) + `",` + req.headersJSON + `)`
-	result, err := r.vm.Eval(code, quickjs.EvalGlobal)
+	result, err := r.safeRunString(code)
 	if err != nil {
 		return httpResponse{Status: 500, Body: "handler error"}
 	}
-
-	raw, ok := result.(string)
-	if !ok {
-		return httpResponse{Status: 500, Body: "handler returned non-string"}
+	if result == nil {
+		return httpResponse{Status: 500, Body: "handler returned nil"}
 	}
+
+	raw := result.String()
 
 	parts := strings.SplitN(raw, "\n", 3)
 	resp := httpResponse{Status: 200}
@@ -77,6 +75,5 @@ func (p *RuntimePool) handleRequest(r *Runtime, req poolHTTPReq) httpResponse {
 	return resp
 }
 
-func (p *RuntimePool) cacheHandlerRef(r *Runtime) {
-	// QuickJS doesn't need to cache function pointers — we call via eval.
-}
+// cacheHandlerRef is a no-op for goja (we call via eval).
+func (p *RuntimePool) cacheHandlerRef(r *Runtime) {}
