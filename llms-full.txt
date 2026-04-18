@@ -1,8 +1,8 @@
 # Ramune — Full Documentation
 
-Foundation for Workers-style platforms in Go, embeddable and extensible; Cloudflare-Workers-compatible out of the box. Primary use case: build your own Workers-style platform (your `env`, your backends, your bindings) on a runtime that already speaks the Workers handler shape, so Cloudflare-authored handlers (`export default { fetch(req, env, ctx), scheduled }`) run unchanged as a consequence of the default surface. Deploy to your own hardware with full Go interop. Core scope: [WinterCG](https://wintercg.org/) + fetch + `env.DB` / `env.KV` / `env.SECRETS` + `ctx.waitUntil` + cron. Advanced CF bindings (Durable Objects / Queues / R2 / AI Gateway) are **not shipped**; they are implemented as user-supplied `env.*` bindings via `RegisterFunc` + `WithExtraEnvJS`, and the same mechanism is how you design bindings that have no CF analogue at all. **No Cgo**: JSC via `purego`, QuickJS pure Go; `go build` cross-compiles to any GOOS/GOARCH without a C toolchain, and QuickJS runs on `FROM scratch` Docker. Ramune is also a complete JS/TS runtime (`run` / `test` / `check` / `fmt` / `lint` / `repl` / `compile`) and an embeddable JS engine for any Go program.
+Foundation for Workers-style platforms in Go, embeddable and extensible; Cloudflare-Workers-compatible out of the box. Primary use case: build your own Workers-style platform (your `env`, your backends, your bindings) on a runtime that already speaks the Workers handler shape, so Cloudflare-authored handlers (`export default { fetch(req, env, ctx), scheduled }`) run unchanged as a consequence of the default surface. Deploy to your own hardware with full Go interop. Core scope: [WinterCG](https://wintercg.org/) + fetch + `env.DB` / `env.KV` / `env.SECRETS` + `ctx.waitUntil` + cron. Advanced CF bindings (Durable Objects / Queues / R2 / AI Gateway) are **not shipped**; they are implemented as user-supplied `env.*` bindings via `RegisterFunc` + `WithExtraEnvJS`, and the same mechanism is how you design bindings that have no CF analogue at all. **No Cgo**: JSC via `purego`, QuickJS and goja pure Go; `go build` cross-compiles to any GOOS/GOARCH without a C toolchain, and QuickJS/goja run on `FROM scratch` Docker. Ramune is also a complete JS/TS runtime (`run` / `test` / `check` / `fmt` / `lint` / `repl` / `compile`) and an embeddable JS engine for any Go program.
 
-> Ramune is a JavaScript/TypeScript runtime and embeddable JS engine for Go. Dual backend: JavaScriptCore (JIT, macOS/Linux) via [purego](https://github.com/ebitengine/purego) and QuickJS (pure Go, cross-platform incl. Windows) via [modernc.org/quickjs](https://pkg.go.dev/modernc.org/quickjs) — no Cgo required for either.
+> Ramune is a JavaScript/TypeScript runtime and embeddable JS engine for Go. Tri-backend: JavaScriptCore (JIT, macOS/Linux) via [purego](https://github.com/ebitengine/purego), QuickJS (pure Go, cross-platform incl. Windows) via [modernc.org/quickjs](https://pkg.go.dev/modernc.org/quickjs), and goja (pure Go, reflect-based) via [dop251/goja](https://github.com/dop251/goja) — no Cgo required for any of them.
 
 ## Install
 
@@ -15,6 +15,9 @@ ramune setup-jit   # macOS only: enable JSC JIT for full performance
 # QuickJS backend (Windows / zero-dependency)
 go install -tags quickjs github.com/i2y/ramune/cmd/ramune@latest
 go install -tags quickjs github.com/i2y/ramune/cmd/ramune-toolchain@latest  # optional
+
+# Goja backend (pure-Go, reflect-based, Windows-native)
+go install -tags goja github.com/i2y/ramune/cmd/ramune@latest
 
 # Smaller binary
 go install -tags nosqlite -ldflags="-s -w" github.com/i2y/ramune/cmd/ramune@latest
@@ -521,7 +524,19 @@ test("mock", () => {
 | File I/O | 25.8ms | 20.7ms | 12.4ms | 22.7ms |
 | HTTP req/s (single) | 66K | 101K | 165K | 111K |
 
-### Multi-Runtime Pool
+### goja backend (pool scaling, same machine)
+
+| Workers | req/s | Scaling |
+|---------|-------|---------|
+| 1 | 3,909 | 1.0x |
+| 2 | 6,402 | 1.64x |
+| 3 | 8,026 | 2.05x |
+| 4 | 9,378 | 2.40x |
+| 6 | 10,947 | 2.80x |
+
+Monotonic out to 6 workers — pure-Go dispatch has no cgo/allocator contention to fix.
+
+### Multi-Runtime Pool (JSC)
 
 | Workers | req/s | Scaling |
 |---------|-------|---------|
@@ -531,7 +546,7 @@ test("mock", () => {
 
 ### vs Go JS Runtimes
 
-| Test | Ramune (JSC+JIT) | Ramune (QuickJS) | goja | otto |
+| Test | Ramune (JSC+JIT) | Ramune (QuickJS) | Ramune (goja) | otto |
 |------|-----------------|-----------------|------|------|
 | Fibonacci(35) | **31ms** | 3,122ms | 1,989ms | 26,413ms |
 | JSON 10K objects | **0.9ms** | 30ms | 11ms | 27ms |
@@ -546,15 +561,16 @@ Run `make bench` to reproduce.
 - **Linux multi-runtime (JSC)**: On arm64, `CGO_ENABLED=1` and gcc required (cgo signal forwarding for JSC GC). On x86_64, works without cgo.
 - **Multi-worker scaling (JSC)**: Scaling flattens around 4+ workers on macOS due to JSC shared-cache threading constraints.
 - **QuickJS backend**: No JIT — CPU-bound JS is ~67x slower than JSC. Error stack traces not available.
+- **goja backend**: ~94% ECMAScript spec coverage. No SharedArrayBuffer/Atomics/WebAssembly. Raw `for await` / async generator syntax not accepted by the parser (esbuild lowers it when running via `ramune run`/`ramune eval`, but direct `Eval`/`EvalAsync` of raw JS that uses those features will fail). WebSocket upgrade path is not wired for goja. No JS error stack traces.
 - **Native module instance lifecycle**: Struct instances returned to JS are not automatically freed when JS GC collects the object. Cleaned up on Runtime.Close().
 - **Generic native exports**: Generic functions cannot be exposed as native module exports; wrap in a non-generic function.
 
 ## Requirements
 
-| | JSC backend (default) | QuickJS backend (`-tags quickjs`) |
-|---|---|---|
-| **Go** | 1.26+ | 1.26+ |
-| **Platforms** | macOS, Linux | macOS, Linux, Windows, FreeBSD |
-| **System deps** | macOS: none. Linux: `apt install libjavascriptcoregtk-4.1-dev` | None |
+| | JSC backend (default) | QuickJS backend (`-tags quickjs`) | goja backend (`-tags goja`) |
+|---|---|---|---|
+| **Go** | 1.26+ | 1.26+ | 1.26+ |
+| **Platforms** | macOS, Linux | macOS, Linux, Windows, FreeBSD | macOS, Linux, Windows, FreeBSD |
+| **System deps** | macOS: none. Linux: `apt install libjavascriptcoregtk-4.1-dev` | None | None |
 
 All tools are built in — no external dependencies needed for `check`, `fmt`, `lint`, or TypeScript transpilation. npm packages are fetched directly from the npm registry — no npm or bun CLI required.

@@ -32,9 +32,14 @@ ramune compile worker.ts -o myworker   # or compile to a single binary you can s
 
 **Scope.** Ships today: `fetch`, `env.KV`, `env.SECRETS`,
 `ctx.waitUntil`, `scheduled`, cron, WinterCG basics. `env.DB` is a
-D1-style subset (`prepare`/`bind`/`all`/`first`/`run`/`exec`; `batch`
-and `raw` not yet implemented, `.all()` meta fields not populated).
-Not shipped, but implementable as user-supplied `env.*` bindings (see
+D1-compatible API subset (`prepare`/`bind`/`all`/`first`/`run`/`exec`;
+`batch` and `raw` not yet implemented, `.all()` meta fields not
+populated). "D1-compatible" and "Workers-KV-like" describe API shape
+only — the defaults are a single-node local SQLite file, not
+Cloudflare's edge-replicated D1 or globally eventually-consistent
+Workers KV. Swap in Postgres / Planetscale / Redis / DynamoDB via
+`DBBackend` / `KVBackend` if you need distributed scaling. Not shipped,
+but implementable as user-supplied `env.*` bindings (see
 [`workers/BINDINGS.md`](workers/BINDINGS.md)): Durable Objects,
 Queues, R2, AI Gateway, Service Bindings, Hyperdrive.
 
@@ -91,7 +96,7 @@ Queues, R2, AI Gateway, Service Bindings, Hyperdrive.
   tsgo + rslint + esbuild built in. `ramune.New()` gives you a JS
   engine for any Go program.
 
-Dual backend: **JavaScriptCore** (JIT, macOS/Linux) via [purego](https://github.com/ebitengine/purego) and **QuickJS** (pure Go, cross-platform incl. Windows) via [modernc.org/quickjs](https://pkg.go.dev/modernc.org/quickjs) — no Cgo required for either. Type checker and formatter ([typescript-go](https://github.com/microsoft/typescript-go)), linter ([rslint](https://github.com/web-infra-dev/rslint)), bundler ([esbuild](https://github.com/evanw/esbuild)), and all Node.js polyfills are built in with zero external tool dependencies.
+Tri-backend: **JavaScriptCore** (JIT, macOS/Linux) via [purego](https://github.com/ebitengine/purego), **QuickJS** (pure Go, cross-platform incl. Windows) via [modernc.org/quickjs](https://pkg.go.dev/modernc.org/quickjs), and **goja** (pure Go, reflect-based, ~94% ECMAScript) via [github.com/dop251/goja](https://github.com/dop251/goja) — no Cgo required for any of them. Type checker and formatter ([typescript-go](https://github.com/microsoft/typescript-go)), linter ([rslint](https://github.com/web-infra-dev/rslint)), bundler ([esbuild](https://github.com/evanw/esbuild)), and all Node.js polyfills are built in with zero external tool dependencies.
 
 Named after [Ramune](https://en.wikipedia.org/wiki/Ramune), a Japanese carbonated soft drink served in a Codd-neck bottle.
 
@@ -129,17 +134,18 @@ Ramune is **three** things, with one narrative:
 
 **One runtime, three surfaces.** Same Go-native core, three entry points: embed it in a Go program, run TypeScript from the CLI, or serve Workers-style handlers on it.
 
-Two backends, same API:
+Three backends, same API:
 
-| | JSC (default) | QuickJS (`-tags quickjs`) |
-|---|---|---|
-| **Engine** | Apple JavaScriptCore via [purego](https://github.com/ebitengine/purego) | [modernc.org/quickjs](https://pkg.go.dev/modernc.org/quickjs) (pure Go) |
-| **JIT** | Yes | No |
-| **Platforms** | macOS, Linux | macOS, Linux, **Windows**, FreeBSD |
-| **System deps** | macOS: none. Linux: libjavascriptcoregtk | None |
-| **Best for** | Performance, HTTP servers | Embedding, scripting, portability |
+| | JSC (default) | QuickJS (`-tags quickjs`) | goja (`-tags goja`) |
+|---|---|---|---|
+| **Engine** | Apple JavaScriptCore via [purego](https://github.com/ebitengine/purego) | [modernc.org/quickjs](https://pkg.go.dev/modernc.org/quickjs) (pure Go) | [dop251/goja](https://github.com/dop251/goja) (pure Go, reflect-based) |
+| **JIT** | Yes | No | No |
+| **Platforms** | macOS, Linux | macOS, Linux, **Windows**, FreeBSD | macOS, Linux, **Windows**, FreeBSD |
+| **System deps** | macOS: none. Linux: libjavascriptcoregtk | None | None |
+| **Spec coverage** | ES2023 | ES2023 | ~ES2017 (~94% ES spec); esbuild lowers newer syntax |
+| **Best for** | Performance, HTTP servers | Embedding, scripting, portability | Pure-Go embedding, Windows-native, no cgo signal forwarding |
 
-Both are pure Go at build time: `go build` needs no C toolchain. Runtime deps differ: JSC resolves the system JavaScriptCore (zero install on macOS, `libjavascriptcoregtk-4.1` on Linux); QuickJS has none.
+All three are pure Go at build time: `go build` needs no C toolchain. Runtime deps differ: JSC resolves the system JavaScriptCore (zero install on macOS, `libjavascriptcoregtk-4.1` on Linux); QuickJS and goja have none.
 
 **For AI coding agents:** `ramune skills install` adds an [Agent Skill](https://agentskills.io/) that teaches Claude Code, GitHub Copilot, and similar tools how to use Ramune's APIs and CLI.
 
@@ -173,6 +179,14 @@ go install -tags quickjs github.com/i2y/ramune/cmd/ramune-toolchain@latest  # op
 ```
 
 The QuickJS backend uses [modernc.org/quickjs](https://pkg.go.dev/modernc.org/quickjs) (pure Go, ES2023). No shared libraries needed — works on **Windows**, macOS, Linux, and FreeBSD. Trade-off: no JIT, so CPU-bound code is slower (see [Performance](#performance)).
+
+### Goja backend (`-tags goja`, pure Go, reflect-based)
+
+```bash
+go install -tags goja github.com/i2y/ramune/cmd/ramune@latest
+```
+
+The goja backend wraps [dop251/goja](https://github.com/dop251/goja) unchanged, so it's a **drop-in for existing goja users**: scripts and Go interop code that run on goja directly run on Ramune with `-tags goja` with no behavioral change, and can later switch to `-tags quickjs` or the default JSC build to gain throughput without touching the handler code. goja is a reflection-based Go JS interpreter with ~94% ECMAScript coverage. Appropriate when you want **pure-Go embedding on Windows** without any shared libraries and want to avoid the cgo signal-forwarding requirement that JSC needs on Linux/arm64. CLI commands auto-lower modern JS (private class fields, top-level await, etc.) to ES2017 via esbuild so source code that works on JSC/QuickJS keeps working here.
 
 ### Smaller binary
 
@@ -440,9 +454,13 @@ ramune serve --sqlite :memory:  worker.ts # non-persistent env.DB/env.KV
 
 `ctx.waitUntil(promise)` keeps the executor alive after the response
 goes out. `env.SECRETS` reads `RAMUNE_SECRET_*` env vars. `env.DB`
-(D1-style subset, see Scope above) and `env.KV` (Workers-KV-like)
-are backed by SQLite at `.ramune/data.db` by default. Works with
-Hono directly (`export default app`).
+(D1-compatible API subset, see Scope above) and `env.KV`
+(Workers-KV-like API) are backed by a single-node local SQLite file at
+`.ramune/data.db` by default — this matches the D1/Workers-KV handler
+surface, not their distributed storage profile. For production
+horizontal scaling, implement `DBBackend` / `KVBackend` against your
+actual database (Postgres, Redis, etc.) and bind via `WithDBBackend` /
+`WithKVBackend`. Works with Hono directly (`export default app`).
 
 An optional `ramune.toml` next to the entry declares dependencies,
 permissions, and named KV bindings:
@@ -892,6 +910,8 @@ Supports: `ping`, `pull`, `createContainer`, `start/stop/remove/wait/inspect/log
 
 ## Performance
 
+**TL;DR.** Use JSC for raw single-worker throughput and latency-sensitive setups (1-3 workers). Use QuickJS for zero-dependency `FROM scratch` Docker and many-worker deployments where scaling factor matters. Use goja for pure-Go embedding on Windows without cgo signal forwarding. All three share the same Ramune API and the same Workers-style handler surface.
+
 ### JSC backend (default)
 
 Relative performance on Apple M4 Max with JIT enabled. Absolute numbers shift with Go toolchain, hardware, and thermal state; run `make bench` for numbers on your machine.
@@ -922,26 +942,63 @@ Same machine, no JIT. Without a JIT compiler, QuickJS is orders of magnitude slo
 | File I/O x100 | ~1.3x slower | ~2x slower |
 | HTTP req/s (single) | ~1.5x slower | ~2.5x slower |
 
+### Goja backend (`-tags goja`)
+
+Pure-Go reflection-based interpreter. Slower on CPU-heavy JS than QuickJS but with the widest platform reach and zero system dependencies.
+
 ### Multi-Runtime Pool
 
-Ramune runs multiple JS VMs in parallel on separate OS threads (Bun/Node are single-threaded):
+Ramune runs multiple JS VMs in parallel on separate OS threads (Bun/Node are single-threaded). Measured on Apple M4 Max with `bench/pool/pool_bench.go` (JSON generate/filter/map handler, 200 objects per request, `wrk -t4 -c100 -d10s`). Numbers below are the **median of 3 runs per backend**; reproduce with `go build [-tags quickjs|-tags goja] -o pool bench/pool/pool_bench.go && ./pool 6`.
 
-| Workers | Scaling vs 1 worker |
-|---------|---------------------|
-| 1 | 1.0x (baseline) |
-| 2 | ~1.4x |
-| 3 | ~1.5x |
+#### JSC (default)
 
-Measured with a JSON generate/filter/map handler (200 objects per request). Scaling plateaus around 3 workers due to JSC JIT contention and purego FFI overhead; absolute req/s depends on your workload (run `make bench` to measure).
+| Workers | req/s | Scaling |
+|---------|-------|---------|
+| 1 | 16,229 | 1.0x |
+| 2 | 23,489 | 1.45x |
+| 3 | 23,645 | 1.46x |
+| 4 | 19,479 | 1.20x |
+| 5 | 15,951 | 0.98x |
+| 6 | 14,448 | 0.89x |
+
+JSC wins on single-worker throughput (JIT). Scaling peaks around 2-3 workers (~23.5k req/s) and regresses past 4 back to 14.4k at 6 workers. This is a property of JSC itself, not a Ramune-specific issue: the JSC VM serializes on shared JIT state (code cache, inline cache stubs) when multiple runtimes execute in the same process on separate threads, and purego FFI crossings add lock contention on top. For latency-sensitive workloads, run 1-3 workers.
+
+#### QuickJS (`-tags quickjs`)
+
+| Workers | req/s | Scaling |
+|---------|-------|---------|
+| 1 | 1,528 | 1.0x |
+| 2 | 2,947 | 1.93x |
+| 3 | 4,271 | 2.79x |
+| 4 | 5,079 | 3.32x |
+| 5 | 5,820 | 3.81x |
+| 6 | 6,184 | 4.05x |
+
+Monotonic out to 6 workers thanks to the vendored libc fork in `third_party/libc/` (per-TLS allocator + page-owner routing). Without the fork, contention on the global allocator flattens throughput past 1 worker. Best scaling factor of the three, but lowest single-worker absolute throughput.
+
+#### goja (`-tags goja`)
+
+| Workers | req/s | Scaling |
+|---------|-------|---------|
+| 1 | 3,941 | 1.0x |
+| 2 | 6,425 | 1.63x |
+| 3 | 8,220 | 2.09x |
+| 4 | 9,445 | 2.40x |
+| 5 | 10,377 | 2.63x |
+| 6 | 11,166 | 2.83x |
+
+Pure-Go dispatch, no cgo signal forwarding or allocator contention. Monotonic out to 6 workers with a shallower slope than QuickJS, but higher absolute throughput at every worker count among pure-Go backends.
+
+**Backend selection by shape.** JSC wins single-worker and peaks at 2 workers (best for latency-sensitive workloads). QuickJS has the best multiplicative scaling (best multi-core efficiency, especially for many-worker deployments). goja wins absolute multi-worker throughput among pure-Go backends. Pick the backend that matches your target shape.
 
 ### vs Go JS Runtimes
 
-Ramune with JSC+JIT vs other Go-embedded JS runtimes:
+Ramune with JSC+JIT vs other Go-embedded JS runtimes (absolute ms per workload, lower is better):
 
-| Workload | Ramune (JSC+JIT) | QuickJS | goja | otto |
-|---|---|---|---|---|
-| Fibonacci(35) | 1x (ref) | ~100x slower | ~65x slower | ~850x slower |
-| JSON 10K objects | 1x (ref) | ~30x slower | ~12x slower | ~30x slower |
+| Test | Ramune (JSC+JIT) | Ramune (QuickJS) | Ramune (goja) | otto |
+|------|-----------------|-----------------|---------------|------|
+| Fibonacci(35) | **31ms** | 3,122ms | 1,989ms | 26,413ms |
+| JSON 10K objects | **0.9ms** | 30ms | 11ms | 27ms |
 
 JSC with JIT is the fastest Go-embedded JS runtime by 1-2 orders of magnitude on CPU-heavy code. QuickJS (pure Go interpreter) is comparable to goja for JSON workloads and much slower on CPU-heavy code. otto is the slowest across all tests.
 
@@ -1027,7 +1084,7 @@ Supports `http2.connect()`, `createServer()`, `createSecureServer()`, stream mul
 
 ## Web Platform APIs
 
-Ramune implements the [WinterTC Minimum Common Web API](https://min-common-api.proposal.wintertc.org/) (ECMA-429), the standard API surface shared across non-browser JS runtimes (Deno, Cloudflare Workers, Bun, Node.js).
+Ramune implements the [WinterTC Minimum Common Web API](https://min-common-api.proposal.wintertc.org/) (ECMA-429), the standard API surface shared across non-browser JS runtimes (Deno, Cloudflare Workers, Bun, Node.js). The implementation is Go-side, so the Web API surface is consistent across all three backends (JSC, QuickJS, goja); only `WebAssembly` is JSC-only, and all other APIs below behave identically regardless of the backend.
 
 | API | Status |
 |-----|--------|
@@ -1068,6 +1125,8 @@ make test-wpt   # run WPT conformance tests
 
 Pass rates measure coverage against the full WPT subtest corpus, which includes browser-only edge cases irrelevant to a non-browser runtime (layout, DOM mutation, cross-window postMessage, etc.). Mainstream Workers patterns like `fetch`, `Response.json`, basic streaming readers/writers, and compression round-trips work reliably in practice; the unmet percentages are dominated by those browser-specific subtests and a handful of obscure stream-controller races. Run `make test-wpt` for the exact failing subtests per category.
 
+Most categories pass at identical rates across all three backends because the Web APIs are Go-side polyfills:
+
 | Category | Pass Rate |
 |----------|-----------|
 | timers | 100% |
@@ -1075,10 +1134,18 @@ Pass rates measure coverage against the full WPT subtest corpus, which includes 
 | hr-time | 86% |
 | FileAPI/blob | 82% |
 | microtask-queuing | 80% |
-| compression | 63% |
-| streams | 55% |
-| dom/events | 46% |
 | dom/abort | 61% |
+
+Backend-sensitive categories (differ because the underlying JS engine affects behavior or the polyfill interacts with engine-specific scheduling):
+
+| Category | JSC | QuickJS | goja |
+|----------|-----|---------|------|
+| compression | 63% | 55% | 53% |
+| streams | 53% | 53% | 51% |
+| dom/events | 46% | 53%† | 53%† |
+| webmessaging | 33% | 18% | 33% |
+
+†QuickJS and goja skip `AddEventListenerOptions-signal.any.js` which hangs on both engines; goja additionally skips `gb18030-decoder.any.js` which triggers a goja parser panic on `\u{10FFFF}` string literals. Skip list lives in `wpt_test.go`.
 
 WPT checkout is required (`test/wpt/`). See `make test-wpt` output for setup instructions.
 
@@ -1111,15 +1178,16 @@ Status is experimental; generated code may need manual fixes for complex codebas
 - **Linux multi-runtime (JSC)**: Architecture-dependent signal handling. On arm64, `CGO_ENABLED=1` and gcc are required for multi-runtime (cgo's signal forwarding is needed for JSC's GC). On x86_64, multi-runtime works without cgo (`CGO_ENABLED=0`).
 - **Multi-worker scaling (JSC)**: Scaling flattens around 3-4 workers on macOS due to JSC JIT contention and purego FFI overhead. Linux (libjavascriptcoregtk) may differ.
 - **QuickJS backend**: No JIT; CPU-bound JS is orders of magnitude slower than JSC (see [Performance](#quickjs-backend--tags-quickjs)). Error stack traces not available. Best for embedding/scripting, not compute-heavy workloads.
+- **goja backend**: ~94% ECMAScript spec coverage (no SharedArrayBuffer, Atomics, or WebAssembly; no raw `for await` parsing without lowering). esbuild lowers private class fields, top-level await, and other post-ES2017 syntax at `run`/`eval` time. Some subsystems are stubbed (WebSocket upgrade path). No JS error stack traces exposed to Go.
 - **Native module instance lifecycle**: Struct instances returned to JS are not automatically freed when the JS object is garbage collected. Instances are cleaned up when `Runtime.Close()` is called. For long-running servers creating many short-lived struct instances, this may cause increased memory usage.
 
 ## Requirements
 
-| | JSC backend (default) | QuickJS backend (`-tags quickjs`) |
-|---|---|---|
-| **Go** | 1.26+ | 1.26+ |
-| **Platforms** | macOS, Linux | macOS, Linux, Windows, FreeBSD |
-| **System deps** | macOS: none. Linux: `apt install libjavascriptcoregtk-4.1-dev` | None |
+| | JSC backend (default) | QuickJS backend (`-tags quickjs`) | goja backend (`-tags goja`) |
+|---|---|---|---|
+| **Go** | 1.26+ | 1.26+ | 1.26+ |
+| **Platforms** | macOS, Linux | macOS, Linux, Windows, FreeBSD | macOS, Linux, Windows, FreeBSD |
+| **System deps** | macOS: none. Linux: `apt install libjavascriptcoregtk-4.1-dev` | None | None |
 
 All tools are built in — no external dependencies needed for `check`, `fmt`, `lint`, or TypeScript transpilation. npm packages are fetched directly from the npm registry — no npm or bun CLI required.
 
@@ -1148,8 +1216,11 @@ Ramune includes code from the following projects:
 |---------|---------|-------|-----------|
 | [microsoft/typescript-go](https://github.com/microsoft/typescript-go) | Apache-2.0 | Type checker, formatter (TS 7.0-dev) | Source copy (`internal/tsgo/`) |
 | [web-infra-dev/rslint](https://github.com/web-infra-dev/rslint) | MIT | Linter | Source copy (`internal/rslint/`) |
+| [modernc.org/libc](https://gitlab.com/cznic/libc) | BSD-3-Clause | Pure-Go libc for QuickJS/SQLite multi-worker scaling (fork with per-TLS allocator + page-owner routing; see `third_party/libc/pageowner.go` and the local patches to `mem.go` / `pthread.go` / `libc_darwin.go` / `mem_musl.go` / `libc_musl.go`) | Source copy (`third_party/libc/`) via `replace` directive |
+| [modernc.org/quickjs](https://pkg.go.dev/modernc.org/quickjs) | BSD-3-Clause | QuickJS backend (`-tags quickjs`) | Go module dependency |
+| [dop251/goja](https://github.com/dop251/goja) | MIT | goja backend (`-tags goja`) | Go module dependency |
 | [evanw/esbuild](https://github.com/evanw/esbuild) | MIT | TypeScript transpilation, bundling | Go module dependency |
 
-License texts for source-copied projects are in `internal/tsgo/LICENSE`, `internal/rslint/LICENSE`, and `internal/rslint/tsgo_pinned/LICENSE` (a separate tsgo copy pinned to rslint's version for its shim bindings).
+License texts for source-copied projects are in `internal/tsgo/LICENSE`, `internal/rslint/LICENSE`, `internal/rslint/tsgo_pinned/LICENSE` (a separate tsgo copy pinned to rslint's version for its shim bindings), and `third_party/libc/LICENSE` (together with `AUTHORS`, `CONTRIBUTORS`, and `LICENSE-3RD-PARTY.md` preserved from upstream).
 
 The Ramune logo includes the Go Gopher, originally designed by [Renée French](https://reneefrench.blogspot.com/), licensed under [Creative Commons Attribution 4.0](https://creativecommons.org/licenses/by/4.0/).

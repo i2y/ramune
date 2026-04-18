@@ -1,12 +1,13 @@
 # Ramune
 
-> Foundation for building Workers-style platforms in Go; Cloudflare-Workers-compatible out of the box. Author handlers as Workers-style ES modules (`export default { fetch(req, env, ctx), scheduled }`), serve them with the `ramune serve` CLI or the `workers.Register` Go API, and **design your own `env`** (Redis, Postgres, S3, SMTP, your own gRPC service, anything) by registering a callback and a tiny JS facade. Code written against Cloudflare Workers runs unchanged because the default surface is CF-compatible. Also a complete JS/TS runtime (run/test/check/fmt/lint/repl/compile) and embeddable JS engine. Dual backend: JavaScriptCore (JIT, macOS/Linux) via [purego](https://github.com/ebitengine/purego) and QuickJS (pure Go, cross-platform incl. Windows) via [modernc.org/quickjs](https://pkg.go.dev/modernc.org/quickjs), no Cgo required for either.
+> Foundation for building Workers-style platforms in Go; Cloudflare-Workers-compatible out of the box. Author handlers as Workers-style ES modules (`export default { fetch(req, env, ctx), scheduled }`), serve them with the `ramune serve` CLI or the `workers.Register` Go API, and **design your own `env`** (Redis, Postgres, S3, SMTP, your own gRPC service, anything) by registering a callback and a tiny JS facade. Code written against Cloudflare Workers runs unchanged because the default surface is CF-compatible. Also a complete JS/TS runtime (run/test/check/fmt/lint/repl/compile) and embeddable JS engine. Tri-backend: JavaScriptCore (JIT, macOS/Linux) via [purego](https://github.com/ebitengine/purego), QuickJS (pure Go, cross-platform incl. Windows) via [modernc.org/quickjs](https://pkg.go.dev/modernc.org/quickjs), and goja (pure Go, reflect-based) via [dop251/goja](https://github.com/dop251/goja) — no Cgo required for any of them.
 
 ## Backends
 
-Two backends, same API:
+Three backends, same API:
 - **JSC** (default): Apple JavaScriptCore via purego. JIT, macOS/Linux.
 - **QuickJS** (`-tags quickjs`): modernc.org/quickjs, pure Go. No JIT, macOS/Linux/Windows/FreeBSD.
+- **goja** (`-tags goja`): dop251/goja, pure Go, reflect-based. No JIT, ~94% ECMAScript coverage, macOS/Linux/Windows/FreeBSD.
 
 ## Getting Started
 
@@ -116,9 +117,21 @@ Two backends, same API:
 | JSON 10K | 65.1ms | 17.6ms | 9.0ms | 22.0ms |
 | HTTP req/s (single) | 66K | 101K | 165K | 111K |
 
-Multi-runtime pool: 1 worker 44K → 3 workers 68K req/s (JSON handler).
+### goja backend (`-tags goja`)
 
-vs Go runtimes (fib(35)): Ramune (JSC+JIT) 31ms vs Ramune (QuickJS) 3,122ms vs goja 1,989ms vs otto 26,413ms.
+Multi-Runtime Pool scaling (JSON handler, Apple M4 Max, wrk):
+
+| Workers | req/s | Scaling |
+|---------|-------|---------|
+| 1 | 3,909 | 1.0x |
+| 2 | 6,402 | 1.64x |
+| 3 | 8,026 | 2.05x |
+| 4 | 9,378 | 2.40x |
+| 6 | 10,947 | 2.80x |
+
+Multi-runtime pool (JSC): 1 worker 44K → 3 workers 68K req/s (JSON handler).
+
+vs Go runtimes (fib(35)): Ramune (JSC+JIT) 31ms vs Ramune (QuickJS) 3,122ms vs Ramune (goja) 1,989ms vs otto 26,413ms.
 
 Run `make bench` to reproduce.
 
