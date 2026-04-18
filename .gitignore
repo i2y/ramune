@@ -28,3 +28,6 @@ Thumbs.db
 
 # JSC bundle cache
 .cache/
+
+# ramune serve runtime data (SQLite files default here)
+.ramune/
