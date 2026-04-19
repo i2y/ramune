@@ -1176,7 +1176,7 @@ Named after [Ramune](https://en.wikipedia.org/wiki/Ramune), a Japanese carbonate
 ## Related Projects
 
 - **[Soda](https://github.com/i2y/soda)** — A drop-in Ramune-backed replacement for PocketBase's JSVM plugin. Lets PocketBase hooks be written as Workers-style `export default { fetch }` modules.
-- **[Dark](https://github.com/i2y/dark)** — Go SSR web framework: Preact templates, htmx interactions, Islands hydration. Built on `net/http`. Pairs well with Ramune-served endpoints.
+- **[Dark](https://github.com/i2y/dark)** — Go SSR web framework (Preact/React templates, htmx, Islands hydration) built on `net/http`. Uses Ramune internally for SSR, and ships as a native desktop app via WebView with Go↔JS bindings.
 
 ## License
 
