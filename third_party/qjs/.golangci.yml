@@ -1,0 +1,73 @@
+version: '2'
+
+run:
+  concurrency: 4
+  go: '1.22.0'
+
+linters:
+  default: all
+  disable:
+    - containedctx
+    - contextcheck
+    - cyclop
+    - depguard
+    - err113
+    - exhaustive
+    - exhaustruct
+    - gochecknoglobals
+    - gosmopolitan
+    - ireturn
+    - mnd
+    - nestif
+    - nilnil
+    - noinlineerr
+    - nonamedreturns
+    - unparam
+    - varnamelen
+    - wsl
+  settings:
+    dupl:
+      threshold: 100
+    funlen:
+      lines: 150
+      statements: 140
+    gosec:
+      excludes:
+        - G115
+        - G402
+    staticcheck:
+      checks:
+        - all
+        - -SA1029
+        - -ST1003
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      - linters:
+          - dupl
+          - funlen
+          - gocritic
+          - gosec
+        path: _test\.go
+      - linters:
+          - gocognit
+          - gocyclo
+        path: common.go
+    paths:
+      - examples$
+      - _test\.go
+
+formatters:
+  enable:
+    - gofmt
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

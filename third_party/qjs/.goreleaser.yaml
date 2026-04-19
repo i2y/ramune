@@ -1,0 +1,25 @@
+project_name: qjs
+dist: releases
+
+version: 1
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - skip: true
+
+archives:
+  - id: build_main
+    format: zip
+
+snapshot:
+  name_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"

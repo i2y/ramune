@@ -64,20 +64,43 @@ func WithTickManager(m TickManager) Option {
 	return func(c *config) { c.tickManagers = append(c.tickManagers, m) }
 }
 
+// ResourceLimits caps the resources a Runtime may consume. Currently only
+// honored by the qjswasm backend (it maps these to QuickJS-NG's
+// JS_SetMemoryLimit / JS_SetMaxStackSize / JS_SetGCThreshold). Other
+// backends silently ignore these limits.
+//
+// Zero means "unlimited" (backend default).
+type ResourceLimits struct {
+	// MaxMemoryBytes caps total JS heap in bytes. When exceeded, the engine
+	// aborts the current operation with an OOM-like error.
+	MaxMemoryBytes int64
+	// MaxStackBytes caps the JS stack in bytes. When exceeded, the engine
+	// throws a stack overflow error (recoverable).
+	MaxStackBytes int64
+	// GCThresholdBytes tunes when the GC kicks in. Lower = more aggressive.
+	GCThresholdBytes int64
+}
+
+// WithResourceLimits caps runtime resources. Only qjswasm honors these today.
+func WithResourceLimits(l ResourceLimits) Option {
+	return func(c *config) { c.resourceLimits = &l }
+}
+
 // config holds resolved configuration for a Runtime.
 type config struct {
-	libraryPath  string
-	dependencies []string // npm packages for Dependencies()
-	preloadJS    string   // JS to execute before loading dependency bundles
-	nodeCompat   bool     // install Node.js compatibility layer
-	withFetch    bool     // install fetch polyfill
-	winterTC     bool     // install WinterTC Minimum Common Web API
-	gc           *GCConfig
-	permissions  *Permissions
-	modules      []Module      // user-provided modules for require()
-	tickManagers []TickManager // custom event loop managers
-	stdout       io.Writer     // console.log output (default: os.Stdout)
-	stderr       io.Writer     // console.error output (default: os.Stderr)
+	libraryPath    string
+	dependencies   []string // npm packages for Dependencies()
+	preloadJS      string   // JS to execute before loading dependency bundles
+	nodeCompat     bool     // install Node.js compatibility layer
+	withFetch      bool     // install fetch polyfill
+	winterTC       bool     // install WinterTC Minimum Common Web API
+	gc             *GCConfig
+	permissions    *Permissions
+	resourceLimits *ResourceLimits
+	modules        []Module      // user-provided modules for require()
+	tickManagers   []TickManager // custom event loop managers
+	stdout         io.Writer     // console.log output (default: os.Stdout)
+	stderr         io.Writer     // console.error output (default: os.Stderr)
 }
 
 // Option configures a Runtime.

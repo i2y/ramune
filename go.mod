@@ -3,6 +3,7 @@ module github.com/i2y/ramune
 go 1.26
 
 require (
+	github.com/BurntSushi/toml v1.6.0
 	github.com/andybalholm/brotli v1.2.0
 	github.com/bmatcuk/doublestar/v4 v4.10.0
 	github.com/charmbracelet/lipgloss v1.1.0
@@ -12,6 +13,7 @@ require (
 	github.com/ebitengine/purego v0.10.0
 	github.com/ergochat/readline v0.1.3
 	github.com/evanw/esbuild v0.27.4
+	github.com/fastschema/qjs v0.0.6
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/go-json-experiment/json v0.0.0-20260214004413-d219187c3433
 	github.com/rivo/uniseg v0.4.7
@@ -32,14 +34,12 @@ require (
 )
 
 require (
-	github.com/BurntSushi/toml v1.6.0 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
 	github.com/charmbracelet/colorprofile v0.2.3-0.20250311203215-f60798e515dc // indirect
 	github.com/charmbracelet/x/ansi v0.8.0 // indirect
 	github.com/charmbracelet/x/cellbuf v0.0.13-0.20250311204145-2c3ea96c31dd // indirect
 	github.com/charmbracelet/x/term v0.2.1 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
-	github.com/fastschema/qjs v0.0.6 // indirect
 	github.com/go-sourcemap/sourcemap v2.1.3+incompatible // indirect
 	github.com/google/pprof v0.0.0-20250317173921-a4b03ec1a45e // indirect
 	github.com/google/uuid v1.6.0 // indirect
@@ -58,3 +58,5 @@ require (
 )
 
 replace modernc.org/libc => ./third_party/libc
+
+replace github.com/fastschema/qjs => ./third_party/qjs

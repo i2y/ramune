@@ -57,3 +57,46 @@ func TestQjswasmEngineName(t *testing.T) {
 		t.Fatalf("Engine() = %q, want \"qjswasm\"", got)
 	}
 }
+
+// TestQjswasmSandboxDisableFS verifies SandboxPermissions constructs the
+// runtime cleanly even with DisableFS on: the fastschema/qjs fork skips
+// the ambient WASI FS mount, so a QuickJS-NG VM escape cannot pivot
+// through WASI to reach host files — and regular JS keeps working.
+func TestQjswasmSandboxDisableFS(t *testing.T) {
+	r, err := ramune.New(
+		ramune.NodeCompat(),
+		ramune.WithPermissions(ramune.SandboxPermissions()),
+	)
+	if err != nil {
+		t.Fatalf("sandbox runtime: %v", err)
+	}
+	defer r.Close()
+
+	v, err := r.Eval("1 + 2")
+	if err != nil {
+		t.Fatalf("eval under sandbox: %v", err)
+	}
+	defer v.Close()
+	if f, _ := v.Float64(); f != 3 {
+		t.Fatalf("got %v, want 3", f)
+	}
+}
+
+// TestQjswasmResourceLimitsMemory verifies WithResourceLimits caps the JS
+// heap — a 1 MiB limit must fail a 10 MiB typed-array allocation rather
+// than consume host memory.
+func TestQjswasmResourceLimitsMemory(t *testing.T) {
+	r, err := ramune.New(
+		ramune.WithResourceLimits(ramune.ResourceLimits{
+			MaxMemoryBytes: 1 << 20,
+		}),
+	)
+	if err != nil {
+		t.Fatalf("runtime: %v", err)
+	}
+	defer r.Close()
+
+	if _, err := r.Eval(`new Uint8Array(10 * 1024 * 1024)`); err == nil {
+		t.Fatal("expected allocation to fail under 1 MiB memory cap")
+	}
+}

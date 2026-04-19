@@ -247,7 +247,7 @@ func (r *Runtime) qjswasmLoop(ready chan<- error, cfg *config) {
 
 	r.qjsGID.Store(goid())
 
-	rt, err := qjs.New()
+	rt, err := qjs.New(buildQJSOption(cfg))
 	if err != nil {
 		ready <- fmt.Errorf("ramune: qjs.New: %w", err)
 		return
@@ -391,6 +391,32 @@ func (r *Runtime) qjswasmLoop(ready chan<- error, cfg *config) {
 			return
 		}
 	}
+}
+
+// buildQJSOption translates Ramune's config into the fastschema/qjs Option
+// used for runtime construction. Security-relevant decisions land here:
+//   - DisableFS is enabled whenever permissions deny file access, so a
+//     QuickJS-NG VM escape can't pivot through WASI to reach the host FS.
+//   - Resource limits map to QuickJS-NG's memory / stack / GC caps.
+func buildQJSOption(cfg *config) qjs.Option {
+	opt := qjs.Option{}
+	if cfg == nil {
+		return opt
+	}
+
+	if p := cfg.permissions; p != nil {
+		if p.Read == PermDenied || p.Write == PermDenied {
+			opt.DisableFS = true
+		}
+	}
+
+	if l := cfg.resourceLimits; l != nil {
+		opt.MemoryLimit = int(l.MaxMemoryBytes)
+		opt.MaxStackSize = int(l.MaxStackBytes)
+		opt.GCThreshold = int(l.GCThresholdBytes)
+	}
+
+	return opt
 }
 
 func (r *Runtime) teardownLocked() {
