@@ -88,6 +88,16 @@ func (r *Runtime) dispatchGoFunc(ctx context.Context, mod api.Module,
 		if err := json.Unmarshal(msg, &v); err != nil {
 			return r.packErrorResult(fmt.Sprintf("arg %d: %s", i, err))
 		}
+		// The C trampoline replaces JS-function args with a marker object
+		// { "__jsfunc_ref": "<name>" } and stashes the original under
+		// globalThis[<name>]. Decode the marker back into *JSFunc here so
+		// Go handlers can keep calling JS callbacks.
+		if m, isMap := v.(map[string]any); isMap {
+			if ref, rok := m["__jsfunc_ref"].(string); rok && len(m) == 1 {
+				goArgs[i] = &JSFunc{rt: r, refName: ref}
+				continue
+			}
+		}
 		goArgs[i] = v
 	}
 

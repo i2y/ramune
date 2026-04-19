@@ -290,11 +290,16 @@ func (r *Runtime) qjswasmLoop(ready chan<- error, cfg *config) {
 	r.wzCtx = ctx
 	r.wzCancel = cancel
 
-	// Compiler mode is required for acceptable performance (see memory
-	// project_qjswasm_perf_model). Interpreter mode would truly be
-	// "interpreter in interpreter" and we explicitly opt out.
+	// Interpreter mode is the current default. wazero v1.11.0's compiler
+	// mode corrupts JSValue return values across host→wasm re-entry
+	// (reproducible: a Go callback that calls back into wasm via
+	// JSFunc.Call causes the outer JSCFunctionData trampoline to return
+	// the wrong value). Until that's resolved, we trade compiled-speed
+	// execution for correctness. The tradeoff is noted in
+	// project_qjswasm_perf_model memory; compiler mode remains a
+	// high-priority optimization once the re-entry issue is fixed.
 	r.wzCache = wazero.NewCompilationCache()
-	rtCfg := wazero.NewRuntimeConfigCompiler().
+	rtCfg := wazero.NewRuntimeConfigInterpreter().
 		WithCompilationCache(r.wzCache).
 		WithCloseOnContextDone(true)
 	r.wzRt = wazero.NewRuntimeWithConfig(ctx, rtCfg)
@@ -369,23 +374,112 @@ func (r *Runtime) qjswasmLoop(ready chan<- error, cfg *config) {
 		return
 	}
 
+	// NodeCompat installs the full Node.js API surface. Each install* is
+	// backend-agnostic (uses RegisterFunc + execLocked), so the set mirrors
+	// engine_goja.go / engine_quickjs.go. Exceptions:
+	//   - installSharedArrayBuffer depends on host SharedArrayBuffer support
+	//     (not implemented in the wasm shim yet).
 	if cfg.nodeCompat {
-		if err := r.installNodeCompat(); err != nil {
-			ready <- fmt.Errorf("ramune: nodecompat: %w", err)
+		steps := []struct {
+			name string
+			fn   func() error
+		}{
+			{"nodecompat", r.installNodeCompat},
+			{"async spawn", r.installAsyncSpawn},
+			{"async fs", r.installAsyncFS},
+			{"fs.watch", r.installFSWatch},
+			{"vm", r.installVM},
+			{"async net", r.installAsyncNet},
+			{"tcp server", r.installTCPServer},
+			{"dgram", r.installDgram},
+			{"worker_threads", r.installWorkerThreads},
+			{"http2", r.installHTTP2},
+			{"web streams", r.installWebStreams},
+			{"stream bridge", r.installStreamBridge},
+			{"web crypto", r.installWebCrypto},
+			{"bun compat", r.installBunCompat},
+			{"csrf", r.installCSRF},
+			{"archive", r.installArchive},
+			{"cron", r.installCron},
+			{"markdown", r.installMarkdown},
+			{"webview", r.installWebView},
+			{"cdp", r.installCDP},
+			{"sqlite", r.installSQLite},
+			{"WinterTC", r.installWinterTC},
+		}
+		for _, s := range steps {
+			if err := s.fn(); err != nil {
+				ready <- fmt.Errorf("ramune: %s: %w", s.name, err)
+				r.teardownLocked()
+				return
+			}
+		}
+	}
+
+	if cfg.winterTC && !cfg.nodeCompat {
+		if r.streamMgr == nil {
+			if err := r.installWebStreams(); err != nil {
+				ready <- fmt.Errorf("ramune: web streams: %w", err)
+				r.teardownLocked()
+				return
+			}
+		}
+		if err := r.installWinterTC(); err != nil {
+			ready <- fmt.Errorf("ramune: WinterTC: %w", err)
 			r.teardownLocked()
 			return
 		}
 	}
+
 	if cfg.withFetch || cfg.nodeCompat {
+		if r.streamMgr == nil {
+			if err := r.installWebStreams(); err != nil {
+				ready <- fmt.Errorf("ramune: web streams: %w", err)
+				r.teardownLocked()
+				return
+			}
+			if err := r.installStreamBridge(); err != nil {
+				ready <- fmt.Errorf("ramune: stream bridge: %w", err)
+				r.teardownLocked()
+				return
+			}
+		}
 		if err := r.installFetch(); err != nil {
 			ready <- fmt.Errorf("ramune: fetch: %w", err)
 			r.teardownLocked()
 			return
 		}
 	}
+
 	if cfg.preloadJS != "" {
 		if err := r.execLocked(cfg.preloadJS); err != nil {
 			ready <- fmt.Errorf("ramune: preload JS: %w", err)
+			r.teardownLocked()
+			return
+		}
+	}
+
+	if len(cfg.dependencies) > 0 {
+		bundle, nodeModulesDir, err := ensureBundle(cfg.dependencies, cfg.nodeCompat)
+		if err != nil {
+			ready <- err
+			r.teardownLocked()
+			return
+		}
+		if nodeModulesDir != "" {
+			r.execLocked(fmt.Sprintf("globalThis.__nodeModulesDir = %q;", nodeModulesDir))
+			r.execLocked(fmt.Sprintf("if (globalThis.process && globalThis.process.env) { globalThis.process.env.PATH = %q + ':' + (globalThis.process.env.PATH || ''); }", nodeModulesDir+"/.bin"))
+		}
+		if err := r.execLocked(bundle); err != nil {
+			ready <- fmt.Errorf("ramune: failed to load bundle: %w", err)
+			r.teardownLocked()
+			return
+		}
+	}
+
+	for _, m := range cfg.modules {
+		if err := r.loadModuleLocked(m); err != nil {
+			ready <- fmt.Errorf("ramune: module %s: %w", m.Name, err)
 			r.teardownLocked()
 			return
 		}

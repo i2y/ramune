@@ -134,17 +134,21 @@ func (v *Value) Bytes() ([]byte, error) {
 	if err := v.preflight(); err != nil {
 		return nil, err
 	}
-	// For now, go through JSON: Array.from(u8) -> [n1,n2,...] -> []byte.
+	// For now, go through JSON: Array.from(this) -> [n1,n2,...] -> []byte.
+	// Uses `this` (not an arg) because JSON.stringify of a Uint8Array
+	// collapses it to a {"0":...,"1":...} object and the array info is
+	// lost across the argv encoding boundary. val_call passes this_val as
+	// a direct handle, which preserves the Uint8Array identity.
 	var out []byte
 	var retErr error
 	v.rt.dispatch(func() {
-		coerce, err := v.rt.evalLocked("(function(v){return Array.from(v);})")
+		coerce, err := v.rt.evalLocked("(function(){return Array.from(this);})")
 		if err != nil {
 			retErr = err
 			return
 		}
 		defer coerce.Close()
-		arr, err := v.rt.callFunctionLocked(coerce.handle, 0, []uint64{v.handle})
+		arr, err := v.rt.callFunctionLocked(coerce.handle, v.handle, nil)
 		if err != nil {
 			retErr = err
 			return
@@ -274,7 +278,7 @@ func (v *Value) Keys() ([]string, error) {
 	var out []string
 	var err error
 	v.rt.dispatch(func() {
-		fnH, e := v.rt.rawEvalLocked("(function(o){return Object.keys(o);})",
+		fnH, e := v.rt.rawEvalLocked("(function(){return Object.keys(this);})",
 			"<keys>", 0)
 		if e != nil {
 			err = e
@@ -285,7 +289,7 @@ func (v *Value) Keys() ([]string, error) {
 			return
 		}
 		defer v.rt.freeValueLocked(fnH)
-		arrH, e := v.rt.callFunctionLocked(fnH, 0, []uint64{v.handle})
+		arrH, e := v.rt.callFunctionLocked(fnH, v.handle, nil)
 		if e != nil {
 			err = e
 			return
@@ -315,13 +319,18 @@ func (v *Value) Len() (int, error) {
 	return int(n), err
 }
 
-// Index returns the array element at i.
+// Index returns the array element at i. Out-of-bounds access returns nil
+// (matching the JSC backend's contract), not a Value wrapping undefined.
 func (v *Value) Index(i int) *Value {
 	if err := v.preflight(); err != nil {
 		return nil
 	}
 	val, err := v.AttrErr(strconv.Itoa(i))
-	if err != nil {
+	if err != nil || val == nil {
+		return nil
+	}
+	if val.IsUndefined() {
+		val.Close()
 		return nil
 	}
 	return val

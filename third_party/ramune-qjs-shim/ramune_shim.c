@@ -400,6 +400,13 @@ typedef struct {
  * JSCFunctionData trampoline. We stash the Go function id as an int32 in
  * `magic`. On invocation, JSON-encode the argv, call env.go_dispatch, parse
  * the result, and return it (or throw on { e: ... }).
+ *
+ * Function arguments: JSON.stringify drops function values (they serialize
+ * to undefined and get omitted from the output). To let Go callbacks hold
+ * references to JS callbacks, we pre-transform each function arg into a
+ * marker object { "__jsfunc_ref": "<name>" } and stash the original under
+ * globalThis[<name>]. The Go dispatcher decodes the marker into *JSFunc
+ * which later reads globalThis[<name>] to invoke the JS function.
  */
 static JSValue go_func_trampoline(JSContext *ctx, JSValueConst this_val,
                                   int argc, JSValueConst *argv, int magic,
@@ -407,16 +414,65 @@ static JSValue go_func_trampoline(JSContext *ctx, JSValueConst this_val,
     (void)this_val;
     (void)func_data;
 
-    /* Build argv as a JS Array so we can stringify it. */
+    /* Build argv as a JS Array so we can stringify it. Function args are
+     * replaced with marker objects (see note above). */
+    static uint32_t fn_ref_seq = 0;
+    JSValue global = JS_UNDEFINED;
+
     JSValue arr = JS_NewArray(ctx);
     if (JS_IsException(arr)) return arr;
     for (int i = 0; i < argc; i++) {
-        JSValue dup = JS_DupValue(ctx, argv[i]);
-        if (JS_SetPropertyUint32(ctx, arr, (uint32_t)i, dup) < 0) {
-            JS_FreeValue(ctx, arr);
-            return JS_EXCEPTION;
+        if (JS_IsFunction(ctx, argv[i])) {
+            if (JS_IsUndefined(global)) {
+                global = JS_GetGlobalObject(ctx);
+                if (JS_IsException(global)) {
+                    JS_FreeValue(ctx, arr);
+                    return global;
+                }
+            }
+            char ref_name[48];
+            fn_ref_seq++;
+            int n = snprintf(ref_name, sizeof(ref_name),
+                             "__jsfunc_wasm_%u", fn_ref_seq);
+            if (n <= 0 || n >= (int)sizeof(ref_name)) {
+                JS_FreeValue(ctx, global);
+                JS_FreeValue(ctx, arr);
+                return JS_ThrowInternalError(ctx, "jsfunc ref name overflow");
+            }
+            if (JS_SetPropertyStr(ctx, global, ref_name,
+                                  JS_DupValue(ctx, argv[i])) < 0) {
+                JS_FreeValue(ctx, global);
+                JS_FreeValue(ctx, arr);
+                return JS_EXCEPTION;
+            }
+            JSValue marker = JS_NewObject(ctx);
+            if (JS_IsException(marker)) {
+                JS_FreeValue(ctx, global);
+                JS_FreeValue(ctx, arr);
+                return marker;
+            }
+            if (JS_SetPropertyStr(ctx, marker, "__jsfunc_ref",
+                                  JS_NewString(ctx, ref_name)) < 0) {
+                JS_FreeValue(ctx, marker);
+                JS_FreeValue(ctx, global);
+                JS_FreeValue(ctx, arr);
+                return JS_EXCEPTION;
+            }
+            if (JS_SetPropertyUint32(ctx, arr, (uint32_t)i, marker) < 0) {
+                JS_FreeValue(ctx, global);
+                JS_FreeValue(ctx, arr);
+                return JS_EXCEPTION;
+            }
+        } else {
+            JSValue dup = JS_DupValue(ctx, argv[i]);
+            if (JS_SetPropertyUint32(ctx, arr, (uint32_t)i, dup) < 0) {
+                if (!JS_IsUndefined(global)) JS_FreeValue(ctx, global);
+                JS_FreeValue(ctx, arr);
+                return JS_EXCEPTION;
+            }
         }
     }
+    if (!JS_IsUndefined(global)) JS_FreeValue(ctx, global);
 
     JSValue json = JS_JSONStringify(ctx, arr, JS_UNDEFINED, JS_UNDEFINED);
     JS_FreeValue(ctx, arr);
@@ -443,23 +499,32 @@ static JSValue go_func_trampoline(JSContext *ctx, JSValueConst this_val,
     }
     JSValue parsed = JS_ParseJSON(ctx, (const char *)(uintptr_t)rptr,
                                   (size_t)rlen, "<go_dispatch>");
-    free((void *)(uintptr_t)rptr); /* Go malloc'd via rmn_malloc (== malloc) */
-    if (JS_IsException(parsed)) return parsed;
+    if (JS_IsException(parsed)) {
+        free((void *)(uintptr_t)rptr);
+        return parsed;
+    }
+
+    /* Defer freeing rptr until after we've finished using `parsed`. QuickJS
+     * JSON parsing can leave internal aliases into the source buffer for
+     * some value types; freeing early has been observed to corrupt the
+     * returned JSValue on wasm. */
+    JSValue result;
 
     /* Protocol: { "e": ... } -> throw ; { "__native_ref": "name" } -> pull
      * globalThis[name] ; { "r": value } -> return value directly. */
     JSValue e = JS_GetPropertyStr(ctx, parsed, "e");
     if (!JS_IsUndefined(e)) {
-        JS_FreeValue(ctx, parsed);
         JSValue msg = JS_ToString(ctx, e);
         JS_FreeValue(ctx, e);
         size_t mlen = 0;
         const char *m = JS_ToCStringLen(ctx, &mlen, msg);
-        JSValue err = m ? JS_ThrowInternalError(ctx, "%s", m)
-                        : JS_ThrowInternalError(ctx, "go dispatch error");
+        result = m ? JS_ThrowInternalError(ctx, "%s", m)
+                   : JS_ThrowInternalError(ctx, "go dispatch error");
         if (m) JS_FreeCString(ctx, m);
         JS_FreeValue(ctx, msg);
-        return err;
+        JS_FreeValue(ctx, parsed);
+        free((void *)(uintptr_t)rptr);
+        return result;
     }
     JS_FreeValue(ctx, e);
 
@@ -468,10 +533,9 @@ static JSValue go_func_trampoline(JSContext *ctx, JSValueConst this_val,
         JSValue global = JS_GetGlobalObject(ctx);
         size_t nlen = 0;
         const char *nname = JS_ToCStringLen(ctx, &nlen, nref);
-        JSValue held = nname ? JS_GetPropertyStr(ctx, global, nname)
-                             : JS_UNDEFINED;
+        result = nname ? JS_GetPropertyStr(ctx, global, nname)
+                       : JS_UNDEFINED;
         if (nname) {
-            /* delete globalThis[name] so Go doesn't have to. */
             JSAtom a = JS_NewAtomLen(ctx, nname, nlen);
             JS_DeleteProperty(ctx, global, a, 0);
             JS_FreeAtom(ctx, a);
@@ -480,13 +544,15 @@ static JSValue go_func_trampoline(JSContext *ctx, JSValueConst this_val,
         JS_FreeValue(ctx, global);
         JS_FreeValue(ctx, nref);
         JS_FreeValue(ctx, parsed);
-        return held;
+        free((void *)(uintptr_t)rptr);
+        return result;
     }
     JS_FreeValue(ctx, nref);
 
-    JSValue r = JS_GetPropertyStr(ctx, parsed, "r");
+    result = JS_GetPropertyStr(ctx, parsed, "r");
     JS_FreeValue(ctx, parsed);
-    return r;
+    free((void *)(uintptr_t)rptr);
+    return result;
 }
 
 RMN_EXPORT(register_go_func)
