@@ -96,16 +96,6 @@ func TestPoolHTTPServer(t *testing.T) {
 	if nWorkers > 8 {
 		nWorkers = 8
 	}
-	// Probe engine with a tiny standalone Runtime to decide whether to skip.
-	probe, err := ramune.New()
-	if err != nil {
-		t.Skipf("JSC not available: %v", err)
-	}
-	engine := probe.Engine()
-	probe.Close()
-	if engine == "qjswasm" {
-		t.Skip("RuntimePool HTTP dispatch not yet wired for qjswasm backend")
-	}
 	pool, err := ramune.NewPool(nWorkers)
 	if err != nil {
 		t.Skipf("JSC not available: %v", err)
