@@ -51,47 +51,11 @@ Four use cases, four audiences. Jump to the section that matches your motivation
 
 **4. Run JS/TS from the command line.** Not our main battlefield — Bun and Deno are faster for pure CLI use. But Ramune ships `ramune run` / `test` / `check` / `fmt` / `lint` / `repl` / `compile` with tsgo + rslint + esbuild built in, and is competitive (Node-equivalent HTTP, 1.3× faster than Node on CPU-fib). → see [Quick Start](#quick-start)
 
-## How it works
+## Key capabilities
 
-- **Design your own `env`.** The env you ship to handlers is yours,
-  not a fixed vendor surface. `env.KV` / `env.DB` are Go interfaces
-  (`KVBackend`, `DBBackend`); swap for Redis, Postgres, DynamoDB,
-  in-memory, anything by implementing them:
-
-  ```go
-  type redisKV struct{ c *redis.Client }
-
-  func (r *redisKV) Get(ns, k string) (string, bool, error) {
-      v, err := r.c.Get(ctx, ns+":"+k).Result()
-      if err == redis.Nil { return "", false, nil }
-      return v, err == nil, err
-  }
-  // ...Put, Delete, List
-
-  workers.Register(rt, "worker.ts", src, workers.WithKVBackend(&redisKV{c: myRedis}))
-  ```
-
-  Invent new bindings (`env.QUEUE`, `env.EMAIL`, `env.AI`, `env.R2`,
-  anything your product needs) by registering a Go callback plus a
-  tiny JS facade via `WithExtraEnvJS`. Handler code uses `env.FOO`
-  naturally. Walkthrough with the full pattern:
-  [`workers/BINDINGS.md`](workers/BINDINGS.md). Runnable example:
-  [`examples/workers/custom-binding/`](examples/workers/custom-binding/).
-- **Single-binary deploy.** `ramune compile worker.ts -o myworker`
-  bundles handler + runtime into one Go executable. No Kubernetes,
-  no Wrangler, no Dockerfile required; `scp ./myworker prod:` and
-  run. (qjswasm path is fully self-contained; JSC path still resolves
-  the system JSC at run time, see next bullet.)
-- **No Cgo at build; honest about runtime.** `go build`
-  cross-compiles to any `GOOS`/`GOARCH` without a C toolchain. JSC
-  backend loads JavaScriptCore dynamically via
-  [`purego`](https://github.com/ebitengine/purego): zero install on
-  macOS (JSC ships with the OS), `libjavascriptcoregtk-4.1` required
-  on Linux (a bundled JSCOnly build is on the roadmap). qjswasm
-  backend is pure Go with zero runtime dependencies (QuickJS-NG
-  compiled to WebAssembly, embedded into the Go binary and driven
-  by wazero) and runs on `FROM scratch` Docker, at the cost of JIT
-  performance.
+- **Design your own `env`.** `env.KV` / `env.DB` are Go interfaces (`KVBackend`, `DBBackend`) — plug Redis, Postgres, DynamoDB, in-memory, anything. Invent new bindings (`env.QUEUE` / `env.EMAIL` / `env.AI` / `env.R2` …) by registering a Go callback plus a tiny JS facade via `WithExtraEnvJS`. Walkthrough and runnable example: [`workers/BINDINGS.md`](workers/BINDINGS.md), [`examples/workers/custom-binding/`](examples/workers/custom-binding/).
+- **Single-binary deploy.** `ramune compile worker.ts -o myworker` bundles handler + runtime into one Go executable. No Kubernetes, no Wrangler, no Dockerfile required — `scp ./myworker prod:` and run. qjswasm path is fully self-contained; JSC path still resolves the system JSC at run time (see next bullet).
+- **No Cgo at build; honest about runtime.** `go build` cross-compiles to any `GOOS`/`GOARCH` without a C toolchain. JSC backend loads JavaScriptCore dynamically via [`purego`](https://github.com/ebitengine/purego) — zero install on macOS, `libjavascriptcoregtk-4.1` on Linux. qjswasm is pure Go with zero runtime dependencies (QuickJS-NG compiled to WebAssembly, embedded into the Go binary, driven by wazero) and runs on `FROM scratch` Docker.
 
 Tri-backend: **JavaScriptCore** (JIT, macOS/Linux) via [purego](https://github.com/ebitengine/purego), **qjswasm** (pure Go, cross-platform incl. Windows — QuickJS-NG compiled to WebAssembly and driven by wazero) via [fastschema/qjs](https://github.com/fastschema/qjs), and **goja** (pure Go, reflect-based, ~94% ECMAScript) via [github.com/dop251/goja](https://github.com/dop251/goja) — no Cgo required for any of them. Type checker and formatter ([typescript-go](https://github.com/microsoft/typescript-go)), linter ([rslint](https://github.com/web-infra-dev/rslint)), bundler ([esbuild](https://github.com/evanw/esbuild)), and all Node.js polyfills are built in with zero external tool dependencies.
 
@@ -409,18 +373,11 @@ The flagship command. Serve a Cloudflare-Workers-style ES-module
 handler — export a default object with `fetch(request, env, ctx)` and
 the CLI wires it up.
 
-**Scope.** Ships today: `fetch`, `env.KV`, `env.SECRETS`,
-`ctx.waitUntil`, `scheduled`, cron, WinterCG basics. `env.DB` is a
-D1-compatible API subset (`prepare`/`bind`/`all`/`first`/`run`/`exec`;
-`batch` and `raw` not yet implemented, `.all()` meta fields not
-populated). "D1-compatible" and "Workers-KV-like" describe API shape
-only — the defaults are a single-node local SQLite file, not
-Cloudflare's edge-replicated D1 or globally eventually-consistent
-Workers KV. Swap in Postgres / Planetscale / Redis / DynamoDB via
-`DBBackend` / `KVBackend` if you need distributed scaling. Not shipped,
-but implementable as user-supplied `env.*` bindings (see
-[`workers/BINDINGS.md`](workers/BINDINGS.md)): Durable Objects,
-Queues, R2, AI Gateway, Service Bindings, Hyperdrive.
+**Scope.** Three categories so you know what's on the critical path:
+
+- **Ships today:** `fetch`, `env.KV`, `env.SECRETS`, `ctx.waitUntil`, `scheduled`, cron, WinterCG basics, plus `env.DB` (D1-compatible API subset: `prepare` / `bind` / `all` / `first` / `run` / `exec`).
+- **Partial / API shape only:** `env.DB` `.batch` and `.raw` not yet implemented, `.all()` meta fields not populated. "D1-compatible" and "Workers-KV-like" describe the handler-side API shape only — the defaults are a single-node local SQLite file, not Cloudflare's edge-replicated D1 or globally eventually-consistent Workers KV. Swap in Postgres / Planetscale / Redis / DynamoDB via `DBBackend` / `KVBackend` when you need distributed scaling.
+- **User-supplied `env.*` bindings (not core):** Durable Objects, Queues, R2, AI Gateway, Service Bindings, Hyperdrive. Implement them as Go callbacks + tiny JS facades — walkthrough in [`workers/BINDINGS.md`](workers/BINDINGS.md). The core stays small so you aren't blocked waiting on us to ship a Cloudflare-equivalent.
 
 ```ts
 // worker.ts
@@ -1212,6 +1169,10 @@ make bench-go    # compare vs goja / otto (Go-embedded runtimes)
 make sync        # sync typescript-go & rslint from submodules
 ```
 
+## About the name
+
+Named after [Ramune](https://en.wikipedia.org/wiki/Ramune), a Japanese carbonated soft drink served in a Codd-neck bottle — the one with the marble you have to press down into the neck to open. Hoping for the same "fizz" inside a Go binary.
+
 ## License
 
 MIT
@@ -1234,5 +1195,3 @@ Ramune includes code from the following projects:
 License texts for source-copied projects are in `internal/tsgo/LICENSE`, `internal/rslint/LICENSE`, `internal/rslint/tsgo_pinned/LICENSE` (a separate tsgo copy pinned to rslint's version for its shim bindings), and `third_party/qjs/LICENSE` + `third_party/qjs/qjswasm/quickjs/LICENSE` (see `third_party/qjs/NOTICES.md`).
 
 The Ramune logo includes the Go Gopher, originally designed by [Renée French](https://reneefrench.blogspot.com/), licensed under [Creative Commons Attribution 4.0](https://creativecommons.org/licenses/by/4.0/).
-
-Named after [Ramune](https://en.wikipedia.org/wiki/Ramune), a Japanese carbonated soft drink served in a Codd-neck bottle.
