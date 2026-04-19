@@ -12,7 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/fastschema/qjs"
+	"github.com/i2y/ramune/third_party/qjs"
 )
 
 // Engine returns the name of the JS engine backend.

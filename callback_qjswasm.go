@@ -5,7 +5,7 @@ package ramune
 import (
 	"encoding/json"
 
-	"github.com/fastschema/qjs"
+	"github.com/i2y/ramune/third_party/qjs"
 )
 
 // RegisterFunc exposes a Go function to JS as globalThis[name].

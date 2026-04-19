@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"sync/atomic"
 
-	"github.com/fastschema/qjs"
+	"github.com/i2y/ramune/third_party/qjs"
 )
 
 // Value wraps a fastschema/qjs *Value. Close() calls Free() on the

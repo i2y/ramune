@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/fastschema/qjs"
+	"github.com/i2y/ramune/third_party/qjs"
 )
 
 // processRequests drains pending HTTP requests and dispatches them to the

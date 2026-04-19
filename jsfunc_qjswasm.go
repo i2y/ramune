@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"sync/atomic"
 
-	"github.com/fastschema/qjs"
+	"github.com/i2y/ramune/third_party/qjs"
 )
 
 // JSFunc wraps a JS function as a Go-callable handle. We keep the

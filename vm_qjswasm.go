@@ -5,7 +5,7 @@ package ramune
 import (
 	"fmt"
 
-	"github.com/fastschema/qjs"
+	"github.com/i2y/ramune/third_party/qjs"
 )
 
 // vmManager holds the per-Runtime state for the Node-style vm module.

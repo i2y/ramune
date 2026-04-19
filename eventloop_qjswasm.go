@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/fastschema/qjs"
+	"github.com/i2y/ramune/third_party/qjs"
 )
 
 // drainMicrotasks runs JS_ExecutePendingJob via the fastschema runtime.

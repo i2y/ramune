@@ -5,7 +5,7 @@ package ramune
 import (
 	"strconv"
 
-	"github.com/fastschema/qjs"
+	"github.com/i2y/ramune/third_party/qjs"
 )
 
 // processWSEvents drains pending WebSocket events and dispatches them
