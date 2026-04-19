@@ -3,8 +3,8 @@
 package ramune
 
 // workerLoop mirrors pool_goja.go structurally: drain up to 256 requests
-// off the worker's channel, dispatch as a batch, reply. M1-M7 produces
-// 500s via handleRequest (M7 implements real dispatch).
+// off the worker's channel, dispatch as a batch, reply. handleRequest is
+// a stub today and returns 500; real JS dispatch is not yet ported.
 func (p *RuntimePool) workerLoop(rt *Runtime, ch <-chan poolHTTPReq) {
 	batch := make([]poolHTTPReq, 0, 256)
 	resps := make([]httpResponse, 0, 256)
@@ -38,12 +38,13 @@ func (p *RuntimePool) workerLoop(rt *Runtime, ch <-chan poolHTTPReq) {
 	}
 }
 
-// handleRequest M1 stub: returns 500 for every incoming request. M7
-// wires up the real JS dispatch through __poolHandleFast.
+// handleRequest stub: returns 500. The real __poolHandleFast-based JS
+// dispatch (matching pool_goja.go / pool_quickjs.go) is not yet ported to
+// qjswasm.
 func (p *RuntimePool) handleRequest(r *Runtime, req poolHTTPReq) httpResponse {
 	return httpResponse{
 		Status: 500,
-		Body:   "RuntimePool on qjswasm is not yet wired (M7)",
+		Body:   "RuntimePool on qjswasm is not implemented",
 	}
 }
 

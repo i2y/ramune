@@ -1,6 +1,9 @@
 package ramune
 
-import "io"
+import (
+	"encoding/json"
+	"io"
+)
 
 // GoFunc is a Go function that can be called from JavaScript.
 // Arguments are converted to Go types: bool, float64, string, nil,
@@ -110,6 +113,14 @@ type noCopy struct{}
 
 func (*noCopy) Lock()   {}
 func (*noCopy) Unlock() {}
+
+// jsQuoteName returns a JSON-encoded string literal for safe JS embedding
+// (`foo"bar` -> `"foo\"bar"`). Used by backends that splice runtime names
+// into template JS snippets.
+func jsQuoteName(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
+}
 
 // itoa converts an int to string without importing strconv.
 // Used by async managers to build JS code strings.

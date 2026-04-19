@@ -10,9 +10,13 @@ import (
 	"github.com/tetratelabs/wazero/api"
 )
 
-// RegisterFunc exposes a Go function to JS as globalThis[name]. The JS
-// wrapper is identical to the QuickJS (modernc) backend's __goDispatch
-// protocol so all the downstream polyfill JS can be shared.
+// RegisterFunc exposes a Go function to JS as globalThis[name]. The JSON
+// contract on the Go↔wasm boundary matches the QuickJS (modernc) backend
+// (`{e: msg}` / `{r: value}` / `{__native_ref: name}`), so downstream JS
+// polyfills that were written for the existing __goDispatch protocol work
+// unchanged. The trampoline that JSON-encodes argv lives in C
+// (go_func_trampoline in ramune_shim.c) rather than in a Go-emitted JS
+// wrapper.
 func (r *Runtime) RegisterFunc(name string, fn GoFunc) error {
 	if r.closed.Load() {
 		return ErrAlreadyClosed
@@ -57,14 +61,6 @@ func (r *Runtime) RegisterFuncWithContext(name string, fn GoFuncWithContext) err
 	})
 }
 
-// jsQuoteName returns a JSON-encoded string for safe JS embedding. The
-// helper matches callback_quickjs.go's identical utility - we redeclare it
-// here because that file is gated behind -tags quickjs.
-func jsQuoteName(s string) string {
-	b, _ := json.Marshal(s)
-	return string(b)
-}
-
 // dispatchGoFunc is the Go side of env.go_dispatch. The wasm trampoline
 // already packed argv into a JSON array and malloc'd it in wasm memory.
 // We parse, invoke the matching Go handler, JSON-encode the response, and
@@ -91,13 +87,6 @@ func (r *Runtime) dispatchGoFunc(ctx context.Context, mod api.Module,
 		var v any
 		if err := json.Unmarshal(msg, &v); err != nil {
 			return r.packErrorResult(fmt.Sprintf("arg %d: %s", i, err))
-		}
-		// Detect JS-function reference marker
-		if m, isMap := v.(map[string]any); isMap {
-			if ref, rok := m["__jsfunc_ref"].(string); rok {
-				goArgs[i] = &JSFunc{rt: r, refName: ref}
-				continue
-			}
 		}
 		goArgs[i] = v
 	}

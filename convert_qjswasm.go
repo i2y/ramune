@@ -4,6 +4,7 @@ package ramune
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"reflect"
@@ -77,7 +78,7 @@ func (r *Runtime) goToJSLocked(v any) (uint64, error) {
 		return r.newUint8ArrayLocked(x)
 	case *Value:
 		if x == nil || x.rt != r {
-			return 0, fmt.Errorf("ramune: cross-runtime Value")
+			return 0, errors.New("ramune: cross-runtime Value")
 		}
 		res, err := r.wzExp.valDup.Call(r.wzCtx, uint64(r.qjsCtx), x.handle)
 		if err != nil {
@@ -90,10 +91,7 @@ func (r *Runtime) goToJSLocked(v any) (uint64, error) {
 
 	// Fallback: JSON round-trip.
 	rv := reflect.ValueOf(v)
-	if rv.Kind() == reflect.Ptr && rv.Elem().Kind() == reflect.Struct {
-		return r.structToJSObjectLocked(rv)
-	}
-	if rv.Kind() == reflect.Struct {
+	if k := rv.Kind(); k == reflect.Struct || (k == reflect.Ptr && rv.Elem().Kind() == reflect.Struct) {
 		return r.structToJSObjectLocked(rv)
 	}
 
@@ -207,8 +205,8 @@ func (r *Runtime) valFromJSONLocked(js string) (uint64, error) {
 // -----------------------------------------------------------------------
 
 func (r *Runtime) structToJSObjectLocked(rv reflect.Value) (uint64, error) {
-	// M1: JSON fallback only. M3+ extends to use nativeReg like the other
-	// backends so struct-returned values carry live getter/setter wiring.
+	// JSON fallback only: struct-returned values do not yet carry the
+	// live getter/setter wiring that nativeReg gives the other backends.
 	data, err := json.Marshal(rv.Interface())
 	if err != nil {
 		return 0, err

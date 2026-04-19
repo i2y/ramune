@@ -426,12 +426,14 @@ static JSValue go_func_trampoline(JSContext *ctx, JSValueConst this_val,
     JS_FreeValue(ctx, json);
     if (!jstr) return JS_EXCEPTION;
 
+    /* jstr points into QuickJS-owned memory inside this wasm module's
+     * linear memory. Since Go's wazero host function receives that
+     * pointer in the same address space, it can read it without a copy.
+     * The contract: Go must finish reading before we call JS_FreeCString.
+     * env.go_dispatch is synchronous so the order below is sufficient. */
     uint64_t packed = go_dispatch((uint32_t)magic,
                                   (uint32_t)(uintptr_t)jstr,
                                   (uint32_t)jlen);
-    /* We copy the jstr contents into wasm memory that Go can read. Since
-     * JS_ToCStringLen already returns a pointer into wasm memory (we are
-     * wasm!), Go reads it directly. Release after dispatch returns. */
     JS_FreeCString(ctx, jstr);
 
     uint32_t rptr = (uint32_t)(packed >> 32);
@@ -496,9 +498,13 @@ int32_t register_go_func(uint32_t ctx_u, uint32_t name_ptr, uint32_t name_len,
                                      /*length*/ 0, /*magic*/ (int)id,
                                      /*data_len*/ 0, NULL);
     if (JS_IsException(fn)) return -1;
-    JSValue global = JS_GetGlobalObject(ctx);
     JSAtom a = JS_NewAtomLen(ctx, (const char *)(uintptr_t)name_ptr,
                              (size_t)name_len);
+    if (a == JS_ATOM_NULL) {
+        JS_FreeValue(ctx, fn);
+        return -1;
+    }
+    JSValue global = JS_GetGlobalObject(ctx);
     int rc = JS_SetProperty(ctx, global, a, fn);
     JS_FreeAtom(ctx, a);
     JS_FreeValue(ctx, global);
@@ -525,6 +531,8 @@ uint64_t exception_to_json(uint32_t ctx_u, uint64_t exc) {
     JSValue msg_v = JS_ToString(ctx, exc);
     if (!JS_IsException(msg_v)) {
         JS_SetPropertyStr(ctx, info, "message", msg_v);
+    } else {
+        JS_FreeValue(ctx, msg_v);
     }
 
     JSValue name_v = JS_GetPropertyStr(ctx, exc, "name");

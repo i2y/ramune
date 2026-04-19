@@ -4,15 +4,17 @@ package ramune
 
 import (
 	"encoding/json"
-	"fmt"
+	"errors"
+	"strconv"
+	"strings"
 	"sync/atomic"
 )
 
 // Value wraps a QuickJS JSValue (NaN-boxed uint64) living inside the wasm
 // module. Multiple Go references to the same JSValue are allowed — we use
 // the shim's val_dup to keep refcounts correct when a Value is cloned by
-// the Go side. M1 Close() is a deliberate no-op; the VM releases everything
-// on Runtime.Close().
+// the Go side. Close() is a deliberate no-op today; the VM releases
+// everything on Runtime.Close(). See freeValueLocked for the rationale.
 type Value struct {
 	noCopy noCopy
 	handle uint64 // NaN-boxed JSValue
@@ -126,7 +128,8 @@ func (v *Value) Bool() (bool, error) {
 }
 
 // Bytes returns the underlying bytes for a Uint8Array or ArrayBuffer-like
-// value. M1: JSON fallback path; M6 will add a direct buffer export.
+// value. Currently a JSON fallback path (expensive for large buffers); a
+// direct buffer export that copies via Memory().Read would be much faster.
 func (v *Value) Bytes() ([]byte, error) {
 	if err := v.preflight(); err != nil {
 		return nil, err
@@ -193,7 +196,7 @@ func (v *Value) IsPromise() bool   { return v.kind()&valKindPromise != 0 }
 func (v *Value) IsException() bool { return v.kind()&valKindException != 0 }
 
 // -----------------------------------------------------------------------
-// Property / array ops — M1-scope stubs
+// Property / array ops
 // -----------------------------------------------------------------------
 
 // Attr reads a property. Returns a new Value that must be Closed.
@@ -261,7 +264,9 @@ func (v *Value) SetAttr(name string, value any) error {
 	return err
 }
 
-// Keys returns the property names of an object (via JSON fallback for M1).
+// Keys returns the property names of an object (JSON fallback — a
+// dedicated object-keys export would avoid the per-call eval of the
+// JS helper function).
 func (v *Value) Keys() ([]string, error) {
 	if err := v.preflight(); err != nil {
 		return nil, err
@@ -315,17 +320,15 @@ func (v *Value) Index(i int) *Value {
 	if err := v.preflight(); err != nil {
 		return nil
 	}
-	var out *Value
-	v.rt.dispatch(func() {
-		val, err := v.AttrErr(fmt.Sprint(i))
-		if err == nil {
-			out = val
-		}
-	})
-	return out
+	val, err := v.AttrErr(strconv.Itoa(i))
+	if err != nil {
+		return nil
+	}
+	return val
 }
 
-// Has / Delete stubs for M1 - will be filled in M6.
+// Has reports whether the object has an own or inherited property with
+// the given name.
 func (v *Value) Has(name string) bool {
 	if err := v.preflight(); err != nil {
 		return false
@@ -459,23 +462,18 @@ func (r *Runtime) valToJSONLocked(h uint64) (string, error) {
 	}
 	ptr, length := unpackPtrLen(res[0])
 	if ptr == 0 {
-		return "", fmt.Errorf("ramune: val_to_json returned 0")
+		return "", errors.New("ramune: val_to_json returned 0")
 	}
 	defer r.wasmFreeLocked(ptr)
 	return r.readStringLocked(ptr, length)
 }
 
+// callFunctionLocked invokes a JS function with argv expressed as handles.
+// The shim's val_call takes a JSON array of VALUES, so we serialize each
+// argv handle through val_to_json and join the fragments. A dedicated
+// handle-array call export would avoid the JSON round-trip.
 func (r *Runtime) callFunctionLocked(fn, this uint64, args []uint64) (uint64, error) {
-	argsJSON, err := json.Marshal(argsAsAny(args, r))
-	if err != nil {
-		return 0, err
-	}
-	// The shim expects a JSON array of VALUES, not handles. For our
-	// internal call paths we already have handles — convert each via
-	// val_to_json then build a JSON array.
-	// TODO(M3): bypass JSON by exposing a handle-array call export.
 	jsonArr, err := r.buildArgsJSONFromHandles(args)
-	_ = argsJSON // retained for when we switch encoding
 	if err != nil {
 		return 0, err
 	}
@@ -492,17 +490,16 @@ func (r *Runtime) callFunctionLocked(fn, this uint64, args []uint64) (uint64, er
 	return res[0], nil
 }
 
-// buildArgsJSONFromHandles JSON-encodes each argv by roundtripping through
-// val_to_json. Only used for internal call paths (Keys, Bytes); user-facing
-// Value.Call uses plain JSON args because the caller supplies plain Go
-// values. This is a minor inefficiency that M3's handle-aware call export
-// will fix.
 func (r *Runtime) buildArgsJSONFromHandles(args []uint64) (string, error) {
 	if len(args) == 0 {
 		return "[]", nil
 	}
-	parts := make([]string, 0, len(args))
-	for _, h := range args {
+	var buf strings.Builder
+	buf.WriteByte('[')
+	for i, h := range args {
+		if i > 0 {
+			buf.WriteByte(',')
+		}
 		j, err := r.valToJSONLocked(h)
 		if err != nil {
 			return "", err
@@ -510,16 +507,8 @@ func (r *Runtime) buildArgsJSONFromHandles(args []uint64) (string, error) {
 		if j == "" {
 			j = "null"
 		}
-		parts = append(parts, j)
+		buf.WriteString(j)
 	}
-	buf := "[" + parts[0]
-	for i := 1; i < len(parts); i++ {
-		buf += "," + parts[i]
-	}
-	buf += "]"
-	return buf, nil
+	buf.WriteByte(']')
+	return buf.String(), nil
 }
-
-// argsAsAny is a placeholder used by the retained marshal call above.
-// It intentionally returns nil to signal "use handle route instead".
-func argsAsAny(_ []uint64, _ *Runtime) []any { return nil }

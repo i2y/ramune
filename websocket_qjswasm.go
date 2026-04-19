@@ -2,9 +2,7 @@
 
 package ramune
 
-// processWSEvents is the qjswasm WebSocket event pump. M1-M7: no-op, and
-// the Bun.serve WebSocket upgrade path is disabled (the server side
-// rejects the upgrade). M8 ports the goja implementation.
-func (s *bunServerState) processWSEvents(r *Runtime) {
-	// No-op until M8.
-}
+// processWSEvents is the qjswasm WebSocket event pump. Currently a
+// no-op — Bun.serve's WebSocket upgrade path is not ported, so the
+// server side never produces events for the pump to drain.
+func (s *bunServerState) processWSEvents(r *Runtime) {}

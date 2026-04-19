@@ -5,7 +5,7 @@ package ramune
 import (
 	"context"
 	_ "embed"
-	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -500,11 +500,12 @@ func (r *Runtime) rawEvalLocked(code, fname string, flags uint32) (uint64, error
 	// Drain any microtasks queued by the eval (Promise.resolve().then(...)
 	// etc.) so callers don't have to remember to pump. Mirrors the
 	// engine_quickjs.go behavior where evalBoolLocked / evalStringLocked
-	// call executePendingJobs up front.
+	// call executePendingJobs up front. The defer guards insideMicrotasks
+	// against leaking "true" through a panic deeper in the call stack.
 	if !r.insideMicrotasks {
 		r.insideMicrotasks = true
+		defer func() { r.insideMicrotasks = false }()
 		_, _ = r.wzExp.executePendingJobs.Call(r.wzCtx, uint64(r.qjsRT))
-		r.insideMicrotasks = false
 	}
 	return res[0], nil
 }
@@ -567,13 +568,12 @@ func (r *Runtime) wasmFreeLocked(ptr uint32) {
 	_, _ = r.wzExp.rmnFree.Call(r.wzCtx, uint64(ptr))
 }
 
-// freeValueLocked is a no-op marker today (M1 behavior) but routes through
-// the export so M7+ can grow an unprotect queue without changing callers.
-func (r *Runtime) freeValueLocked(h uint64) {
-	// Deliberate no-op: mirrors engine_quickjs.go's Value.Close() decision
-	// to defer free until Runtime.Close() to avoid races with pending
-	// promise callbacks.
-}
+// freeValueLocked is a deliberate no-op today; values live until
+// Runtime.Close(). This mirrors engine_quickjs.go's Value.Close() decision
+// to avoid races with pending promise callbacks. Callers still route
+// through this single seam so growing an unprotect queue later is
+// transparent to them.
+func (r *Runtime) freeValueLocked(h uint64) {}
 
 // pullExceptionLocked grabs the pending exception and wraps it in JSError.
 func (r *Runtime) pullExceptionLocked() error {
@@ -600,7 +600,15 @@ func (r *Runtime) pullExceptionLocked() error {
 	if rerr != nil {
 		return &JSError{Context: "eval", Message: rerr.Error()}
 	}
-	return &JSError{Context: "eval", Message: raw, Stack: raw}
+	var parsed struct {
+		Message string `json:"message"`
+		Stack   string `json:"stack"`
+		Name    string `json:"name"`
+	}
+	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+		return &JSError{Context: "eval", Message: raw}
+	}
+	return &JSError{Context: "eval", Message: parsed.Message, Stack: parsed.Stack}
 }
 
 // -----------------------------------------------------------------------
@@ -644,14 +652,3 @@ const (
 	valKindPromise   = 0x100
 	valKindException = 0x200
 )
-
-// -----------------------------------------------------------------------
-// Reusable byte scratch for little-endian packed writes
-// -----------------------------------------------------------------------
-
-// writeUint64LE is a helper for any future export that needs to put a u64
-// payload in linear memory. Currently unused from Go side (we pass scalars
-// through function arguments) but handy for promise resolution patterns.
-func writeUint64LE(buf []byte, v uint64) {
-	binary.LittleEndian.PutUint64(buf, v)
-}

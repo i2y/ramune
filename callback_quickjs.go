@@ -136,11 +136,5 @@ func (r *Runtime) ensureDispatcher() error {
 	return nil
 }
 
-// jsQuoteName returns a JSON-encoded string for safe JS embedding.
-func jsQuoteName(s string) string {
-	b, _ := json.Marshal(s)
-	return string(b)
-}
-
 // Ensure quickjs package is used.
 var _ = quickjs.EvalGlobal

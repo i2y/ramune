@@ -134,10 +134,6 @@ func (r *Runtime) installWazeroHost(ctx context.Context) error {
 // already packed argv into JSON. We invoke the matching Go handler,
 // JSON-encode the result, malloc a buffer in wasm memory, write the
 // JSON, and return packed (ptr, len).
-//
-// M1 behavior: no Go function registrations exist yet, so this returns a
-// JSON error. The real dispatcher plumbing lands in callback_qjswasm.go
-// for M3.
 func (r *Runtime) hostGoDispatch(ctx context.Context, mod api.Module,
 	id, argsPtr, argsLen uint32) uint64 {
 	return r.dispatchGoFunc(ctx, mod, id, argsPtr, argsLen)

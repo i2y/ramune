@@ -22,39 +22,26 @@ func (r *Runtime) drainMicrotasks() {
 	}
 }
 
-// drainUnprotectQueue is a no-op on qjswasm (mirrors engine_quickjs.go).
-// Values live until Runtime.Close(); adding a queue here lands with M7
-// along with its JSC-parity implementation.
+// drainUnprotectQueue is a no-op on qjswasm today — values live until
+// Runtime.Close(). Long-running Runtimes that churn many short-lived JS
+// values will want an unprotect queue here later.
 func (r *Runtime) drainUnprotectQueue() {}
 
 // nextDelayLocked reports how long until the next timer fires. -1 means
 // no pending timers.
 func (r *Runtime) nextDelayLocked() time.Duration {
-	s := r.evalStringLocked("String(__eventLoop && __eventLoop.nextDelay ? __eventLoop.nextDelay() : -1)")
-	if s == "" {
+	h, err := r.rawEvalLocked(
+		"(__eventLoop && __eventLoop.nextDelay ? __eventLoop.nextDelay() : -1)",
+		"<nextDelay>", 0)
+	if err != nil || isExceptionHandle(h) {
 		return -1
 	}
-	// Expect integer ms as string.
-	var ms int64
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c == '-' && i == 0 {
-			continue
-		}
-		if c < '0' || c > '9' {
-			return -1
-		}
+	defer r.freeValueLocked(h)
+	res, e := r.wzExp.valToInt64.Call(r.wzCtx, uint64(r.qjsCtx), h)
+	if e != nil {
+		return -1
 	}
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c == '-' {
-			continue
-		}
-		ms = ms*10 + int64(c-'0')
-	}
-	if s[0] == '-' {
-		ms = -ms
-	}
+	ms := int64(res[0])
 	if ms < 0 {
 		return -1
 	}
