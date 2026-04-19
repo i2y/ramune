@@ -58,7 +58,7 @@ type Runtime struct {
 	perms           *Permissions
 	stdout          io.Writer
 	stderr          io.Writer
-	poolHandleFn    uintptr // unused in qjswasm; pool HTTP dispatch not wired
+	poolHandleFn    uintptr // unused in qjswasm but needed for pool.go shared code
 
 	// uint8ArrayCtor caches globalThis.Uint8Array so newUint8ArrayLocked
 	// doesn't walk the global object on every conversion.

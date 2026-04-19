@@ -2,7 +2,33 @@
 
 package ramune
 
-// processWSEvents is the qjswasm WebSocket event pump. Currently a
-// no-op — Bun.serve's WebSocket upgrade path is not ported, so the
-// server side never produces events for the pump to drain.
-func (s *bunServerState) processWSEvents(r *Runtime) {}
+import (
+	"strconv"
+
+	"github.com/fastschema/qjs"
+)
+
+// processWSEvents drains pending WebSocket events and dispatches them
+// to the JS handler registered via __wsHandleEvent.
+func (s *bunServerState) processWSEvents(r *Runtime) {
+	if s == nil || s.wsMgr == nil {
+		return
+	}
+	events := s.wsMgr.drain()
+	if len(events) == 0 {
+		return
+	}
+	for _, ev := range events {
+		var kind string
+		switch ev.Kind {
+		case "open", "message", "close", "error":
+			kind = ev.Kind
+		default:
+			continue
+		}
+		code := `__wsHandleEvent('` + kind + `',` + strconv.Itoa(ev.ConnID) + `,"` + escJS(ev.Data) + `")`
+		if v, err := r.qjsCtx.Eval("<ws>", qjs.Code(code)); err == nil && v != nil {
+			v.Free()
+		}
+	}
+}

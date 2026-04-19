@@ -145,10 +145,6 @@ func TestWebSocketEcho(t *testing.T) {
 		rt.Close()
 		t.Skip("WebSocket upgrade path not yet wired for goja backend")
 	}
-	if rt.Engine() == "qjswasm" {
-		rt.Close()
-		t.Skip("WebSocket upgrade path not yet wired for qjswasm backend")
-	}
 	defer rt.Close()
 
 	// Start server with WebSocket support.
@@ -263,10 +259,6 @@ func TestWebSocketNonUpgradeRequest(t *testing.T) {
 	if rt.Engine() == "goja" {
 		rt.Close()
 		t.Skip("WebSocket upgrade path not yet wired for goja backend")
-	}
-	if rt.Engine() == "qjswasm" {
-		rt.Close()
-		t.Skip("WebSocket upgrade path not yet wired for qjswasm backend")
 	}
 	defer rt.Close()
 

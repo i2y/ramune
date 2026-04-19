@@ -3,6 +3,7 @@
 package ramune
 
 import (
+	"strconv"
 	"time"
 
 	"github.com/fastschema/qjs"
@@ -28,11 +29,16 @@ func (s *bunServerState) processRequests(r *Runtime) {
 // on each request, same as the modernc quickjs backend).
 func (s *bunServerState) ensureHandlerCached(r *Runtime) {}
 
-// handleSingleRequest evaluates __bunHandleFast with the request's method,
-// url, body, and headers. If the JS handler returns "__async__", we poll
-// the event loop for up to 10s waiting for the Promise to resolve.
+// handleSingleRequest evaluates the JS HTTP handler. When wsEnabled we must
+// route through __bunHandle so the JS side can set req._reqId — server.upgrade(req)
+// needs it to identify the pending upgrade; __bunHandleFast omits that arg.
 func (s *bunServerState) handleSingleRequest(r *Runtime, req pendingHTTPReq) {
-	code := `__bunHandleFast("` + escJS(req.Method) + `","` + escJS(req.URL) + `","` + escJS(req.Body) + `",` + req.HeadersJSON + `)`
+	var code string
+	if s.wsEnabled {
+		code = `__bunHandle(` + strconv.Itoa(req.ID) + `,"` + escJS(req.Method) + `","` + escJS(req.URL) + `","` + escJS(req.Body) + `",` + req.HeadersJSON + `)`
+	} else {
+		code = `__bunHandleFast("` + escJS(req.Method) + `","` + escJS(req.URL) + `","` + escJS(req.Body) + `",` + req.HeadersJSON + `)`
+	}
 	result, err := r.qjsCtx.Eval("<bun>", qjs.Code(code))
 	if err != nil {
 		s.respond(req.ID, httpResponse{Status: 500, Body: "handler error: " + err.Error()})
