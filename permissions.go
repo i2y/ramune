@@ -141,6 +141,16 @@ func (p *Permissions) CheckRun(cmd string) error {
 	return fmt.Errorf("PermissionDenied: run '%s'", cmd)
 }
 
+// DeniesFS reports whether the policy forbids filesystem access in either
+// direction. Callers use this to decide whether to close ambient FS
+// surfaces that bypass CheckRead/CheckWrite (e.g. WASI FS mounts on the
+// qjswasm backend). WASI mounts can't be read-only without read-only
+// being granular at the mount layer, so denying either side closes the
+// whole mount.
+func (p *Permissions) DeniesFS() bool {
+	return p != nil && (p.Read == PermDenied || p.Write == PermDenied)
+}
+
 // WithPermissions sets the permission policy for the Runtime.
 func WithPermissions(p *Permissions) Option {
 	return func(c *config) { c.permissions = p }

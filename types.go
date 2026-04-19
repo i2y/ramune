@@ -64,12 +64,10 @@ func WithTickManager(m TickManager) Option {
 	return func(c *config) { c.tickManagers = append(c.tickManagers, m) }
 }
 
-// ResourceLimits caps the resources a Runtime may consume. Currently only
-// honored by the qjswasm backend (it maps these to QuickJS-NG's
-// JS_SetMemoryLimit / JS_SetMaxStackSize / JS_SetGCThreshold). Other
-// backends silently ignore these limits.
-//
-// Zero means "unlimited" (backend default).
+// ResourceLimits caps the resources a Runtime may consume. Only qjswasm
+// honors these today (mapping to QuickJS-NG's JS_SetMemoryLimit /
+// JS_SetMaxStackSize / JS_SetGCThreshold); other backends silently ignore
+// them. Zero means "unlimited" (backend default).
 type ResourceLimits struct {
 	// MaxMemoryBytes caps total JS heap in bytes. When exceeded, the engine
 	// aborts the current operation with an OOM-like error.
@@ -81,9 +79,11 @@ type ResourceLimits struct {
 	GCThresholdBytes int64
 }
 
-// WithResourceLimits caps runtime resources. Only qjswasm honors these today.
+// WithResourceLimits caps runtime resources. See ResourceLimits for the
+// per-backend applicability matrix.
 func WithResourceLimits(l ResourceLimits) Option {
-	return func(c *config) { c.resourceLimits = &l }
+	limits := l
+	return func(c *config) { c.resourceLimits = &limits }
 }
 
 // config holds resolved configuration for a Runtime.

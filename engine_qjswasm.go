@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"runtime"
 	"sync"
@@ -393,30 +394,43 @@ func (r *Runtime) qjswasmLoop(ready chan<- error, cfg *config) {
 	}
 }
 
-// buildQJSOption translates Ramune's config into the fastschema/qjs Option
-// used for runtime construction. Security-relevant decisions land here:
-//   - DisableFS is enabled whenever permissions deny file access, so a
-//     QuickJS-NG VM escape can't pivot through WASI to reach the host FS.
-//   - Resource limits map to QuickJS-NG's memory / stack / GC caps.
+// buildQJSOption translates Ramune's config into qjs.Option. DisableFS
+// closes the WASI FS mount so a QuickJS-NG VM escape can't pivot through
+// it to reach the host filesystem — Ramune's CheckRead/CheckWrite gate
+// the Go-side bridges, but an ambient WASI mount bypasses them entirely.
 func buildQJSOption(cfg *config) qjs.Option {
 	opt := qjs.Option{}
 	if cfg == nil {
 		return opt
 	}
 
-	if p := cfg.permissions; p != nil {
-		if p.Read == PermDenied || p.Write == PermDenied {
-			opt.DisableFS = true
-		}
+	if cfg.permissions.DeniesFS() {
+		opt.DisableFS = true
 	}
 
 	if l := cfg.resourceLimits; l != nil {
-		opt.MemoryLimit = int(l.MaxMemoryBytes)
-		opt.MaxStackSize = int(l.MaxStackBytes)
-		opt.GCThreshold = int(l.GCThresholdBytes)
+		opt.MemoryLimit = clampToInt(l.MaxMemoryBytes)
+		opt.MaxStackSize = clampToInt(l.MaxStackBytes)
+		opt.GCThreshold = clampToInt(l.GCThresholdBytes)
 	}
 
 	return opt
+}
+
+// clampToInt narrows an int64 byte count to the int qjs.Option expects.
+// On 32-bit targets int is 32-bit, so a value over math.MaxInt32 would
+// silently wrap negative and C-side cast to uint64 would read it as
+// ~18 EiB — effectively "unlimited", the opposite of what the caller
+// asked. Clamp to math.MaxInt instead; the address space can't hold more
+// than that anyway.
+func clampToInt(v int64) int {
+	if v > math.MaxInt {
+		return math.MaxInt
+	}
+	if v < 0 {
+		return 0
+	}
+	return int(v)
 }
 
 func (r *Runtime) teardownLocked() {
