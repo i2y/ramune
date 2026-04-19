@@ -15,10 +15,6 @@ func TestHTTPCreateServer(t *testing.T) {
 	if err != nil {
 		t.Skipf("JSC not available: %v", err)
 	}
-	if rt.Engine() == "qjswasm" {
-		rt.Close()
-		t.Skip("Bun.serve (backing http.createServer) not yet wired for qjswasm backend")
-	}
 	defer rt.Close()
 
 	v, err := rt.Eval(`
@@ -64,10 +60,6 @@ func TestHTTPCreateServerHeaders(t *testing.T) {
 	rt, err := ramune.New(ramune.NodeCompat())
 	if err != nil {
 		t.Skipf("JSC not available: %v", err)
-	}
-	if rt.Engine() == "qjswasm" {
-		rt.Close()
-		t.Skip("Bun.serve (backing http.createServer) not yet wired for qjswasm backend")
 	}
 	defer rt.Close()
 
@@ -115,10 +107,6 @@ func TestHTTPCreateServerReqProps(t *testing.T) {
 	rt, err := ramune.New(ramune.NodeCompat())
 	if err != nil {
 		t.Skipf("JSC not available: %v", err)
-	}
-	if rt.Engine() == "qjswasm" {
-		rt.Close()
-		t.Skip("Bun.serve (backing http.createServer) not yet wired for qjswasm backend")
 	}
 	defer rt.Close()
 
@@ -172,10 +160,6 @@ func TestHTTPCreateServerResProps(t *testing.T) {
 	rt, err := ramune.New(ramune.NodeCompat())
 	if err != nil {
 		t.Skipf("JSC not available: %v", err)
-	}
-	if rt.Engine() == "qjswasm" {
-		rt.Close()
-		t.Skip("Bun.serve (backing http.createServer) not yet wired for qjswasm backend")
 	}
 	defer rt.Close()
 

@@ -2,6 +2,12 @@
 
 package ramune
 
+import (
+	"time"
+
+	"github.com/fastschema/qjs"
+)
+
 // processRequests drains pending HTTP requests and dispatches them to the
 // JS handler. Same channel-drain structure as the goja/quickjs backends.
 func (s *bunServerState) processRequests(r *Runtime) {
@@ -18,15 +24,83 @@ func (s *bunServerState) processRequests(r *Runtime) {
 	}
 }
 
-// ensureHandlerCached is a no-op for qjswasm (we call via eval).
+// ensureHandlerCached is a no-op for qjswasm (we eval the handler by name
+// on each request, same as the modernc quickjs backend).
 func (s *bunServerState) ensureHandlerCached(r *Runtime) {}
 
-// handleSingleRequest stub: returns 500 for every incoming request so the
-// backend-agnostic eventloop / HTTP plumbing still runs. The real dispatch
-// (matching buncompat_quickjs.go) is not yet ported to qjswasm.
+// handleSingleRequest evaluates __bunHandleFast with the request's method,
+// url, body, and headers. If the JS handler returns "__async__", we poll
+// the event loop for up to 10s waiting for the Promise to resolve.
 func (s *bunServerState) handleSingleRequest(r *Runtime, req pendingHTTPReq) {
-	s.respond(req.ID, httpResponse{
-		Status: 500,
-		Body:   "Bun.serve on qjswasm is not implemented",
-	})
+	code := `__bunHandleFast("` + escJS(req.Method) + `","` + escJS(req.URL) + `","` + escJS(req.Body) + `",` + req.HeadersJSON + `)`
+	result, err := r.qjsCtx.Eval("<bun>", qjs.Code(code))
+	if err != nil {
+		s.respond(req.ID, httpResponse{Status: 500, Body: "handler error: " + err.Error()})
+		return
+	}
+
+	raw := result.String()
+	result.Free()
+
+	if raw == "__upgrade__" {
+		return
+	}
+
+	if raw == "__async__" {
+		asyncKey := asyncRespKey(req.ID)
+		setupCode := `globalThis.__bunPendingPromise.then(` +
+			`function(v){globalThis['` + asyncKey + `']=__bunExtract(v);},` +
+			`function(e){globalThis['` + asyncKey + `']='500\n{}\n'+String(e);});` +
+			`delete globalThis.__bunPendingPromise;`
+		if _, setupErr := r.qjsCtx.Eval("<bun-async>", qjs.Code(setupCode)); setupErr != nil {
+			r.qjsCtx.Eval("<bun-cleanup>", qjs.Code("delete globalThis.__bunPendingPromise"))
+			s.respond(req.ID, httpResponse{Status: 500, Body: "async setup failed"})
+			return
+		}
+
+		checkCode := `globalThis['` + asyncKey + `']`
+		deadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(deadline) {
+			if r.procMgr != nil {
+				r.procMgr.processEvents(r)
+			}
+			if r.sockMgr != nil {
+				r.sockMgr.processEvents(r)
+			}
+
+			r.qjsCtx.Eval("<bun-tick>", qjs.Code("__eventLoop.tick()"))
+			checkResult, _ := r.qjsCtx.Eval("<bun-check>", qjs.Code(checkCode))
+			if checkResult != nil && !checkResult.IsUndefined() {
+				if checkResult.IsString() {
+					raw = checkResult.String()
+				}
+				checkResult.Free()
+				r.qjsCtx.Eval("<bun-cleanup>", qjs.Code("delete globalThis['"+asyncKey+"']"))
+				break
+			}
+			if checkResult != nil {
+				checkResult.Free()
+			}
+
+			delayResult, _ := r.qjsCtx.Eval("<bun-delay>", qjs.Code("__eventLoop.nextDelay()"))
+			if delayResult != nil {
+				if ms := delayResult.Float64(); ms > 0 {
+					d := time.Duration(ms) * time.Millisecond
+					if d > 100*time.Millisecond {
+						d = 100 * time.Millisecond
+					}
+					time.Sleep(d)
+				}
+				delayResult.Free()
+			}
+		}
+
+		if raw == "__async__" {
+			r.qjsCtx.Eval("<bun-cleanup>", qjs.Code("delete globalThis['"+asyncKey+"']"))
+			raw = "500\n{}\nasync handler timeout"
+		}
+	}
+
+	resp := parseHTTPResponse(raw)
+	s.respond(req.ID, resp)
 }
