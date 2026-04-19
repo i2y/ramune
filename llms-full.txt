@@ -1,8 +1,8 @@
 # Ramune — Full Documentation
 
-Foundation for Workers-style platforms in Go, embeddable and extensible; Cloudflare-Workers-compatible out of the box. Primary use case: build your own Workers-style platform (your `env`, your backends, your bindings) on a runtime that already speaks the Workers handler shape, so Cloudflare-authored handlers (`export default { fetch(req, env, ctx), scheduled }`) run unchanged as a consequence of the default surface. Deploy to your own hardware with full Go interop. Core scope: [WinterCG](https://wintercg.org/) + fetch + `env.DB` / `env.KV` / `env.SECRETS` + `ctx.waitUntil` + cron. Advanced CF bindings (Durable Objects / Queues / R2 / AI Gateway) are **not shipped**; they are implemented as user-supplied `env.*` bindings via `RegisterFunc` + `WithExtraEnvJS`, and the same mechanism is how you design bindings that have no CF analogue at all. **No Cgo**: JSC via `purego`, QuickJS and goja pure Go; `go build` cross-compiles to any GOOS/GOARCH without a C toolchain, and QuickJS/goja run on `FROM scratch` Docker. Ramune is also a complete JS/TS runtime (`run` / `test` / `check` / `fmt` / `lint` / `repl` / `compile`) and an embeddable JS engine for any Go program.
+Foundation for Workers-style platforms in Go, embeddable and extensible; Cloudflare-Workers-compatible out of the box. Primary use case: build your own Workers-style platform (your `env`, your backends, your bindings) on a runtime that already speaks the Workers handler shape, so Cloudflare-authored handlers (`export default { fetch(req, env, ctx), scheduled }`) run unchanged as a consequence of the default surface. Deploy to your own hardware with full Go interop. Core scope: [WinterCG](https://wintercg.org/) + fetch + `env.DB` / `env.KV` / `env.SECRETS` + `ctx.waitUntil` + cron. Advanced CF bindings (Durable Objects / Queues / R2 / AI Gateway) are **not shipped**; they are implemented as user-supplied `env.*` bindings via `RegisterFunc` + `WithExtraEnvJS`, and the same mechanism is how you design bindings that have no CF analogue at all. **No Cgo**: JSC via `purego`, qjswasm and goja pure Go; `go build` cross-compiles to any GOOS/GOARCH without a C toolchain, and qjswasm/goja run on `FROM scratch` Docker. Ramune is also a complete JS/TS runtime (`run` / `test` / `check` / `fmt` / `lint` / `repl` / `compile`) and an embeddable JS engine for any Go program.
 
-> Ramune is a JavaScript/TypeScript runtime and embeddable JS engine for Go. Tri-backend: JavaScriptCore (JIT, macOS/Linux) via [purego](https://github.com/ebitengine/purego), QuickJS (pure Go, cross-platform incl. Windows) via [modernc.org/quickjs](https://pkg.go.dev/modernc.org/quickjs), and goja (pure Go, reflect-based) via [dop251/goja](https://github.com/dop251/goja) — no Cgo required for any of them.
+> Ramune is a JavaScript/TypeScript runtime and embeddable JS engine for Go. Tri-backend: JavaScriptCore (JIT, macOS/Linux) via [purego](https://github.com/ebitengine/purego), qjswasm (pure Go, cross-platform incl. Windows — QuickJS-NG compiled to WebAssembly and driven by wazero) via [fastschema/qjs](https://github.com/fastschema/qjs), and goja (pure Go, reflect-based) via [dop251/goja](https://github.com/dop251/goja) — no Cgo required for any of them.
 
 ## Install
 
@@ -12,11 +12,11 @@ go install github.com/i2y/ramune/cmd/ramune@latest
 go install github.com/i2y/ramune/cmd/ramune-toolchain@latest  # needed for check / fmt / lint / compile / transpile / typegen
 ramune setup-jit   # macOS only: enable JSC JIT for full performance
 
-# QuickJS backend (Windows / zero-dependency)
-go install -tags quickjs github.com/i2y/ramune/cmd/ramune@latest
-go install -tags quickjs github.com/i2y/ramune/cmd/ramune-toolchain@latest  # optional
+# qjswasm backend (Windows / zero-dependency)
+go install -tags qjswasm github.com/i2y/ramune/cmd/ramune@latest
+go install -tags qjswasm github.com/i2y/ramune/cmd/ramune-toolchain@latest  # optional
 
-# Goja backend (pure-Go, reflect-based, Windows-native)
+# Goja backend (smallest pure-Go build, reflect-based)
 go install -tags goja github.com/i2y/ramune/cmd/ramune@latest
 
 # Smaller binary
@@ -496,8 +496,8 @@ test("mock", () => {
 - Multi-core via RuntimePool (N independent JSC contexts on separate OS threads)
 - Map/slice conversion uses JSON.parse to avoid JSC structure table corruption from rapid C API calls
 - Async handlers support setTimeout via real-time tick loop
-- QuickJS backend: single-threaded interpreter via modernc.org/quickjs, pure Go, no OS thread pinning needed
-- Backend selected at build time via `-tags quickjs` build tag
+- qjswasm backend: QuickJS-NG compiled to WebAssembly (via fastschema/qjs), executed by wazero's compiler-mode JIT (AOT WASM→native). Pure Go. Thread-pinned like JSC/goja because wazero module isn't goroutine-safe. Sandbox-friendly: WithPermissions(SandboxPermissions()) auto-sets DisableFS to skip the ambient WASI FS mount; WithResourceLimits maps to QuickJS-NG memory/stack/GC caps.
+- Backend selected at build time via `-tags qjswasm` or `-tags goja` (default = JSC).
 
 ## Performance
 
@@ -513,43 +513,46 @@ test("mock", () => {
 | HTTP req/s (single) | 101K | 156K | 112K |
 | HTTP req/s (3 workers, fib(35)) | 85 | 32 | 22 |
 
-### QuickJS backend (same machine, no JIT)
+### qjswasm backend (pool scaling, Apple M4 Max, wrk)
 
-| Test | Ramune (QuickJS) | Ramune (JSC) | Bun | Node.js |
-|------|-----------------|--------------|-----|---------|
-| Hello World | 19.0ms | 14.2ms | 6.4ms | 17.1ms |
-| Fibonacci(35) | 3,089ms | 46.2ms | 39.3ms | 63.5ms |
-| JSON 10K | 65.1ms | 17.6ms | 9.0ms | 22.0ms |
-| Crypto SHA256 | 26.8ms | 19.8ms | 10.3ms | 19.5ms |
-| File I/O | 25.8ms | 20.7ms | 12.4ms | 22.7ms |
-| HTTP req/s (single) | 66K | 101K | 165K | 111K |
+| Workers | req/s | Scaling |
+|---------|-------|---------|
+| 1 | 2,348 | 1.0x |
+| 2 | 4,666 | 1.99x |
+| 3 | 6,782 | 2.89x |
+| 4 | 9,152 | 3.90x |
+| 5 | 11,331 | 4.83x |
+| 6 | 13,435 | 5.72x |
+
+Monotonic out to 6 workers and still linear. Replaces the removed modernc/quickjs backend: qjswasm is 1.7-2.3× faster at every worker count and scales 5.72× vs modernc's 4.14× (6w).
 
 ### goja backend (pool scaling, same machine)
 
 | Workers | req/s | Scaling |
 |---------|-------|---------|
-| 1 | 3,909 | 1.0x |
-| 2 | 6,402 | 1.64x |
-| 3 | 8,026 | 2.05x |
-| 4 | 9,378 | 2.40x |
-| 6 | 10,947 | 2.80x |
+| 1 | 3,518 | 1.0x |
+| 2 | 5,833 | 1.66x |
+| 3 | 7,404 | 2.10x |
+| 4 | 8,374 | 2.38x |
+| 6 | 10,173 | 2.89x |
 
-Monotonic out to 6 workers — pure-Go dispatch has no cgo/allocator contention to fix.
+Faster than qjswasm at 1-3 workers (no wasm compile cost); qjswasm pulls ahead at 4+ workers.
 
 ### Multi-Runtime Pool (JSC)
 
 | Workers | req/s | Scaling |
 |---------|-------|---------|
-| 1 | 44K | 1.0x |
-| 2 | 65K | 1.48x |
-| 3 | 68K | 1.56x |
+| 1 | 40.5K | 1.0x |
+| 2 | 54.5K | 1.35x |
+| 3 | 58.4K | 1.44x |
+| 6 | 62.4K | 1.54x |
 
 ### vs Go JS Runtimes
 
-| Test | Ramune (JSC+JIT) | Ramune (QuickJS) | Ramune (goja) | otto |
-|------|-----------------|-----------------|------|------|
-| Fibonacci(35) | **31ms** | 3,122ms | 1,989ms | 26,413ms |
-| JSON 10K objects | **0.9ms** | 30ms | 11ms | 27ms |
+| Test | Ramune (JSC+JIT) | Ramune (qjswasm) | Ramune (goja) | otto |
+|------|-----------------|------------------|---------------|------|
+| Fibonacci(35) | **35ms** | 1,987ms | 2,400ms | 26,413ms |
+| JSON 10K objects | **0.98ms** | 19.6ms | 12.3ms | 27ms |
 
 Run `make bench` to reproduce.
 
@@ -557,17 +560,17 @@ Run `make bench` to reproduce.
 
 - **N-API / Native addons**: Not supported. Packages requiring `.node` native binaries won't work — use pure JS alternatives.
 - **HTTP self-fetch**: Ramune.serve() handlers cannot fetch their own server (same JS context deadlock).
-- **Windows**: JSC backend not available. Use `-tags quickjs` for Windows support.
+- **Windows**: JSC backend not available. Use `-tags qjswasm` or `-tags goja` for Windows support.
 - **Linux multi-runtime (JSC)**: On arm64, `CGO_ENABLED=1` and gcc required (cgo signal forwarding for JSC GC). On x86_64, works without cgo.
 - **Multi-worker scaling (JSC)**: Scaling flattens around 4+ workers on macOS due to JSC shared-cache threading constraints.
-- **QuickJS backend**: No JIT — CPU-bound JS is ~67x slower than JSC. Error stack traces not available.
+- **qjswasm backend**: No JS JIT (wazero AOT-compiles the WASM but QuickJS-NG itself is an interpreter). CPU-bound JS is slower than JSC. JS error stack traces not yet round-tripped. `ResourceLimits.MaxExecutionTime` silently ignored until the C-shim interrupt handler is wired (memory/stack/GC limits work).
 - **goja backend**: ~94% ECMAScript spec coverage. No SharedArrayBuffer/Atomics/WebAssembly. Raw `for await` / async generator syntax not accepted by the parser (esbuild lowers it when running via `ramune run`/`ramune eval`, but direct `Eval`/`EvalAsync` of raw JS that uses those features will fail). WebSocket upgrade path is not wired for goja. No JS error stack traces.
 - **Native module instance lifecycle**: Struct instances returned to JS are not automatically freed when JS GC collects the object. Cleaned up on Runtime.Close().
 - **Generic native exports**: Generic functions cannot be exposed as native module exports; wrap in a non-generic function.
 
 ## Requirements
 
-| | JSC backend (default) | QuickJS backend (`-tags quickjs`) | goja backend (`-tags goja`) |
+| | JSC backend (default) | qjswasm backend (`-tags qjswasm`) | goja backend (`-tags goja`) |
 |---|---|---|---|
 | **Go** | 1.26+ | 1.26+ | 1.26+ |
 | **Platforms** | macOS, Linux | macOS, Linux, Windows, FreeBSD | macOS, Linux, Windows, FreeBSD |

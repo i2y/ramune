@@ -1,11 +1,11 @@
 ---
 name: ramune
-description: Use Ramune — a JavaScript/TypeScript runtime powered by JavaScriptCore/QuickJS (no Cgo). Use this skill when the user wants to run JS/TS code, build JS/TS applications, embed a JS engine in Go, transpile TypeScript to Go, create native extension modules, use Ramune CLI, or work with JavaScriptCore from Go. Triggers on "ramune", "run javascript", "run typescript", "JS runtime", "embed JS in Go", "JavaScriptCore", "transpile typescript to go", "native module".
+description: Use Ramune — a JavaScript/TypeScript runtime powered by JavaScriptCore or QuickJS-NG-on-wazero (no Cgo). Use this skill when the user wants to run JS/TS code, build JS/TS applications, embed a JS engine in Go, transpile TypeScript to Go, create native extension modules, use Ramune CLI, or work with JavaScriptCore from Go. Triggers on "ramune", "run javascript", "run typescript", "JS runtime", "embed JS in Go", "JavaScriptCore", "transpile typescript to go", "native module".
 ---
 
 # ramune
 
-Ramune is a JS/TS runtime and embeddable JS engine for Go. Dual backend: JavaScriptCore (JIT, macOS/Linux) via purego and QuickJS (pure Go, cross-platform) — no Cgo required.
+Ramune is a JS/TS runtime and embeddable JS engine for Go. Tri-backend: JavaScriptCore (JIT, macOS/Linux) via purego, qjswasm (pure Go, cross-platform incl. Windows — QuickJS-NG compiled to WebAssembly and driven by wazero) via fastschema/qjs, and goja (pure Go, reflect-based, ~94% ECMAScript) via dop251/goja — no Cgo required for any of them.
 
 ## CLI
 
