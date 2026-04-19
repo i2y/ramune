@@ -920,14 +920,14 @@ Relative performance on Apple M4 Max with JIT enabled. Absolute numbers shift wi
 
 | Workload | Ramune vs Node.js | Ramune vs Bun |
 |---|---|---|
-| Hello World startup | ~1.1x faster | ~2.4x slower |
+| Hello World startup | ~1.1x faster | ~2.3x slower |
 | Fibonacci(35) CPU | ~1.3x faster | ~1.2x slower |
 | JSON 10K objects | ~1.2x faster | ~2x slower |
 | Crypto SHA256 x1000 | comparable | ~2x slower |
 | File I/O x100 | comparable | ~1.7x slower |
-| HTTP req/s (single) | ~1.1x slower | ~1.7x slower |
+| HTTP req/s (single) | ~equal | ~1.2x slower |
 
-Single-runtime HTTP is below Bun but competitive with Node.js. For throughput see [Multi-Runtime Pool](#multi-runtime-pool) below: Ramune runs N JS VMs in parallel on separate OS threads, where Bun and Node stay single-threaded.
+Single-runtime HTTP is within striking distance of Bun and essentially identical to Node.js. For throughput see [Multi-Runtime Pool](#multi-runtime-pool) below: Ramune runs N JS VMs in parallel on separate OS threads, where Bun and Node stay single-threaded.
 
 Raw throughput is only one axis. Ramune's edge over Bun is Go-native embedding (`ramune.New()` in any Go program), Workers-style compatibility out of the box, and multi-core scaling within one process; Bun offers none of these.
 

@@ -86,7 +86,7 @@ Three backends, same API:
 
 ## Ramune APIs & Bun Compatibility
 
-- [Ramune/Bun APIs (buncompat.go)](https://github.com/i2y/ramune/blob/main/buncompat.go): Ramune.serve() (HTTP server, 101K req/s), Ramune.file(), Ramune.write(), Ramune.password, Ramune.sleep(), Ramune.hash(), Ramune.plugin() (onLoad filters, virtual modules), Request/Response with ReadableStream body. Bun.* available as alias. Works with Hono.
+- [Ramune/Bun APIs (buncompat.go)](https://github.com/i2y/ramune/blob/main/buncompat.go): Ramune.serve() (HTTP server, ~90K req/s single-process on M4 Max), Ramune.file(), Ramune.write(), Ramune.password, Ramune.sleep(), Ramune.hash(), Ramune.plugin() (onLoad filters, virtual modules), Request/Response with ReadableStream body. Bun.* available as alias. Works with Hono.
 - [WebSocket (websocket.go)](https://github.com/i2y/ramune/blob/main/websocket.go): WebSocket server for Ramune.serve()
 - [SQLite (sqlite.go)](https://github.com/i2y/ramune/blob/main/sqlite.go): bun:sqlite — pure Go SQLite via modernc.org/sqlite
 
@@ -103,10 +103,10 @@ Three backends, same API:
 
 | Test | Ramune | Bun | Node.js |
 |------|--------|-----|---------|
-| Hello World | 14.2ms | 7.1ms | 18.0ms |
-| Fibonacci(35) | 46.2ms | 40.0ms | 64.7ms |
-| JSON 10K | 17.6ms | 9.7ms | 22.9ms |
-| HTTP req/s (single) | 101K | 156K | 112K |
+| Hello World | 17.7 ms | 7.7 ms | 19.6 ms |
+| Fibonacci(35) | 53.5 ms | 44.6 ms | 71.6 ms |
+| JSON 10K | 20.5 ms | 10.0 ms | 24.6 ms |
+| HTTP req/s (single) | 90.5 K | 111 K | 89.8 K |
 
 ### qjswasm backend (`-tags qjswasm`)
 

@@ -388,7 +388,7 @@ ramune.WithPermissions(&ramune.Permissions{
 Ramune provides its own API namespace (`Ramune.*`). `Bun.*` is available as an alias for backward compatibility, though compatibility is partial and will be improved over time.
 
 Supported APIs:
-- `Ramune.serve({port, fetch, websocket})` — HTTP/WebSocket server (Go net/http backend, 101K req/s). Async fetch handlers with setTimeout supported.
+- `Ramune.serve({port, fetch, websocket})` — HTTP/WebSocket server (Go net/http backend, ~90K req/s single-process on Apple M4 Max). Async fetch handlers with setTimeout supported.
 - `Ramune.file(path)` — text(), json(), exists(), size, name
 - `Ramune.write(path, data)` — file write
 - `Ramune.password.hash/verify` — bcrypt
@@ -505,12 +505,12 @@ test("mock", () => {
 
 | Test | Ramune | Bun | Node.js |
 |------|--------|-----|---------|
-| Hello World | 14.2ms | 7.1ms | 18.0ms |
-| Fibonacci(35) | 46.2ms | 40.0ms | 64.7ms |
-| JSON 10K | 17.6ms | 9.7ms | 22.9ms |
-| Crypto SHA256 | 19.8ms | 11.0ms | 20.4ms |
-| File I/O | 20.7ms | 13.3ms | 24.2ms |
-| HTTP req/s (single) | 101K | 156K | 112K |
+| Hello World | 17.7 ms | 7.7 ms | 19.6 ms |
+| Fibonacci(35) | 53.5 ms | 44.6 ms | 71.6 ms |
+| JSON 10K | 20.5 ms | 10.0 ms | 24.6 ms |
+| Crypto SHA256 | 19.8 ms | 11.0 ms | 20.4 ms |
+| File I/O | 20.7 ms | 13.3 ms | 24.2 ms |
+| HTTP req/s (single) | 90.5 K | 111 K | 89.8 K |
 | HTTP req/s (3 workers, fib(35)) | 85 | 32 | 22 |
 
 ### qjswasm backend (pool scaling, Apple M4 Max, wrk)
