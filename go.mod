@@ -27,9 +27,6 @@ require (
 	golang.org/x/sys v0.43.0
 	golang.org/x/term v0.42.0
 	golang.org/x/text v0.36.0
-	modernc.org/libc v1.70.0
-	modernc.org/libquickjs v0.12.3
-	modernc.org/quickjs v0.17.1
 	modernc.org/sqlite v1.47.0
 )
 
@@ -53,10 +50,9 @@ require (
 	github.com/tetratelabs/wazero v1.11.0 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	gopkg.in/sourcemap.v1 v1.0.5 // indirect
+	modernc.org/libc v1.70.0 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )
-
-replace modernc.org/libc => ./third_party/libc
 
 replace github.com/fastschema/qjs => ./third_party/qjs

@@ -19,9 +19,6 @@ const wptDir = "test/wpt"
 // and must be skipped to let the rest of the suite complete. Entries are
 // tracked as bugs to fix rather than permanent skips.
 var wptSkipByEngine = map[string]map[string]string{
-	"quickjs": {
-		"AddEventListenerOptions-signal.any.js": "hangs (AbortSignal + passive listener interaction)",
-	},
 	"goja": {
 		"gb18030-decoder.any.js":                "goja parser panic on \\u{10FFFF} string literal",
 		"AddEventListenerOptions-signal.any.js": "hangs (AbortSignal + passive listener interaction)",

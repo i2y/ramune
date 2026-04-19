@@ -1,4 +1,4 @@
-//go:build qjswasm && !quickjs && !goja
+//go:build qjswasm && !goja
 
 package ramune
 
@@ -22,7 +22,7 @@ func (r *Runtime) Engine() string { return "qjswasm" }
 // QuickJS-NG compiled to WebAssembly, driven by wazero's compiler-mode
 // JIT — we delegate all the hot-path work to it and keep a thin Go
 // wrapper that matches Ramune's cross-backend API surface (same shape
-// as engine_jsc.go / engine_quickjs.go / engine_goja.go).
+// as engine_jsc.go / engine_goja.go).
 type Runtime struct {
 	qjsRT  *qjs.Runtime
 	qjsCtx *qjs.Context

@@ -1,7 +1,6 @@
-//go:build quickjs && goja
+//go:build goja && qjswasm
 
 package ramune
 
-// Setting both -tags quickjs and -tags goja is a contradiction.
-// Pick one backend.
-const _backendConflict = "cannot build with both -tags quickjs and -tags goja"
+// Setting both -tags goja and -tags qjswasm is a contradiction — pick one.
+const _backendConflict = "cannot build with both -tags goja and -tags qjswasm"

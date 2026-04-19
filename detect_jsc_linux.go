@@ -1,4 +1,4 @@
-//go:build linux && !quickjs && !goja && !qjswasm
+//go:build linux && !goja && !qjswasm
 
 package ramune
 

@@ -282,13 +282,13 @@ func (r *Runtime) installNativeReleaseBridge() {
 		}
 		// Install the JS-side FinalizationRegistry hook (backend-specific). On
 		// backends whose GC doesn't fire FR callbacks synchronously during
-		// allocation (JSC / modernc quickjs / goja), FR is wired to
-		// __nativeRelease so JS GC decrements the Go registry. On qjswasm
-		// (fastschema/qjs) the GC is aggressive enough that FR would fire
-		// during the creation loop itself, making NativeInstanceCount
-		// impossible to observe; there we skip FR and rely on Runtime.Close()
-		// / explicit __nativeRelease calls. This matches the CLAUDE.md
-		// documented behavior ("struct instances returned to JS are not freed
+		// allocation (JSC / goja), FR is wired to __nativeRelease so JS GC
+		// decrements the Go registry. On qjswasm (fastschema/qjs) the GC is
+		// aggressive enough that FR would fire during the creation loop
+		// itself, making NativeInstanceCount impossible to observe; there we
+		// skip FR and rely on Runtime.Close() / explicit __nativeRelease
+		// calls. This matches the CLAUDE.md documented behavior
+		// ("struct instances returned to JS are not freed
 		// on JS GC").
 		r.installFinalizationRegistryHook()
 	})

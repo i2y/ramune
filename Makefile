@@ -1,4 +1,4 @@
-.PHONY: all build build-cli build-toolchain build-quickjs build-goja build-qjswasm fmt fmt-check vet test test-quickjs test-goja test-qjswasm test-wpt ci bench bench-go clean sync-tsgo sync-tsgo-pinned sync-rslint sync
+.PHONY: all build build-cli build-toolchain build-goja build-qjswasm fmt fmt-check vet test test-goja test-qjswasm test-wpt ci bench bench-go clean sync-tsgo sync-tsgo-pinned sync-rslint sync
 
 all: ci
 
@@ -20,9 +20,6 @@ build-cli: build-toolchain
 build-toolchain:
 	go build -ldflags "-X main.version=$(VERSION)" -o ramune-toolchain ./cmd/ramune-toolchain
 	codesign --force --sign - --entitlements entitlements.plist ramune-toolchain 2>/dev/null || true
-
-build-quickjs:
-	go build -tags quickjs -ldflags "-X main.version=$(VERSION)" -o ramune-qjs ./cmd/ramune
 
 build-goja:
 	go build -tags goja -ldflags "-X main.version=$(VERSION)" -o ramune-goja ./cmd/ramune
@@ -48,12 +45,6 @@ test:
 	go test -run "^TestHTTPCreateServer" -count=1 -timeout 60s .
 	go test -run "^TestWorker" -count=1 -timeout 60s .
 	go test -run "^Test[^DWHP]|^TestPool|^TestPerm|^TestProcess" -count=1 -timeout 120s .
-
-test-quickjs:
-	go test -tags quickjs -run "^TestDependencies" -count=1 -timeout 120s .
-	go test -tags quickjs -run "^TestHTTPCreateServer" -count=1 -timeout 60s .
-	go test -tags quickjs -run "^TestWorker" -count=1 -timeout 60s .
-	go test -tags quickjs -run "^Test[^DWHP]|^TestPool|^TestPerm|^TestProcess" -count=1 -timeout 120s .
 
 test-goja:
 	go test -tags goja -count=1 -timeout 120s .

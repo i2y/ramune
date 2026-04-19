@@ -1,4 +1,4 @@
-//go:build !quickjs && !goja && !qjswasm
+//go:build !goja && !qjswasm
 
 // Package ramune provides Go bindings for JavaScriptCore via [purego] — no Cgo required.
 // The JSC runtime is dynamically loaded at startup and works with the system framework

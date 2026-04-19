@@ -1,4 +1,4 @@
-//go:build !quickjs && !goja && !qjswasm
+//go:build !goja && !qjswasm
 
 package main
 

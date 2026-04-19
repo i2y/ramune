@@ -412,14 +412,14 @@ func prepareSandboxBinary() (binPath string, tmpFile string, err error) {
 	}
 	if modRoot == "" {
 		return "", "", fmt.Errorf("sandbox: cannot find go.mod for cross-compilation. " +
-			"Pre-build with: GOOS=linux go build -tags quickjs -o ramune-linux")
+			"Pre-build with: GOOS=linux go build -tags qjswasm -o ramune-linux")
 	}
 
 	// Detect the main package to build. Use `go version -m` on the binary
 	// to extract the module path, then build from source.
 	buildTarget := detectBuildTarget(exe, modRoot)
 	fmt.Fprintf(os.Stderr, "sandbox: cross-compiling %s for linux/%s (first run only)...\n", buildTarget, goArch)
-	cmd := exec.Command("go", "build", "-tags", "quickjs", "-o", cachePath, buildTarget)
+	cmd := exec.Command("go", "build", "-tags", "qjswasm", "-o", cachePath, buildTarget)
 	cmd.Dir = modRoot
 	cmd.Env = append(os.Environ(), "GOOS=linux", "GOARCH="+goArch, "CGO_ENABLED=0")
 	if out, err := cmd.CombinedOutput(); err != nil {

@@ -220,7 +220,7 @@ Run options:
   --check           Type-check before running
   --workers N       Run N parallel workers for Ramune.serve()
 
-Build with -tags quickjs to use QuickJS backend instead of JavaScriptCore.
+Build with -tags qjswasm or -tags goja to use a pure-Go backend.
 Supported file types: .js, .mjs, .ts, .tsx
 
 Examples:

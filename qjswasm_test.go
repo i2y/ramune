@@ -1,4 +1,4 @@
-//go:build qjswasm && !quickjs && !goja
+//go:build qjswasm && !goja
 
 package ramune_test
 
