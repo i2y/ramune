@@ -46,15 +46,12 @@ func (cc *CallbackContext) Eval(code string) (any, error) {
 	if cc.rt == nil || cc.rt.closed.Load() {
 		return nil, ErrAlreadyClosed
 	}
-	h, err := cc.rt.rawEvalLocked(code, "<cc.eval>", 0)
+	v, err := cc.rt.evalLocked(code)
 	if err != nil {
 		return nil, err
 	}
-	if isExceptionHandle(h) {
-		return nil, cc.rt.pullExceptionLocked()
-	}
-	defer cc.rt.freeValueLocked(h)
-	return cc.rt.jsToGoLocked(h)
+	defer v.Close()
+	return cc.rt.jsToGoLocked(v.fsv)
 }
 
 // Exec executes JS code, discarding the result.
@@ -67,7 +64,17 @@ func (cc *CallbackContext) Exec(code string) error {
 
 // GetProperty reads a property from the global object.
 func (cc *CallbackContext) GetProperty(name string) (any, error) {
-	return cc.Eval("globalThis[" + jsQuoteName(name) + "]")
+	if cc.rt == nil || cc.rt.closed.Load() {
+		return nil, ErrAlreadyClosed
+	}
+	g := cc.rt.qjsCtx.Global()
+	defer g.Free()
+	p := g.GetPropertyStr(name)
+	if p == nil {
+		return nil, nil
+	}
+	defer p.Free()
+	return cc.rt.jsToGoLocked(p)
 }
 
 // SetProperty sets a property on the global object.
@@ -75,24 +82,12 @@ func (cc *CallbackContext) SetProperty(name string, value any) error {
 	if cc.rt == nil || cc.rt.closed.Load() {
 		return ErrAlreadyClosed
 	}
-	handle, err := cc.rt.goToJSLocked(value)
+	jv, err := cc.rt.goToJSLocked(value)
 	if err != nil {
 		return err
 	}
-	// globalThis[name] = value; we do this via val_call on a helper
-	// function so we don't have to serialize the value through JSON.
-	fnCode := "(function(n,v){globalThis[n]=v;})"
-	fnH, err := cc.rt.rawEvalLocked(fnCode, "<setprop>", 0)
-	if err != nil {
-		return err
-	}
-	defer cc.rt.freeValueLocked(fnH)
-	nameH, err := cc.rt.newStringLocked(name)
-	if err != nil {
-		return err
-	}
-	defer cc.rt.freeValueLocked(nameH)
-	// Call with args [name, value]. Use the handle-aware call path.
-	_, err = cc.rt.callFunctionLocked(fnH, 0, []uint64{nameH, handle})
-	return err
+	g := cc.rt.qjsCtx.Global()
+	defer g.Free()
+	g.SetPropertyStr(name, jv)
+	return nil
 }

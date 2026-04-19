@@ -4,46 +4,26 @@ package ramune
 
 import (
 	"encoding/json"
-	"errors"
-	"strconv"
-	"strings"
 	"sync/atomic"
+
+	"github.com/fastschema/qjs"
 )
 
-// Value wraps a QuickJS JSValue (NaN-boxed uint64) living inside the wasm
-// module. Multiple Go references to the same JSValue are allowed — we use
-// the shim's val_dup to keep refcounts correct when a Value is cloned by
-// the Go side. Close() is a deliberate no-op today; the VM releases
-// everything on Runtime.Close(). See freeValueLocked for the rationale.
+// Value wraps a fastschema/qjs *Value. Close() calls Free() on the
+// underlying handle; the fastschema runtime refcounts QuickJS JSValues
+// so explicit freeing is both safe and recommended.
 type Value struct {
 	noCopy noCopy
-	handle uint64 // NaN-boxed JSValue
+	fsv    *qjs.Value
 	rt     *Runtime
 	closed atomic.Bool
 }
 
-func (r *Runtime) wrapValue(h uint64) *Value {
-	return &Value{handle: h, rt: r}
-}
-
-// Close marks the Value as released. Actual val_free is deferred to
-// Runtime.Close(); see the engine_quickjs.go comment explaining why
-// explicit frees race with async promise callbacks.
-func (v *Value) Close() error {
+func (r *Runtime) wrapValue(v *qjs.Value) *Value {
 	if v == nil {
 		return nil
 	}
-	v.closed.Swap(true)
-	return nil
-}
-
-// Ptr returns an opaque handle (the NaN-boxed JSValue) so external code can
-// key on per-value identity.
-func (v *Value) Ptr() uintptr {
-	if v == nil {
-		return 0
-	}
-	return uintptr(v.handle)
+	return &Value{fsv: v, rt: r}
 }
 
 func (v *Value) preflight() error {
@@ -56,30 +36,70 @@ func (v *Value) preflight() error {
 	return nil
 }
 
+// Close releases the underlying JSValue.
+func (v *Value) Close() error {
+	if v == nil || v.closed.Swap(true) {
+		return nil
+	}
+	if v.rt == nil || v.rt.closed.Load() {
+		return nil
+	}
+	v.rt.dispatch(func() {
+		if v.fsv != nil {
+			v.fsv.Free()
+			v.fsv = nil
+		}
+	})
+	return nil
+}
+
+// Ptr returns an opaque handle identifier (not a real pointer). Two
+// different runtime objects may happen to share the same identifier
+// value; callers should use Ptr only to compare JSValue identity within
+// the same Runtime.
+func (v *Value) Ptr() uintptr {
+	if v == nil || v.fsv == nil {
+		return 0
+	}
+	// fastschema exposes the raw QuickJS JSValue as a uint64 via Raw()
+	// if available; fallback is a pointer identity on the wrapper.
+	type rawer interface {
+		Raw() uint64
+	}
+	if r, ok := any(v.fsv).(rawer); ok {
+		return uintptr(r.Raw())
+	}
+	return uintptr(0)
+}
+
 // -----------------------------------------------------------------------
 // Primitive accessors
 // -----------------------------------------------------------------------
 
-// String returns the JS value's string form (JS_ToString), or empty string
-// on conversion error. Use GoString for error-returning variant.
+// String returns the JS string form (JS_ToString semantics).
 func (v *Value) String() string {
-	s, _ := v.GoString()
-	return s
+	if err := v.preflight(); err != nil {
+		return ""
+	}
+	var out string
+	v.rt.dispatch(func() {
+		out = v.fsv.String()
+	})
+	return out
 }
 
-// GoString returns the JS value's string form with error propagation.
+// GoString returns the JS string form with a nil-error signal. fastschema
+// doesn't expose a string conversion error separately, so we always
+// return nil unless the value wrapper is invalid.
 func (v *Value) GoString() (string, error) {
 	if err := v.preflight(); err != nil {
 		return "", err
 	}
 	var out string
-	var err error
 	v.rt.dispatch(func() {
-		s, e := v.rt.valToStringLocked(v.handle)
-		out = s
-		err = e
+		out = v.fsv.String()
 	})
-	return out, err
+	return out, nil
 }
 
 // Float64 returns the value as float64.
@@ -89,12 +109,7 @@ func (v *Value) Float64() (float64, error) {
 	}
 	var out float64
 	v.rt.dispatch(func() {
-		res, e := v.rt.wzExp.valToFloat64.Call(v.rt.wzCtx,
-			uint64(v.rt.qjsCtx), v.handle)
-		if e == nil {
-			// wazero encodes f64 results as bit pattern in the result slot.
-			out = api64ToFloat(res[0])
-		}
+		out = v.fsv.Float64()
 	})
 	return out, nil
 }
@@ -106,9 +121,7 @@ func (v *Value) Int64() (int64, error) {
 	}
 	var out int64
 	v.rt.dispatch(func() {
-		res, _ := v.rt.wzExp.valToInt64.Call(v.rt.wzCtx,
-			uint64(v.rt.qjsCtx), v.handle)
-		out = int64(res[0])
+		out = v.fsv.Int64()
 	})
 	return out, nil
 }
@@ -120,93 +133,149 @@ func (v *Value) Bool() (bool, error) {
 	}
 	var out bool
 	v.rt.dispatch(func() {
-		res, _ := v.rt.wzExp.valToBool.Call(v.rt.wzCtx,
-			uint64(v.rt.qjsCtx), v.handle)
-		out = int32(res[0]) != 0
+		out = v.fsv.Bool()
 	})
 	return out, nil
 }
 
-// Bytes returns the underlying bytes for a Uint8Array or ArrayBuffer-like
-// value. Currently a JSON fallback path (expensive for large buffers); a
-// direct buffer export that copies via Memory().Read would be much faster.
+// Bytes returns the underlying bytes for a Uint8Array or ArrayBuffer.
+// Tries fastschema's JsTypedArrayToGo / JsArrayBufferToGo helpers first
+// and falls back to Array.from(v) + JSON for anything else (covers cases
+// where the value is a Uint8Array whose constructor signature makes the
+// typed-array helpers reject it).
 func (v *Value) Bytes() ([]byte, error) {
 	if err := v.preflight(); err != nil {
 		return nil, err
 	}
-	// For now, go through JSON: Array.from(this) -> [n1,n2,...] -> []byte.
-	// Uses `this` (not an arg) because JSON.stringify of a Uint8Array
-	// collapses it to a {"0":...,"1":...} object and the array info is
-	// lost across the argv encoding boundary. val_call passes this_val as
-	// a direct handle, which preserves the Uint8Array identity.
 	var out []byte
-	var retErr error
 	v.rt.dispatch(func() {
-		coerce, err := v.rt.evalLocked("(function(){return Array.from(this);})")
+		if b, e := qjs.JsArrayBufferToGo(v.fsv); e == nil && b != nil {
+			out = b
+			return
+		}
+		if b, e := qjs.JsTypedArrayToGo(v.fsv); e == nil && b != nil {
+			out = b
+			return
+		}
+		// Fallback: JSON.stringify gives {"0":10,"1":20,...} for typed
+		// arrays, which isn't what we want. Use Array.from(v) to flatten
+		// into a plain JS array and read the length/elements.
+		helper, err := v.rt.qjsCtx.Eval("<bytes>", qjs.Code("((v)=>Array.from(v))"))
 		if err != nil {
-			retErr = err
 			return
 		}
-		defer coerce.Close()
-		arr, err := v.rt.callFunctionLocked(coerce.handle, v.handle, nil)
+		defer helper.Free()
+		arr, err := v.rt.qjsCtx.Invoke(helper, nil, v.fsv)
 		if err != nil {
-			retErr = err
 			return
 		}
-		defer v.rt.freeValueLocked(arr)
-		j, err := v.rt.valToJSONLocked(arr)
-		if err != nil {
-			retErr = err
-			return
-		}
-		var nums []int
-		if e := json.Unmarshal([]byte(j), &nums); e != nil {
-			retErr = e
-			return
-		}
-		out = make([]byte, len(nums))
-		for i, n := range nums {
-			out[i] = byte(n)
+		defer arr.Free()
+		n := int(arr.Len())
+		out = make([]byte, n)
+		for i := 0; i < n; i++ {
+			el := arr.GetPropertyIndex(int64(i))
+			if el != nil {
+				out[i] = byte(el.Int32())
+				el.Free()
+			}
 		}
 	})
-	return out, retErr
+	return out, nil
 }
 
 // -----------------------------------------------------------------------
-// Type checks (cheap: single val_kind call)
+// Type checks
 // -----------------------------------------------------------------------
 
-func (v *Value) kind() uint32 {
+func (v *Value) IsUndefined() bool {
 	if err := v.preflight(); err != nil {
-		return 0
+		return false
 	}
-	var out uint32
-	v.rt.dispatch(func() {
-		res, _ := v.rt.wzExp.valKind.Call(v.rt.wzCtx, uint64(v.rt.qjsCtx), v.handle)
-		out = uint32(res[0])
-	})
+	var out bool
+	v.rt.dispatch(func() { out = v.fsv.IsUndefined() })
 	return out
 }
-
-func (v *Value) IsUndefined() bool { return v.kind()&valKindUndefined != 0 }
-func (v *Value) IsNull() bool      { return v.kind()&valKindNull != 0 }
-func (v *Value) IsBool() bool      { return v.kind()&valKindBool != 0 }
-func (v *Value) IsNumber() bool    { return v.kind()&valKindNumber != 0 }
-func (v *Value) IsString() bool    { return v.kind()&valKindString != 0 }
-func (v *Value) IsObject() bool    { return v.kind()&valKindObject != 0 }
-func (v *Value) IsArray() bool     { return v.kind()&valKindArray != 0 }
-func (v *Value) IsFunction() bool  { return v.kind()&valKindFunction != 0 }
-func (v *Value) IsPromise() bool   { return v.kind()&valKindPromise != 0 }
-func (v *Value) IsException() bool { return v.kind()&valKindException != 0 }
+func (v *Value) IsNull() bool {
+	if err := v.preflight(); err != nil {
+		return false
+	}
+	var out bool
+	v.rt.dispatch(func() { out = v.fsv.IsNull() })
+	return out
+}
+func (v *Value) IsBool() bool {
+	if err := v.preflight(); err != nil {
+		return false
+	}
+	var out bool
+	v.rt.dispatch(func() { out = v.fsv.IsBool() })
+	return out
+}
+func (v *Value) IsNumber() bool {
+	if err := v.preflight(); err != nil {
+		return false
+	}
+	var out bool
+	v.rt.dispatch(func() { out = v.fsv.IsNumber() })
+	return out
+}
+func (v *Value) IsString() bool {
+	if err := v.preflight(); err != nil {
+		return false
+	}
+	var out bool
+	v.rt.dispatch(func() { out = v.fsv.IsString() })
+	return out
+}
+func (v *Value) IsObject() bool {
+	if err := v.preflight(); err != nil {
+		return false
+	}
+	var out bool
+	v.rt.dispatch(func() { out = v.fsv.IsObject() })
+	return out
+}
+func (v *Value) IsArray() bool {
+	if err := v.preflight(); err != nil {
+		return false
+	}
+	var out bool
+	v.rt.dispatch(func() { out = v.fsv.IsArray() })
+	return out
+}
+func (v *Value) IsFunction() bool {
+	if err := v.preflight(); err != nil {
+		return false
+	}
+	var out bool
+	v.rt.dispatch(func() { out = v.fsv.IsFunction() })
+	return out
+}
+func (v *Value) IsPromise() bool {
+	if err := v.preflight(); err != nil {
+		return false
+	}
+	var out bool
+	v.rt.dispatch(func() { out = v.fsv.IsPromise() })
+	return out
+}
+func (v *Value) IsException() bool {
+	if err := v.preflight(); err != nil {
+		return false
+	}
+	var out bool
+	v.rt.dispatch(func() { out = v.fsv.IsError() })
+	return out
+}
 
 // -----------------------------------------------------------------------
 // Property / array ops
 // -----------------------------------------------------------------------
 
-// Attr reads a property. Returns a new Value that must be Closed.
+// Attr reads a property.
 func (v *Value) Attr(name string) *Value {
-	val, _ := v.AttrErr(name)
-	return val
+	out, _ := v.AttrErr(name)
+	return out
 }
 
 func (v *Value) AttrErr(name string) (*Value, error) {
@@ -214,27 +283,13 @@ func (v *Value) AttrErr(name string) (*Value, error) {
 		return nil, err
 	}
 	var out *Value
-	var err error
 	v.rt.dispatch(func() {
-		ptr, length, e := v.rt.writeStringLocked(name)
-		if e != nil {
-			err = e
-			return
+		p := v.fsv.GetPropertyStr(name)
+		if p != nil {
+			out = v.rt.wrapValue(p)
 		}
-		defer v.rt.wasmFreeLocked(ptr)
-		res, e := v.rt.wzExp.objGetProp.Call(v.rt.wzCtx,
-			uint64(v.rt.qjsCtx), v.handle, uint64(ptr), uint64(length))
-		if e != nil {
-			err = e
-			return
-		}
-		if isExceptionHandle(res[0]) {
-			err = v.rt.pullExceptionLocked()
-			return
-		}
-		out = v.rt.wrapValue(res[0])
 	})
-	return out, err
+	return out, nil
 }
 
 func (v *Value) SetAttr(name string, value any) error {
@@ -243,34 +298,16 @@ func (v *Value) SetAttr(name string, value any) error {
 	}
 	var err error
 	v.rt.dispatch(func() {
-		val, e := v.rt.goToJSLocked(value)
+		jv, e := qjs.ToJsValue(v.rt.qjsCtx, value)
 		if e != nil {
 			err = e
 			return
 		}
-		ptr, length, e := v.rt.writeStringLocked(name)
-		if e != nil {
-			err = e
-			return
-		}
-		defer v.rt.wasmFreeLocked(ptr)
-		res, e := v.rt.wzExp.objSetProp.Call(v.rt.wzCtx,
-			uint64(v.rt.qjsCtx), v.handle,
-			uint64(ptr), uint64(length), val)
-		if e != nil {
-			err = e
-			return
-		}
-		if int32(res[0]) < 0 {
-			err = v.rt.pullExceptionLocked()
-		}
+		v.fsv.SetPropertyStr(name, jv)
 	})
 	return err
 }
 
-// Keys returns the property names of an object (JSON fallback — a
-// dedicated object-keys export would avoid the per-call eval of the
-// JS helper function).
 func (v *Value) Keys() ([]string, error) {
 	if err := v.preflight(); err != nil {
 		return nil, err
@@ -278,83 +315,46 @@ func (v *Value) Keys() ([]string, error) {
 	var out []string
 	var err error
 	v.rt.dispatch(func() {
-		fnH, e := v.rt.rawEvalLocked("(function(){return Object.keys(this);})",
-			"<keys>", 0)
-		if e != nil {
-			err = e
-			return
-		}
-		if isExceptionHandle(fnH) {
-			err = v.rt.pullExceptionLocked()
-			return
-		}
-		defer v.rt.freeValueLocked(fnH)
-		arrH, e := v.rt.callFunctionLocked(fnH, v.handle, nil)
-		if e != nil {
-			err = e
-			return
-		}
-		defer v.rt.freeValueLocked(arrH)
-		j, e := v.rt.valToJSONLocked(arrH)
-		if e != nil {
-			err = e
-			return
-		}
-		err = json.Unmarshal([]byte(j), &out)
+		out, err = v.fsv.GetOwnPropertyNames()
 	})
 	return out, err
 }
 
-// Len returns the length of an array (or string).
 func (v *Value) Len() (int, error) {
 	if err := v.preflight(); err != nil {
 		return 0, err
 	}
-	attr, err := v.AttrErr("length")
-	if err != nil {
-		return 0, err
-	}
-	defer attr.Close()
-	n, err := attr.Float64()
-	return int(n), err
+	var out int
+	v.rt.dispatch(func() {
+		out = int(v.fsv.Len())
+	})
+	return out, nil
 }
 
-// Index returns the array element at i. Out-of-bounds access returns nil
-// (matching the JSC backend's contract), not a Value wrapping undefined.
+// Index returns the array element at i. Out-of-bounds returns nil.
 func (v *Value) Index(i int) *Value {
 	if err := v.preflight(); err != nil {
 		return nil
 	}
-	val, err := v.AttrErr(strconv.Itoa(i))
-	if err != nil || val == nil {
-		return nil
-	}
-	if val.IsUndefined() {
-		val.Close()
-		return nil
-	}
-	return val
+	var out *Value
+	v.rt.dispatch(func() {
+		if !v.fsv.HasPropertyIndex(int64(i)) {
+			return
+		}
+		p := v.fsv.GetPropertyIndex(int64(i))
+		if p != nil {
+			out = v.rt.wrapValue(p)
+		}
+	})
+	return out
 }
 
-// Has reports whether the object has an own or inherited property with
-// the given name.
 func (v *Value) Has(name string) bool {
 	if err := v.preflight(); err != nil {
 		return false
 	}
 	var out bool
-	v.rt.dispatch(func() {
-		ptr, length, e := v.rt.writeStringLocked(name)
-		if e != nil {
-			return
-		}
-		defer v.rt.wasmFreeLocked(ptr)
-		res, e := v.rt.wzExp.objHasProp.Call(v.rt.wzCtx,
-			uint64(v.rt.qjsCtx), v.handle, uint64(ptr), uint64(length))
-		if e == nil && int32(res[0]) != 0 {
-			out = true
-		}
-	})
+	v.rt.dispatch(func() { out = v.fsv.HasProperty(name) })
 	return out
 }
 
@@ -362,22 +362,12 @@ func (v *Value) Delete(name string) error {
 	if err := v.preflight(); err != nil {
 		return err
 	}
-	var err error
-	v.rt.dispatch(func() {
-		ptr, length, e := v.rt.writeStringLocked(name)
-		if e != nil {
-			err = e
-			return
-		}
-		defer v.rt.wasmFreeLocked(ptr)
-		_, err = v.rt.wzExp.objDeleteProp.Call(v.rt.wzCtx,
-			uint64(v.rt.qjsCtx), v.handle, uint64(ptr), uint64(length))
-	})
-	return err
+	v.rt.dispatch(func() { v.fsv.DeleteProperty(name) })
+	return nil
 }
 
-// Call invokes a JS function value with args and returns the result as
-// *Value. Caller must Close() the result.
+// Call invokes v as a function with args and returns the result as
+// *Value.
 func (v *Value) Call(args ...any) (*Value, error) {
 	if err := v.preflight(); err != nil {
 		return nil, err
@@ -385,34 +375,26 @@ func (v *Value) Call(args ...any) (*Value, error) {
 	var out *Value
 	var err error
 	v.rt.dispatch(func() {
-		argsJSON, e := json.Marshal(args)
+		jsArgs := make([]*qjs.Value, 0, len(args))
+		for _, a := range args {
+			jv, e := qjs.ToJsValue(v.rt.qjsCtx, a)
+			if e != nil {
+				err = e
+				return
+			}
+			jsArgs = append(jsArgs, jv)
+		}
+		res, e := v.rt.qjsCtx.Invoke(v.fsv, nil, jsArgs...)
 		if e != nil {
 			err = e
 			return
 		}
-		argPtr, argLen, e := v.rt.writeStringLocked(string(argsJSON))
-		if e != nil {
-			err = e
-			return
-		}
-		defer v.rt.wasmFreeLocked(argPtr)
-		res, e := v.rt.wzExp.valCall.Call(v.rt.wzCtx,
-			uint64(v.rt.qjsCtx), v.handle, 0,
-			uint64(argPtr), uint64(argLen))
-		if e != nil {
-			err = e
-			return
-		}
-		if isExceptionHandle(res[0]) {
-			err = v.rt.pullExceptionLocked()
-			return
-		}
-		out = v.rt.wrapValue(res[0])
+		out = v.rt.wrapValue(res)
 	})
 	return out, err
 }
 
-// ToMap / ToSlice dump the value through JSON; same as QuickJS backend.
+// ToMap converts a JS object to a Go map via JSON round-trip.
 func (v *Value) ToMap() (map[string]any, error) {
 	if err := v.preflight(); err != nil {
 		return nil, err
@@ -420,7 +402,7 @@ func (v *Value) ToMap() (map[string]any, error) {
 	var out map[string]any
 	var err error
 	v.rt.dispatch(func() {
-		j, e := v.rt.valToJSONLocked(v.handle)
+		j, e := v.fsv.JSONStringify()
 		if e != nil {
 			err = e
 			return
@@ -430,6 +412,7 @@ func (v *Value) ToMap() (map[string]any, error) {
 	return out, err
 }
 
+// ToSlice converts a JS array to a Go slice via JSON round-trip.
 func (v *Value) ToSlice() ([]any, error) {
 	if err := v.preflight(); err != nil {
 		return nil, err
@@ -437,7 +420,7 @@ func (v *Value) ToSlice() ([]any, error) {
 	var out []any
 	var err error
 	v.rt.dispatch(func() {
-		j, e := v.rt.valToJSONLocked(v.handle)
+		j, e := v.fsv.JSONStringify()
 		if e != nil {
 			err = e
 			return
@@ -445,79 +428,4 @@ func (v *Value) ToSlice() ([]any, error) {
 		err = json.Unmarshal([]byte(j), &out)
 	})
 	return out, err
-}
-
-// -----------------------------------------------------------------------
-// Internal helpers (engine goroutine only)
-// -----------------------------------------------------------------------
-
-func (r *Runtime) valToStringLocked(h uint64) (string, error) {
-	res, err := r.wzExp.valToString.Call(r.wzCtx, uint64(r.qjsCtx), h)
-	if err != nil {
-		return "", err
-	}
-	ptr, length := unpackPtrLen(res[0])
-	if ptr == 0 {
-		return "", nil
-	}
-	defer r.wasmFreeLocked(ptr)
-	return r.readStringLocked(ptr, length)
-}
-
-func (r *Runtime) valToJSONLocked(h uint64) (string, error) {
-	res, err := r.wzExp.valToJSON.Call(r.wzCtx, uint64(r.qjsCtx), h)
-	if err != nil {
-		return "", err
-	}
-	ptr, length := unpackPtrLen(res[0])
-	if ptr == 0 {
-		return "", errors.New("ramune: val_to_json returned 0")
-	}
-	defer r.wasmFreeLocked(ptr)
-	return r.readStringLocked(ptr, length)
-}
-
-// callFunctionLocked invokes a JS function with argv expressed as handles.
-// The shim's val_call takes a JSON array of VALUES, so we serialize each
-// argv handle through val_to_json and join the fragments. A dedicated
-// handle-array call export would avoid the JSON round-trip.
-func (r *Runtime) callFunctionLocked(fn, this uint64, args []uint64) (uint64, error) {
-	jsonArr, err := r.buildArgsJSONFromHandles(args)
-	if err != nil {
-		return 0, err
-	}
-	ptr, length, err := r.writeStringLocked(jsonArr)
-	if err != nil {
-		return 0, err
-	}
-	defer r.wasmFreeLocked(ptr)
-	res, err := r.wzExp.valCall.Call(r.wzCtx,
-		uint64(r.qjsCtx), fn, this, uint64(ptr), uint64(length))
-	if err != nil {
-		return 0, err
-	}
-	return res[0], nil
-}
-
-func (r *Runtime) buildArgsJSONFromHandles(args []uint64) (string, error) {
-	if len(args) == 0 {
-		return "[]", nil
-	}
-	var buf strings.Builder
-	buf.WriteByte('[')
-	for i, h := range args {
-		if i > 0 {
-			buf.WriteByte(',')
-		}
-		j, err := r.valToJSONLocked(h)
-		if err != nil {
-			return "", err
-		}
-		if j == "" {
-			j = "null"
-		}
-		buf.WriteString(j)
-	}
-	buf.WriteByte(']')
-	return buf.String(), nil
 }

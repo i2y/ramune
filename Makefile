@@ -1,4 +1,4 @@
-.PHONY: all build build-cli build-toolchain build-quickjs build-goja build-qjswasm build-wasm-shim install-wasi-sdk bootstrap-qjswasm fmt fmt-check vet test test-quickjs test-goja test-qjswasm test-wpt ci bench bench-go clean sync-tsgo sync-tsgo-pinned sync-rslint sync
+.PHONY: all build build-cli build-toolchain build-quickjs build-goja build-qjswasm fmt fmt-check vet test test-quickjs test-goja test-qjswasm test-wpt ci bench bench-go clean sync-tsgo sync-tsgo-pinned sync-rslint sync
 
 all: ci
 
@@ -27,78 +27,9 @@ build-quickjs:
 build-goja:
 	go build -tags goja -ldflags "-X main.version=$(VERSION)" -o ramune-goja ./cmd/ramune
 
-# ----------------------------------------------------------------------
-# wasi-sdk / qjswasm bootstrap
-# ----------------------------------------------------------------------
-
-# Pinned wasi-sdk release. The GitHub tag is wasi-sdk-<MAJOR>; the asset
-# filename includes the full VERSION (e.g. 27.0). When bumping, update both.
-WASI_SDK_VERSION := 27.0
-WASI_SDK_MAJOR   := 27
-
-# Host detection for wasi-sdk asset naming. uname -s returns Darwin on
-# macOS but wasi-sdk asset names use "macos"; remap here. Linux stays
-# as-is, Windows is installed manually.
-UNAME_S := $(shell uname -s)
-UNAME_M := $(shell uname -m)
-ifeq ($(UNAME_S),Darwin)
-  WASI_OS := macos
-else ifeq ($(UNAME_S),Linux)
-  WASI_OS := linux
-else
-  WASI_OS := $(shell echo $(UNAME_S) | tr '[:upper:]' '[:lower:]')
-endif
-ifeq ($(UNAME_M),aarch64)
-  WASI_ARCH := arm64
-else ifeq ($(UNAME_M),x86_64)
-  WASI_ARCH := x86_64
-else
-  WASI_ARCH := $(UNAME_M)
-endif
-
-# The tarball extracts to this directory name (not a shortened one).
-WASI_SDK_DEFAULT_DIR := $(HOME)/wasi-sdk-$(WASI_SDK_VERSION)-$(WASI_ARCH)-$(WASI_OS)
-WASI_SDK_URL := https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-$(WASI_SDK_MAJOR)/wasi-sdk-$(WASI_SDK_VERSION)-$(WASI_ARCH)-$(WASI_OS).tar.gz
-
-# Resolve which wasi-sdk to use, in preference order:
-#   1. user-supplied $WASI_SDK_PATH
-#   2. /opt/wasi-sdk (system-wide install)
-#   3. $HOME/wasi-sdk-<ver>-<arch>-<os> (auto-installed under $HOME)
-ifneq ($(WASI_SDK_PATH),)
-  RESOLVED_WASI_SDK := $(WASI_SDK_PATH)
-else ifneq ($(wildcard /opt/wasi-sdk/bin/clang),)
-  RESOLVED_WASI_SDK := /opt/wasi-sdk
-else
-  RESOLVED_WASI_SDK := $(WASI_SDK_DEFAULT_DIR)
-endif
-
-# Download wasi-sdk 27 under $HOME (no sudo). Idempotent — if the clang
-# binary already exists at $HOME/wasi-sdk-...-/bin/clang the rule is a no-op.
-install-wasi-sdk: $(WASI_SDK_DEFAULT_DIR)/bin/clang
-
-$(WASI_SDK_DEFAULT_DIR)/bin/clang:
-	@echo "==> Downloading wasi-sdk $(WASI_SDK_VERSION) for $(WASI_ARCH)/$(UNAME_S)"
-	@echo "    $(WASI_SDK_URL)"
-	curl -L --fail $(WASI_SDK_URL) | tar xz -C $(HOME)
-	@test -x $@ || { echo "ERROR: clang not at $@ after extract"; exit 1; }
-	@echo "==> wasi-sdk installed at $(WASI_SDK_DEFAULT_DIR)"
-
-# Build the QuickJS-NG WebAssembly binary. If no wasi-sdk is found via the
-# resolution above, auto-install to $HOME first.
-build-wasm-shim:
-	@if [ ! -x "$(RESOLVED_WASI_SDK)/bin/clang" ]; then \
-	    echo "==> No wasi-sdk at $(RESOLVED_WASI_SDK), auto-installing"; \
-	    $(MAKE) install-wasi-sdk; \
-	fi
-	WASI_SDK_PATH="$(RESOLVED_WASI_SDK)" ./scripts/build-quickjs-wasm.sh
-
-# One-shot: install SDK if needed, build wasm, build CLI, run the M1 tests.
-bootstrap-qjswasm: build-wasm-shim build-qjswasm test-qjswasm
-	@echo "==> qjswasm bootstrap complete"
-
-# Build the qjswasm-tagged CLI. The wasm binary is embedded via //go:embed;
-# if it is still the 8-byte stub, Runtime.New() errors out cleanly pointing
-# users at build-wasm-shim.
+# qjswasm backend wraps fastschema/qjs (QuickJS-NG compiled to WebAssembly,
+# driven by wazero). The wasm binary ships inside the fastschema/qjs Go
+# module so no wasi-sdk or submodule-based build is needed here.
 build-qjswasm:
 	go build -tags qjswasm -ldflags "-X main.version=$(VERSION)" -o ramune-qjsw ./cmd/ramune
 

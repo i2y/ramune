@@ -3,25 +3,23 @@
 package ramune
 
 import (
-	"encoding/json"
 	"sync/atomic"
+
+	"github.com/fastschema/qjs"
 )
 
-// JSFunc wraps a JS function as a Go-callable handle. Like the QuickJS
-// (modernc) backend we keep the JS function alive by stashing it in
-// globalThis[refName], which lets us reuse the same __jsfunc_ref JSON
-// protocol end-to-end.
+// JSFunc wraps a JS function as a Go-callable handle. We keep the
+// fastschema *qjs.Value directly (no globalThis refName indirection);
+// Close() frees the underlying QuickJS value.
 type JSFunc struct {
 	noCopy  noCopy
 	rt      *Runtime
-	refName string
+	fsv     *qjs.Value
+	refName string // kept for cross-backend API parity (unused on qjswasm)
 	closed  atomic.Bool
 }
 
-// Call invokes the JS function with args. Uses the dedicated
-// global_get_prop + val_call shim exports (not the `eval` export) to
-// avoid wazero compiler mode's eval-reentry corruption when Call is
-// invoked from inside another Go callback.
+// Call invokes the JS function with args.
 func (f *JSFunc) Call(args ...any) (any, error) {
 	if f == nil || f.closed.Load() {
 		return nil, ErrNilValue
@@ -33,48 +31,52 @@ func (f *JSFunc) Call(args ...any) (any, error) {
 	var out any
 	var err error
 	f.rt.dispatch(func() {
-		fnH, e := f.rt.globalGetPropLocked(f.refName)
+		jsArgs := make([]*qjs.Value, 0, len(args))
+		for _, a := range args {
+			jv, e := qjs.ToJsValue(f.rt.qjsCtx, a)
+			if e != nil {
+				err = e
+				return
+			}
+			jsArgs = append(jsArgs, jv)
+		}
+		res, e := f.rt.qjsCtx.Invoke(f.fsv, nil, jsArgs...)
 		if e != nil {
 			err = e
 			return
 		}
-		if isExceptionHandle(fnH) {
-			err = f.rt.pullExceptionLocked()
+		defer res.Free()
+		if res.IsNumber() {
+			out = res.Float64()
 			return
 		}
-		defer f.rt.freeValueLocked(fnH)
-
-		argsJSON, e := json.Marshal(args)
+		if res.IsBool() {
+			out = res.Bool()
+			return
+		}
+		if res.IsString() {
+			out = res.String()
+			return
+		}
+		if res.IsNull() || res.IsUndefined() {
+			out = nil
+			return
+		}
+		// Object / array: JSON round-trip for back-compat with other
+		// backends (they decode into map[string]any / []any).
+		j, e := res.JSONStringify()
 		if e != nil {
 			err = e
 			return
 		}
-		argPtr, argLen, e := f.rt.writeStringLocked(string(argsJSON))
-		if e != nil {
+		if e := jsonUnmarshal([]byte(j), &out); e != nil {
 			err = e
-			return
 		}
-		defer f.rt.wasmFreeLocked(argPtr)
-		res, e := f.rt.wzExp.valCall.Call(f.rt.wzCtx,
-			uint64(f.rt.qjsCtx), fnH, 0,
-			uint64(argPtr), uint64(argLen))
-		if e != nil {
-			err = e
-			return
-		}
-		if isExceptionHandle(res[0]) {
-			err = f.rt.pullExceptionLocked()
-			return
-		}
-		out, err = f.rt.jsToGoLocked(res[0])
-		f.rt.freeValueLocked(res[0])
 	})
 	return out, err
 }
 
-// Close removes the globalThis reference that keeps the JS function
-// alive. Uses global_delete_prop rather than the `eval` export to avoid
-// the wazero compiler-mode re-entry corruption.
+// Close releases the underlying JS function handle.
 func (f *JSFunc) Close() error {
 	if f == nil || f.closed.Swap(true) {
 		return nil
@@ -83,7 +85,10 @@ func (f *JSFunc) Close() error {
 		return nil
 	}
 	f.rt.dispatch(func() {
-		_ = f.rt.globalDeletePropLocked(f.refName)
+		if f.fsv != nil {
+			f.fsv.Free()
+			f.fsv = nil
+		}
 	})
 	return nil
 }

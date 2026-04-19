@@ -4,6 +4,3 @@
 [submodule "third_party/rslint"]
 	path = third_party/rslint
 	url = https://github.com/web-infra-dev/rslint.git
-[submodule "third_party/quickjs-ng"]
-	path = third_party/quickjs-ng
-	url = https://github.com/quickjs-ng/quickjs.git
