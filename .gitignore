@@ -1,5 +1,8 @@
 # Binaries
 /ramune
+/ramune-toolchain
+/ramune-qjsw
+/ramune-goja
 *.exe
 *.exe~
 *.dll

@@ -44,6 +44,16 @@ jobs:
       - name: Build
         run: make build
 
+      - name: Build qjswasm
+        run: make build-qjswasm
+        env:
+          CGO_ENABLED: "0"
+
+      - name: Build goja
+        run: make build-goja
+        env:
+          CGO_ENABLED: "0"
+
       - name: Vet
         run: make vet
 
@@ -61,6 +71,12 @@ jobs:
         if: runner.os == 'macOS'
         run: make test
 
+      - name: Test qjswasm (Linux)
+        if: matrix.os == 'ubuntu-24.04'
+        run: make test-qjswasm-ci
+        env:
+          CGO_ENABLED: "0"
+
       - name: Build CLI
         run: make build-cli
         env:
@@ -69,3 +85,8 @@ jobs:
       - name: Smoke test CLI
         run: |
           ./ramune eval "1+1"
+
+      - name: Test downstream build (replace-leak guard)
+        run: make test-downstream
+        env:
+          CGO_ENABLED: ${{ runner.os == 'Linux' && '0' || '' }}

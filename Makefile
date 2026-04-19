@@ -1,4 +1,4 @@
-.PHONY: all build build-cli build-toolchain build-goja build-qjswasm fmt fmt-check vet test test-goja test-qjswasm test-wpt ci bench bench-go clean sync-tsgo sync-tsgo-pinned sync-rslint sync
+.PHONY: all build build-cli build-toolchain build-goja build-qjswasm fmt fmt-check vet test test-goja test-qjswasm test-qjswasm-ci test-downstream test-wpt ci bench bench-go clean sync-tsgo sync-tsgo-pinned sync-rslint sync
 
 all: ci
 
@@ -51,6 +51,26 @@ test-goja:
 
 test-qjswasm:
 	go test -tags qjswasm -count=1 -timeout 180s .
+
+# Partitioned qjswasm tests mirroring the JSC Linux split. Running the
+# full qjswasm test binary in one shot is prone to state-pollution hangs
+# (see project notes); the same partitioning that JSC uses keeps qjswasm
+# test runs bounded in CI.
+test-qjswasm-ci:
+	go test -tags qjswasm -run "^TestDependencies" -count=1 -timeout 180s .
+	go test -tags qjswasm -run "^TestWebSocket" -count=1 -timeout 120s .
+	go test -tags qjswasm -run "^TestHTTPCreateServer" -count=1 -timeout 120s .
+	go test -tags qjswasm -run "^TestWorker" -count=1 -timeout 120s .
+	go test -tags qjswasm -run "^Test[^DWHP]|^TestPool|^TestPerm|^TestProcess" -count=1 -timeout 240s .
+
+# Simulates a downstream consumer resolving Ramune through go.mod.
+# Uses a local-path replace so the working tree is picked up, but the
+# downstream's own go.mod is authoritative — Ramune's internal replace
+# directives are ignored, exactly matching how real consumers see us.
+# Catches v0.13.1-style leaks where a replace directive in Ramune's
+# own go.mod silently hides a broken public API.
+test-downstream:
+	@./scripts/test-downstream.sh
 
 test-verbose:
 	go test -v -count=1 -timeout 120s ./...
