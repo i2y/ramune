@@ -290,14 +290,17 @@ func (r *Runtime) qjswasmLoop(ready chan<- error, cfg *config) {
 	r.wzCtx = ctx
 	r.wzCancel = cancel
 
-	// Interpreter mode is the current default. wazero v1.11.0's compiler
-	// mode corrupts JSValue return values across host→wasm re-entry
-	// (reproducible: a Go callback that calls back into wasm via
-	// JSFunc.Call causes the outer JSCFunctionData trampoline to return
-	// the wrong value). Until that's resolved, we trade compiled-speed
-	// execution for correctness. The tradeoff is noted in
-	// project_qjswasm_perf_model memory; compiler mode remains a
-	// high-priority optimization once the re-entry issue is fixed.
+	// Use interpreter mode. wazero v1.11.0's compiler mode corrupts
+	// uint64_t (JSValue) return values across host→wasm re-entry:
+	// specifically, when a Go host callback calls the `eval` wasm export
+	// (rt.Eval / JSFunc.Call / fn.Close's "delete globalThis[name]" etc.),
+	// the outer JSCFunctionData trampoline returns the wrong value on JS
+	// side. `val_from_json` and `new_object` re-entry are unaffected,
+	// narrowing the bug to the `eval` entry path. Interpreter mode is
+	// correct but ~35× slower than modernc.org/quickjs for CPU-bound
+	// workloads. Tracked in project_qjswasm_perf_model memory; compiler
+	// mode is a high-priority upstream fix or a workaround that avoids
+	// reentrant eval calls.
 	r.wzCache = wazero.NewCompilationCache()
 	rtCfg := wazero.NewRuntimeConfigInterpreter().
 		WithCompilationCache(r.wzCache).
@@ -592,10 +595,9 @@ func (r *Runtime) rawEvalLocked(code, fname string, flags uint32) (uint64, error
 		return 0, fmt.Errorf("ramune: eval: %w", err)
 	}
 	// Drain any microtasks queued by the eval (Promise.resolve().then(...)
-	// etc.) so callers don't have to remember to pump. Mirrors the
-	// engine_quickjs.go behavior where evalBoolLocked / evalStringLocked
-	// call executePendingJobs up front. The defer guards insideMicrotasks
-	// against leaking "true" through a panic deeper in the call stack.
+	// etc.) so callers don't have to remember to pump. The defer guards
+	// insideMicrotasks against leaking "true" through a panic deeper in
+	// the call stack.
 	if !r.insideMicrotasks {
 		r.insideMicrotasks = true
 		defer func() { r.insideMicrotasks = false }()
