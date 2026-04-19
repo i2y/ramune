@@ -146,5 +146,3 @@ func sanitizeJSIdent(s string) string {
 	}
 	return string(b)
 }
-
-
