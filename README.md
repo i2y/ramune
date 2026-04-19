@@ -1173,6 +1173,11 @@ make sync        # sync typescript-go & rslint from submodules
 
 Named after [Ramune](https://en.wikipedia.org/wiki/Ramune), a Japanese carbonated soft drink served in a Codd-neck bottle — the one with the marble you have to press down into the neck to open. Hoping for the same "fizz" inside a Go binary.
 
+## Related Projects
+
+- **[Soda](https://github.com/i2y/soda)** — A drop-in Ramune-backed replacement for PocketBase's JSVM plugin. Lets PocketBase hooks be written as Workers-style `export default { fetch }` modules.
+- **[Dark](https://github.com/i2y/dark)** — Go SSR web framework: Preact templates, htmx interactions, Islands hydration. Built on `net/http`. Pairs well with Ramune-served endpoints.
+
 ## License
 
 MIT
