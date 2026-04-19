@@ -1219,8 +1219,10 @@ Ramune includes code from the following projects:
 | [modernc.org/libc](https://gitlab.com/cznic/libc) | BSD-3-Clause | Pure-Go libc for QuickJS/SQLite multi-worker scaling (fork with per-TLS allocator + page-owner routing; see `third_party/libc/pageowner.go` and the local patches to `mem.go` / `pthread.go` / `libc_darwin.go` / `mem_musl.go` / `libc_musl.go`) | Source copy (`third_party/libc/`) via `replace` directive |
 | [modernc.org/quickjs](https://pkg.go.dev/modernc.org/quickjs) | BSD-3-Clause | QuickJS backend (`-tags quickjs`) | Go module dependency |
 | [dop251/goja](https://github.com/dop251/goja) | MIT | goja backend (`-tags goja`) | Go module dependency |
+| [fastschema/qjs](https://github.com/fastschema/qjs) | MIT | qjswasm backend (`-tags qjswasm`) — QuickJS-NG on wazero, fork adds a `DisableFS` option for sandboxed use | Source copy (`third_party/qjs/`) via `replace` directive |
+| [QuickJS-NG](https://github.com/quickjs-ng/quickjs) | MIT | Baked into the prebuilt `third_party/qjs/qjs.wasm` that the qjswasm backend embeds; license text at `third_party/qjs/qjswasm/quickjs/LICENSE` | Compiled-binary inclusion |
 | [evanw/esbuild](https://github.com/evanw/esbuild) | MIT | TypeScript transpilation, bundling | Go module dependency |
 
-License texts for source-copied projects are in `internal/tsgo/LICENSE`, `internal/rslint/LICENSE`, `internal/rslint/tsgo_pinned/LICENSE` (a separate tsgo copy pinned to rslint's version for its shim bindings), and `third_party/libc/LICENSE` (together with `AUTHORS`, `CONTRIBUTORS`, and `LICENSE-3RD-PARTY.md` preserved from upstream).
+License texts for source-copied projects are in `internal/tsgo/LICENSE`, `internal/rslint/LICENSE`, `internal/rslint/tsgo_pinned/LICENSE` (a separate tsgo copy pinned to rslint's version for its shim bindings), `third_party/libc/LICENSE` (with `AUTHORS`, `CONTRIBUTORS`, and `LICENSE-3RD-PARTY.md` preserved from upstream), and `third_party/qjs/LICENSE` + `third_party/qjs/qjswasm/quickjs/LICENSE` (see `third_party/qjs/NOTICES.md`).
 
 The Ramune logo includes the Go Gopher, originally designed by [Renée French](https://reneefrench.blogspot.com/), licensed under [Creative Commons Attribution 4.0](https://creativecommons.org/licenses/by/4.0/).
