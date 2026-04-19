@@ -65,6 +65,10 @@ type wasmExports struct {
 	getException       api.Function
 	exceptionToJson    api.Function
 	executePendingJobs api.Function
+
+	// globalThis shortcuts (avoid eval re-entry from Go callbacks)
+	globalGetProp    api.Function
+	globalDeleteProp api.Function
 }
 
 func (e *wasmExports) resolve(mod api.Module) error {
@@ -107,6 +111,8 @@ func (e *wasmExports) resolve(mod api.Module) error {
 		{"get_exception", &e.getException},
 		{"exception_to_json", &e.exceptionToJson},
 		{"execute_pending_jobs", &e.executePendingJobs},
+		{"global_get_prop", &e.globalGetProp},
+		{"global_delete_prop", &e.globalDeleteProp},
 	}
 	for _, l := range table {
 		f := mod.ExportedFunction(l.name)
@@ -134,8 +140,13 @@ func (r *Runtime) installWazeroHost(ctx context.Context) error {
 // already packed argv into JSON. We invoke the matching Go handler,
 // JSON-encode the result, malloc a buffer in wasm memory, write the
 // JSON, and return packed (ptr, len).
+//
+// The dummyU64 parameter is an ABI workaround — without a 64-bit input
+// parameter the wazero compiler mode corrupts the outer trampoline's
+// uint64 return after this callback re-enters wasm.
 func (r *Runtime) hostGoDispatch(ctx context.Context, mod api.Module,
-	id, argsPtr, argsLen uint32) uint64 {
+	id uint32, dummyU64 uint64, argsPtr, argsLen uint32) uint64 {
+	_ = dummyU64
 	return r.dispatchGoFunc(ctx, mod, id, argsPtr, argsLen)
 }
 

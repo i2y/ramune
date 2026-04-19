@@ -223,9 +223,7 @@ func (r *Runtime) jsFuncToHandleLocked(f *JSFunc) (uint64, error) {
 		res, _ := r.wzExp.valUndefined.Call(r.wzCtx, uint64(r.qjsCtx))
 		return res[0], nil
 	}
-	// Pull globalThis[refName]
-	code := fmt.Sprintf("globalThis[%q]", f.refName)
-	return r.rawEvalLocked(code, "<jsfunc>", 0)
+	return r.globalGetPropLocked(f.refName)
 }
 
 // -----------------------------------------------------------------------

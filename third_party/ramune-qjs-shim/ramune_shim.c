@@ -397,9 +397,11 @@ typedef struct {
 } GoFuncData;
 
 /*
- * JSCFunctionData trampoline. We stash the Go function id as an int32 in
- * `magic`. On invocation, JSON-encode the argv, call env.go_dispatch, parse
- * the result, and return it (or throw on { e: ... }).
+ * JSCFunction trampoline (not JSCFunctionData — wazero compiler mode
+ * corrupts JSValue return values when JSCFunctionData callbacks re-enter
+ * wasm; using the simpler JSCFunction signature and prepending the Go
+ * function id as argv[0] sidesteps the issue. Same ABI shape that
+ * fastschema/qjs uses).
  *
  * Function arguments: JSON.stringify drops function values (they serialize
  * to undefined and get omitted from the output). To let Go callbacks hold
@@ -408,11 +410,22 @@ typedef struct {
  * globalThis[<name>]. The Go dispatcher decodes the marker into *JSFunc
  * which later reads globalThis[<name>] to invoke the JS function.
  */
-static JSValue go_func_trampoline(JSContext *ctx, JSValueConst this_val,
-                                  int argc, JSValueConst *argv, int magic,
-                                  JSValue *func_data) {
+static JSValue go_proxy(JSContext *ctx, JSValueConst this_val,
+                        int argc, JSValueConst *argv) {
     (void)this_val;
-    (void)func_data;
+
+    /* argv[0] is the Go function id (passed as a uint64 JS number by the
+     * JS-side wrapper in register_go_func). argv[1..] are the real args. */
+    if (argc < 1) {
+        return JS_ThrowInternalError(ctx, "go_proxy missing id");
+    }
+    int64_t id64 = 0;
+    if (JS_ToInt64(ctx, &id64, argv[0]) < 0) {
+        return JS_EXCEPTION;
+    }
+    int magic = (int)id64;
+    int real_argc = argc - 1;
+    const JSValueConst *real_argv = argc > 1 ? &argv[1] : NULL;
 
     /* Build argv as a JS Array so we can stringify it. Function args are
      * replaced with marker objects (see note above). */
@@ -421,8 +434,8 @@ static JSValue go_func_trampoline(JSContext *ctx, JSValueConst this_val,
 
     JSValue arr = JS_NewArray(ctx);
     if (JS_IsException(arr)) return arr;
-    for (int i = 0; i < argc; i++) {
-        if (JS_IsFunction(ctx, argv[i])) {
+    for (int i = 0; i < real_argc; i++) {
+        if (JS_IsFunction(ctx, real_argv[i])) {
             if (JS_IsUndefined(global)) {
                 global = JS_GetGlobalObject(ctx);
                 if (JS_IsException(global)) {
@@ -440,7 +453,7 @@ static JSValue go_func_trampoline(JSContext *ctx, JSValueConst this_val,
                 return JS_ThrowInternalError(ctx, "jsfunc ref name overflow");
             }
             if (JS_SetPropertyStr(ctx, global, ref_name,
-                                  JS_DupValue(ctx, argv[i])) < 0) {
+                                  JS_DupValue(ctx, real_argv[i])) < 0) {
                 JS_FreeValue(ctx, global);
                 JS_FreeValue(ctx, arr);
                 return JS_EXCEPTION;
@@ -464,7 +477,7 @@ static JSValue go_func_trampoline(JSContext *ctx, JSValueConst this_val,
                 return JS_EXCEPTION;
             }
         } else {
-            JSValue dup = JS_DupValue(ctx, argv[i]);
+            JSValue dup = JS_DupValue(ctx, real_argv[i]);
             if (JS_SetPropertyUint32(ctx, arr, (uint32_t)i, dup) < 0) {
                 if (!JS_IsUndefined(global)) JS_FreeValue(ctx, global);
                 JS_FreeValue(ctx, arr);
@@ -488,6 +501,7 @@ static JSValue go_func_trampoline(JSContext *ctx, JSValueConst this_val,
      * The contract: Go must finish reading before we call JS_FreeCString.
      * env.go_dispatch is synchronous so the order below is sufficient. */
     uint64_t packed = go_dispatch((uint32_t)magic,
+                                  0ULL,
                                   (uint32_t)(uintptr_t)jstr,
                                   (uint32_t)jlen);
     JS_FreeCString(ctx, jstr);
@@ -555,23 +569,63 @@ static JSValue go_func_trampoline(JSContext *ctx, JSValueConst this_val,
     return result;
 }
 
+/*
+ * register_go_func wires the shared JSCFunction `go_proxy` into a JS
+ * wrapper that captures the Go function id in a closure. The wrapper is
+ * installed under globalThis[name]. When JS calls it, the closure
+ * prepends the id to arguments and forwards to go_proxy.
+ *
+ * A single shared `go_proxy` C function is installed as globalThis
+ * `__ramune_go_proxy` on first call; later registrations reuse it.
+ */
 RMN_EXPORT(register_go_func)
 int32_t register_go_func(uint32_t ctx_u, uint32_t name_ptr, uint32_t name_len,
                          uint32_t id) {
     JSContext *ctx = (JSContext *)(uintptr_t)ctx_u;
     if (!ctx) return -1;
-    JSValue fn = JS_NewCFunctionData(ctx, go_func_trampoline,
-                                     /*length*/ 0, /*magic*/ (int)id,
-                                     /*data_len*/ 0, NULL);
-    if (JS_IsException(fn)) return -1;
+
+    JSValue global = JS_GetGlobalObject(ctx);
+
+    /* Install __ramune_go_proxy once. */
+    JSValue existing = JS_GetPropertyStr(ctx, global, "__ramune_go_proxy");
+    bool need_install = !JS_IsFunction(ctx, existing);
+    JS_FreeValue(ctx, existing);
+    if (need_install) {
+        JSValue proxy = JS_NewCFunction(ctx, go_proxy, "__ramune_go_proxy", 0);
+        if (JS_IsException(proxy)) {
+            JS_FreeValue(ctx, global);
+            return -1;
+        }
+        if (JS_SetPropertyStr(ctx, global, "__ramune_go_proxy", proxy) < 0) {
+            JS_FreeValue(ctx, global);
+            return -1;
+        }
+    }
+
+    /* Build the JS wrapper: function() { return __ramune_go_proxy.call(this, id, ...arguments); } */
+    char wrapper_code[256];
+    int wrote = snprintf(wrapper_code, sizeof(wrapper_code),
+        "(function(_id){return function(){return globalThis.__ramune_go_proxy.apply(this,[_id].concat(Array.prototype.slice.call(arguments)));};})(%u)",
+        id);
+    if (wrote <= 0 || wrote >= (int)sizeof(wrapper_code)) {
+        JS_FreeValue(ctx, global);
+        return -1;
+    }
+    JSValue wrapper = JS_Eval(ctx, wrapper_code, (size_t)wrote,
+                              "<go_func_wrapper>", JS_EVAL_TYPE_GLOBAL);
+    if (JS_IsException(wrapper)) {
+        JS_FreeValue(ctx, global);
+        return -1;
+    }
+
     JSAtom a = JS_NewAtomLen(ctx, (const char *)(uintptr_t)name_ptr,
                              (size_t)name_len);
     if (a == JS_ATOM_NULL) {
-        JS_FreeValue(ctx, fn);
+        JS_FreeValue(ctx, wrapper);
+        JS_FreeValue(ctx, global);
         return -1;
     }
-    JSValue global = JS_GetGlobalObject(ctx);
-    int rc = JS_SetProperty(ctx, global, a, fn);
+    int rc = JS_SetProperty(ctx, global, a, wrapper);
     JS_FreeAtom(ctx, a);
     JS_FreeValue(ctx, global);
     return rc < 0 ? -1 : 0;
@@ -636,6 +690,44 @@ uint64_t exception_to_json(uint32_t ctx_u, uint64_t exc) {
     JS_FreeCString(ctx, s);
     JS_FreeValue(ctx, json);
     return pack_ptr_len((uint32_t)(uintptr_t)buf, (uint32_t)len);
+}
+
+/* ---- globalThis shortcuts ----------------------------------------- */
+
+RMN_EXPORT(global_get_prop)
+uint64_t global_get_prop(uint32_t ctx_u, uint32_t name_ptr, uint32_t name_len) {
+    JSContext *ctx = (JSContext *)(uintptr_t)ctx_u;
+    if (!ctx) return JS_EXCEPTION;
+    JSValue global = JS_GetGlobalObject(ctx);
+    if (JS_IsException(global)) return global;
+    JSAtom a = JS_NewAtomLen(ctx, (const char *)(uintptr_t)name_ptr,
+                             (size_t)name_len);
+    if (a == JS_ATOM_NULL) {
+        JS_FreeValue(ctx, global);
+        return JS_EXCEPTION;
+    }
+    JSValue v = JS_GetProperty(ctx, global, a);
+    JS_FreeAtom(ctx, a);
+    JS_FreeValue(ctx, global);
+    return v;
+}
+
+RMN_EXPORT(global_delete_prop)
+int32_t global_delete_prop(uint32_t ctx_u, uint32_t name_ptr, uint32_t name_len) {
+    JSContext *ctx = (JSContext *)(uintptr_t)ctx_u;
+    if (!ctx) return -1;
+    JSValue global = JS_GetGlobalObject(ctx);
+    if (JS_IsException(global)) return -1;
+    JSAtom a = JS_NewAtomLen(ctx, (const char *)(uintptr_t)name_ptr,
+                             (size_t)name_len);
+    if (a == JS_ATOM_NULL) {
+        JS_FreeValue(ctx, global);
+        return -1;
+    }
+    int rc = JS_DeleteProperty(ctx, global, a, 0);
+    JS_FreeAtom(ctx, a);
+    JS_FreeValue(ctx, global);
+    return rc < 0 ? -1 : 0;
 }
 
 /* ---- microtasks --------------------------------------------------- */

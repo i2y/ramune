@@ -290,19 +290,17 @@ func (r *Runtime) qjswasmLoop(ready chan<- error, cfg *config) {
 	r.wzCtx = ctx
 	r.wzCancel = cancel
 
-	// Use interpreter mode. wazero v1.11.0's compiler mode corrupts
-	// uint64_t (JSValue) return values across host→wasm re-entry:
-	// specifically, when a Go host callback calls the `eval` wasm export
-	// (rt.Eval / JSFunc.Call / fn.Close's "delete globalThis[name]" etc.),
-	// the outer JSCFunctionData trampoline returns the wrong value on JS
-	// side. `val_from_json` and `new_object` re-entry are unaffected,
-	// narrowing the bug to the `eval` entry path. Interpreter mode is
-	// correct but ~35× slower than modernc.org/quickjs for CPU-bound
-	// workloads. Tracked in project_qjswasm_perf_model memory; compiler
-	// mode is a high-priority upstream fix or a workaround that avoids
-	// reentrant eval calls.
+	// Compiler mode: AOT-compile wasm to native machine code. This is the
+	// performance thesis of the qjswasm backend. The `eval` wasm export
+	// must never be re-entered from inside a Go host callback — doing so
+	// corrupts the outer trampoline's uint64 return under wazero's
+	// compiler mode. JSFunc.Call / fn.Close use dedicated shim exports
+	// (global_get_prop / global_delete_prop / val_call) that re-enter
+	// safely. User code that calls CallbackContext.Eval / Exec from
+	// inside a Go callback will trip the bug, which is a known limitation
+	// until wazero's compiler handles eval re-entry correctly.
 	r.wzCache = wazero.NewCompilationCache()
-	rtCfg := wazero.NewRuntimeConfigInterpreter().
+	rtCfg := wazero.NewRuntimeConfigCompiler().
 		WithCompilationCache(r.wzCache).
 		WithCloseOnContextDone(true)
 	r.wzRt = wazero.NewRuntimeWithConfig(ctx, rtCfg)
@@ -662,6 +660,37 @@ func (r *Runtime) wasmFreeLocked(ptr uint32) {
 		return
 	}
 	_, _ = r.wzExp.rmnFree.Call(r.wzCtx, uint64(ptr))
+}
+
+// globalGetPropLocked fetches globalThis[name] via the dedicated shim
+// export (no `eval` re-entry). Used by JSFunc.Call and jsFuncToHandle so
+// they stay safe when called from inside Go callbacks under wazero
+// compiler mode.
+func (r *Runtime) globalGetPropLocked(name string) (uint64, error) {
+	ptr, length, err := r.writeStringLocked(name)
+	if err != nil {
+		return 0, err
+	}
+	defer r.wasmFreeLocked(ptr)
+	res, err := r.wzExp.globalGetProp.Call(r.wzCtx,
+		uint64(r.qjsCtx), uint64(ptr), uint64(length))
+	if err != nil {
+		return 0, err
+	}
+	return res[0], nil
+}
+
+// globalDeletePropLocked removes globalThis[name] via the dedicated shim
+// export (no `eval` re-entry).
+func (r *Runtime) globalDeletePropLocked(name string) error {
+	ptr, length, err := r.writeStringLocked(name)
+	if err != nil {
+		return err
+	}
+	defer r.wasmFreeLocked(ptr)
+	_, err = r.wzExp.globalDeleteProp.Call(r.wzCtx,
+		uint64(r.qjsCtx), uint64(ptr), uint64(length))
+	return err
 }
 
 // freeValueLocked is a deliberate no-op today; values live until

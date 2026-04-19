@@ -129,9 +129,26 @@ uint64_t exception_to_json (uint32_t ctx, uint64_t exc); /* packed (ptr,len) JSO
 /* --- Microtasks / promises ------------------------------------------ */
 int32_t  execute_pending_jobs(uint32_t rt);
 
-/* Imported host function — from Go, through env.go_dispatch. */
+/* --- globalThis shortcuts ------------------------------------------- */
+/* Used by JSFunc so callers can pull/drop globalThis[refName] without
+ * going through the `eval` export. Re-entering wasm through `eval` from
+ * inside a Go host callback corrupts the outer JSCFunction trampoline's
+ * uint64 return under wazero's compiler mode; re-entry through these
+ * dedicated exports stays safe. */
+uint64_t global_get_prop   (uint32_t ctx, uint32_t name_ptr, uint32_t name_len);
+int32_t  global_delete_prop(uint32_t ctx, uint32_t name_ptr, uint32_t name_len);
+
+/* Imported host function — from Go, through env.go_dispatch.
+ *
+ * The `dummy_u64` parameter is a wazero-compat workaround: without a
+ * uint64 parameter, re-entering wasm from inside a Go callback (via
+ * rt.Eval, JSFunc.Call, etc.) corrupts the outer JSCFunctionData
+ * trampoline's uint64 return under compiler mode. Adding one 8-byte
+ * parameter appears to stabilize the ABI. fastschema/qjs's proxy uses
+ * the same pattern (thisVal is their uint64 param). */
 __attribute__((import_module("env"), import_name("go_dispatch")))
-extern uint64_t go_dispatch(uint32_t id, uint32_t args_ptr, uint32_t args_len);
+extern uint64_t go_dispatch(uint32_t id, uint64_t dummy_u64,
+                            uint32_t args_ptr, uint32_t args_len);
 
 __attribute__((import_module("env"), import_name("host_log")))
 extern void host_log(uint32_t level, uint32_t ptr, uint32_t len);

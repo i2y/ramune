@@ -4,7 +4,6 @@ package ramune
 
 import (
 	"encoding/json"
-	"fmt"
 	"sync/atomic"
 )
 
@@ -19,7 +18,10 @@ type JSFunc struct {
 	closed  atomic.Bool
 }
 
-// Call invokes the JS function with args.
+// Call invokes the JS function with args. Uses the dedicated
+// global_get_prop + val_call shim exports (not the `eval` export) to
+// avoid wazero compiler mode's eval-reentry corruption when Call is
+// invoked from inside another Go callback.
 func (f *JSFunc) Call(args ...any) (any, error) {
 	if f == nil || f.closed.Load() {
 		return nil, ErrNilValue
@@ -31,9 +33,7 @@ func (f *JSFunc) Call(args ...any) (any, error) {
 	var out any
 	var err error
 	f.rt.dispatch(func() {
-		// Pull the function value from globalThis[refName].
-		code := fmt.Sprintf("globalThis[%q]", f.refName)
-		fnH, e := f.rt.rawEvalLocked(code, "<jsfunc.call>", 0)
+		fnH, e := f.rt.globalGetPropLocked(f.refName)
 		if e != nil {
 			err = e
 			return
@@ -73,7 +73,8 @@ func (f *JSFunc) Call(args ...any) (any, error) {
 }
 
 // Close removes the globalThis reference that keeps the JS function
-// alive.
+// alive. Uses global_delete_prop rather than the `eval` export to avoid
+// the wazero compiler-mode re-entry corruption.
 func (f *JSFunc) Close() error {
 	if f == nil || f.closed.Swap(true) {
 		return nil
@@ -82,7 +83,7 @@ func (f *JSFunc) Close() error {
 		return nil
 	}
 	f.rt.dispatch(func() {
-		_ = f.rt.execLocked(fmt.Sprintf("delete globalThis[%q]", f.refName))
+		_ = f.rt.globalDeletePropLocked(f.refName)
 	})
 	return nil
 }
