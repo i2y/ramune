@@ -952,14 +952,14 @@ Ramune runs multiple JS VMs in parallel on separate OS threads (Bun/Node are sin
 
 | Workers | req/s | Scaling |
 |---------|-------|---------|
-| 1 | 16,229 | 1.0x |
-| 2 | 23,489 | 1.45x |
-| 3 | 23,645 | 1.46x |
-| 4 | 19,479 | 1.20x |
-| 5 | 15,951 | 0.98x |
-| 6 | 14,448 | 0.89x |
+| 1 | 40,511 | 1.0x |
+| 2 | 54,500 | 1.35x |
+| 3 | 58,401 | 1.44x |
+| 4 | 59,706 | 1.47x |
+| 5 | 60,913 | 1.50x |
+| 6 | 62,407 | 1.54x |
 
-JSC wins on single-worker throughput (JIT). Scaling peaks around 2-3 workers (~23.5k req/s) and regresses past 4 back to 14.4k at 6 workers. This is a property of JSC itself, not a Ramune-specific issue: the JSC VM serializes on shared JIT state (code cache, inline cache stubs) when multiple runtimes execute in the same process on separate threads, and purego FFI crossings add lock contention on top. For latency-sensitive workloads, run 1-3 workers.
+JSC wins on absolute throughput by a wide margin thanks to the JIT. Multi-worker scaling is shallow but monotonic — the single-worker JIT throughput is already close to saturating what the handler can generate, so additional workers add modest headroom (~54% over 1-worker at 6 workers). For latency-sensitive workloads, 1-3 workers is usually optimal; past 3 workers the curve is close to flat.
 
 #### qjswasm (`-tags qjswasm`)
 
@@ -987,7 +987,7 @@ Monotonic out to 6 workers (and still linear). QuickJS-NG compiled to WASM and d
 
 Pure-Go reflection interpreter. Faster than qjswasm at 1-3 workers (lower setup cost, no wazero compile) but qjswasm pulls ahead from 4 workers on.
 
-**Backend selection by shape.** JSC wins single-worker and peaks at 2 workers (best for latency-sensitive workloads). qjswasm has the best multiplicative scaling *and* the highest absolute multi-worker throughput among pure-Go backends (13.4k req/s at 6 workers). goja is the simplest pure-Go option when you want the smallest binary. Pick the backend that matches your target shape.
+**Backend selection by shape.** JSC wins by a wide margin on absolute throughput at every worker count (~40k single-worker, ~62k at 6 workers). qjswasm has the best *multiplicative* scaling (5.72× at 6 workers) and the highest absolute throughput among pure-Go backends past 3 workers. goja is the simplest pure-Go option and is the fastest pure-Go at 1-3 workers (no wasm compile cost). Pick the backend that matches your target shape.
 
 ### vs Go JS Runtimes
 
