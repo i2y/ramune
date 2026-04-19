@@ -388,7 +388,7 @@ ramune.WithPermissions(&ramune.Permissions{
 Ramune provides its own API namespace (`Ramune.*`). `Bun.*` is available as an alias for backward compatibility, though compatibility is partial and will be improved over time.
 
 Supported APIs:
-- `Ramune.serve({port, fetch, websocket})` — HTTP/WebSocket server (Go net/http backend, ~90K req/s single-process on Apple M4 Max). Async fetch handlers with setTimeout supported.
+- `Ramune.serve({port, fetch, websocket})` — HTTP/WebSocket server (Go net/http backend). Async fetch handlers with setTimeout supported.
 - `Ramune.file(path)` — text(), json(), exists(), size, name
 - `Ramune.write(path, data)` — file write
 - `Ramune.password.hash/verify` — bcrypt
