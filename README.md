@@ -45,7 +45,7 @@ Four use cases, four audiences. Jump to the section that matches your motivation
 
 **1. Embed a JS engine in a Go program.** Competitors: `goja`, `otto`. Ramune's `goja` backend (`-tags goja`) is a drop-in replacement for existing goja users, with esbuild auto-lowering so modern JS syntax works. Switch to `-tags qjswasm` (pure-Go QuickJS-NG on wazero, ES2023) or the default JSC backend (JIT, 60×+ faster than goja on CPU-bound JS). Same API across all three — swap at build time to trade off startup vs throughput vs platform reach. Call any Go library from JS via `RegisterFunc`; expose typed Go functions as `require()`-able modules via `NativeModuleFromFuncs`. → see [Embed in Go](#embed-in-go)
 
-**2. Build a platform where customers run JS on your service.** The self-ownable counterpart to Cloudflare Workers for Platforms / Deno Subhosting. Multi-tenant isolation via `RuntimePool` (N independent JS VMs per process, round-robined at HTTP layer), sandbox via `WithPermissions` + `WithResourceLimits`, per-tenant `env.*` via pluggable backends. Your customers write normal Workers code. You own the data plane. → see [Embed in Go](#embed-in-go) and `workers.Register` under it
+**2. Build a platform where customers run JS on your service.** The self-ownable counterpart to Cloudflare Workers for Platforms / Deno Subhosting. Multi-tenant isolation via `RuntimePool` (N independent JS VMs per process, round-robined at HTTP layer), layered defense-in-depth sandbox via qjswasm's WASM linear memory + `SandboxPermissions()` (auto-disables WASI FS mount) + `WithResourceLimits` (memory/stack/GC caps at the QuickJS-NG level) + permission-gated Go bridges, per-tenant `env.*` via pluggable `KVBackend` / `DBBackend`. Your customers write normal Workers code. You own the data plane. → see [In-process Sandbox for Untrusted JS](#in-process-sandbox-for-untrusted-js-qjswasm--permissions)
 
 **3. Self-host Cloudflare Workers code.** You have `export default { fetch, scheduled }` handlers and want them running on your VM, bare metal, or `FROM scratch` Docker. `ramune serve worker.ts` or `ramune compile worker.ts -o myworker` — single binary, no Wrangler, no Dockerfile, no Node. Default surface covers `fetch` / `env.KV` / `env.DB` / `env.SECRETS` / `ctx.waitUntil` / `scheduled` / cron / WinterCG; see the [Workers serve](#workers-style-modules-ramune-serve) section for the full scope (what ships, what's user-supplied, what's still partial).
 
@@ -846,6 +846,37 @@ rt, _ := ramune.New(
     }),
 )
 ```
+
+### In-process Sandbox for Untrusted JS (qjswasm + permissions)
+
+For platforms that let customers upload JS code (persona 2 above), the `qjswasm` backend + `SandboxPermissions()` + `WithResourceLimits` gives you a **layered defense-in-depth sandbox in one process**, no Docker required:
+
+```go
+rt, err := ramune.New(
+    ramune.NodeCompat(),
+    ramune.WithPermissions(ramune.SandboxPermissions()),   // deny all I/O by default
+    ramune.WithResourceLimits(ramune.ResourceLimits{
+        MaxMemoryBytes:   64 << 20,    // 64 MiB JS heap cap
+        MaxStackBytes:    1 << 20,     // 1 MiB stack cap
+        GCThresholdBytes: 16 << 20,    // trigger GC at 16 MiB
+    }),
+)
+```
+
+This stacks four independent layers:
+
+1. **WASM linear memory isolation (qjswasm only).** QuickJS-NG runs inside wazero's linear memory. A memory-safety bug in the VM can only corrupt the wasm sandbox's own memory — it cannot read or write Go heap, host memory, or make arbitrary syscalls. Bounds-checked by wazero at compile time (compiler mode AOT-compiles WASM → native while preserving WASM's memory-safety semantics).
+2. **No ambient syscalls (qjswasm only).** wazero only exposes what host imports are explicitly registered. `SandboxPermissions()` triggers Ramune's fork of fastschema/qjs to pass `DisableFS: true`, which skips the default `wazero.NewFSConfig().WithDirMount(CWD, "/")` — so even WASI `fd_read` / `path_open` have no filesystem to reach. A VM escape still can't pivot to host files.
+3. **Permission-gated Go bridges.** The only path from JS to the host OS is through Ramune's registered Go callbacks (`fs.readFile`, `fetch`, `child_process.spawn`, etc.). Each checks `perms.CheckRead` / `CheckWrite` / `CheckNet` / `CheckRun` / `CheckEnv` at the Go side before doing anything. This gate is shared across all three backends.
+4. **Resource caps.** `WithResourceLimits` maps to QuickJS-NG's `JS_SetMemoryLimit` / `JS_SetMaxStackSize` / `JS_SetGCThreshold`. OOM and stack-overflow in JS are recoverable errors, not process crashes. Per-runtime caps survive multiple tenants sharing one Ramune process via `RuntimePool`.
+
+For comparison:
+- **JSC and goja** honor permissions (layer 3) and can be used for trusted-by-default scenarios, but they lack the VM-boundary isolation (layer 1-2). JSC has a JIT with RWX pages that's generally well-audited but a larger attack surface; goja runs Go reflection code with full process privileges.
+- **Docker Sandbox** (`SandboxRuntime`, below) is an outer OS-level layer on top of all of this — use it when you need kernel-level isolation (namespaces, cgroups, seccomp) or when you're about to run a binary you don't control. For JS code you do control but want to sandbox from your own Go code, in-process qjswasm is usually sufficient and much lighter.
+
+Known gaps:
+- `ResourceLimits.MaxExecutionTime` is accepted but currently not enforced by the C shim (the QuickJS interrupt handler hook is wired in Go but the C path that would register it is commented out). CPU-bound DoS isn't caught in-band yet; use an out-of-band timeout (`context.WithTimeout` + `RunEventLoopFor`) until this lands.
+- Multi-tenant fairness across workers in a `RuntimePool` is best-effort — one tenant can starve others if they burn CPU, since workers aren't preempted.
 
 ### Docker Sandbox (Library API)
 
