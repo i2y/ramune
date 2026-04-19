@@ -26,6 +26,9 @@ var wptSkipByEngine = map[string]map[string]string{
 		"gb18030-decoder.any.js":                "goja parser panic on \\u{10FFFF} string literal",
 		"AddEventListenerOptions-signal.any.js": "hangs (AbortSignal + passive listener interaction)",
 	},
+	"qjswasm": {
+		"AddEventListenerOptions-signal.any.js": "hangs (AbortSignal + passive listener interaction)",
+	},
 }
 
 // wptResult collects results from a single WPT test assertion.

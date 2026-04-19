@@ -196,16 +196,25 @@ func (r *Runtime) NewArray(items ...any) (*Value, error) {
 	return r.goToJSPublic(items)
 }
 
-// NewUint8Array wraps a []byte as a Uint8Array.
+// NewUint8Array wraps a []byte as a Uint8Array. We construct the array via
+// `new Uint8Array(buffer)` rather than qjsCtx.NewBytes: NewBytes returns an
+// opaque WASM memory handle (not a typed array), so length/property access
+// on the JS side would fail.
 func (r *Runtime) NewUint8Array(b []byte) (*Value, error) {
 	if r.closed.Load() {
 		return nil, ErrAlreadyClosed
 	}
 	var out *Value
+	var err error
 	r.dispatch(func() {
-		out = r.wrapValue(r.qjsCtx.NewBytes(b))
+		fv, e := r.newUint8ArrayLocked(b)
+		if e != nil {
+			err = e
+			return
+		}
+		out = r.wrapValue(fv)
 	})
-	return out, nil
+	return out, err
 }
 
 // -----------------------------------------------------------------------
@@ -394,7 +403,13 @@ func (r *Runtime) evalLocked(code string) (*Value, error) {
 }
 
 func (r *Runtime) execLocked(code string) error {
-	v, err := r.qjsCtx.Eval("<exec>", qjs.Code(code))
+	// qjswasm-specific: fastschema/qjs's QJS_Eval C helper calls
+	// js_std_await() whenever the script's final expression is a Promise,
+	// which blocks the wasm thread forever if the Promise resolves via
+	// our Go-side event loop (setTimeout, etc.). Exec discards the
+	// result anyway — appending ;undefined; guarantees the top-level
+	// expression is not a Promise, so js_std_await is never entered.
+	v, err := r.qjsCtx.Eval("<exec>", qjs.Code(code+";undefined;"))
 	if err != nil {
 		return &JSError{Context: "exec", Message: err.Error()}
 	}

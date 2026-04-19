@@ -4,6 +4,8 @@ package ramune
 
 import (
 	"encoding/json"
+	"fmt"
+	"reflect"
 
 	"github.com/fastschema/qjs"
 )
@@ -27,30 +29,209 @@ func (r *Runtime) goToJSPublic(v any) (*Value, error) {
 	return out, err
 }
 
-// goToJSLocked converts a Go value to a *qjs.Value on the engine
-// goroutine. Most paths delegate to fastschema's ToJsValue which
-// auto-detects numeric / string / map / slice / struct shapes.
+// goToJSLocked converts a Go value to a *qjs.Value on the engine goroutine.
+// We handle every shape ourselves rather than delegating to qjs.ToJsValue
+// because fastschema's default conversion attaches __go_type / __registry_id
+// metadata to every object (including plain map/slice results) which leaks
+// through JSON.stringify and Object.keys, breaking Ramune's value semantics.
 func (r *Runtime) goToJSLocked(v any) (*qjs.Value, error) {
 	switch x := v.(type) {
+	case nil:
+		return r.qjsCtx.NewNull(), nil
 	case *Value:
 		if x == nil || x.rt != r || x.fsv == nil {
 			return r.qjsCtx.NewUndefined(), nil
 		}
-		// Clone so the caller's ownership contract (returned *qjs.Value
-		// is freshly-owned) is preserved.
+		// Clone so the caller's ownership contract (returned *qjs.Value is
+		// freshly owned) is preserved.
 		return x.fsv.Clone(), nil
 	case *JSFunc:
 		if x == nil || x.fsv == nil {
 			return r.qjsCtx.NewUndefined(), nil
 		}
 		return x.fsv.Clone(), nil
+	case bool:
+		return r.qjsCtx.NewBool(x), nil
+	case int:
+		return r.qjsCtx.NewFloat64(float64(x)), nil
+	case int8:
+		return r.qjsCtx.NewFloat64(float64(x)), nil
+	case int16:
+		return r.qjsCtx.NewFloat64(float64(x)), nil
+	case int32:
+		return r.qjsCtx.NewFloat64(float64(x)), nil
+	case int64:
+		return r.qjsCtx.NewFloat64(float64(x)), nil
+	case uint:
+		return r.qjsCtx.NewFloat64(float64(x)), nil
+	case uint8:
+		return r.qjsCtx.NewFloat64(float64(x)), nil
+	case uint16:
+		return r.qjsCtx.NewFloat64(float64(x)), nil
+	case uint32:
+		return r.qjsCtx.NewFloat64(float64(x)), nil
+	case uint64:
+		return r.qjsCtx.NewFloat64(float64(x)), nil
+	case float32:
+		return r.qjsCtx.NewFloat64(float64(x)), nil
+	case float64:
+		return r.qjsCtx.NewFloat64(x), nil
+	case string:
+		return r.qjsCtx.NewString(x), nil
+	case []byte:
+		return r.newUint8ArrayLocked(x)
+	case map[string]any:
+		return r.jsonToJSLocked(x)
+	case []any:
+		return r.jsonToJSLocked(x)
 	}
-	return qjs.ToJsValue(r.qjsCtx, v)
+
+	rv := reflect.ValueOf(v)
+	origVal := rv
+
+	// Promise (has Await() method) — convert to JS Promise lazily.
+	if rv.Kind() == reflect.Ptr && rv.MethodByName("Await").IsValid() {
+		return r.promiseToJSLocked(rv)
+	}
+
+	// Arbitrary slices via reflection (e.g. []int, []string).
+	if rv.Kind() == reflect.Slice {
+		elems := make([]any, rv.Len())
+		for i := 0; i < rv.Len(); i++ {
+			elems[i] = rv.Index(i).Interface()
+		}
+		return r.jsonToJSLocked(elems)
+	}
+
+	// Arbitrary maps with string keys via reflection (e.g. map[string]int).
+	if rv.Kind() == reflect.Map && rv.Type().Key().Kind() == reflect.String {
+		m := make(map[string]any, rv.Len())
+		iter := rv.MapRange()
+		for iter.Next() {
+			m[iter.Key().String()] = iter.Value().Interface()
+		}
+		return r.jsonToJSLocked(m)
+	}
+
+	if rv.Kind() == reflect.Ptr {
+		rv = rv.Elem()
+	}
+	if rv.Kind() == reflect.Struct {
+		return r.structToJSObjectQJSWasm(origVal, rv)
+	}
+
+	return nil, fmt.Errorf("ramune: unsupported Go type %T", v)
 }
 
-// jsToGoLocked converts a *qjs.Value into a plain Go value. Delegates
-// to the helpers in callback_qjswasm.go via jsArgToGo for consistency
-// with callback argument marshaling.
+// jsonToJSLocked round-trips a Go value through JSON and parses it as a
+// fresh JS object. This preserves nested structure without attaching any
+// bookkeeping properties.
+func (r *Runtime) jsonToJSLocked(v any) (*qjs.Value, error) {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return nil, fmt.Errorf("ramune: goToJS json.Marshal: %w", err)
+	}
+	return r.qjsCtx.ParseJSON(string(data)), nil
+}
+
+// newUint8ArrayLocked creates a proper JS Uint8Array from a []byte. Using
+// qjsCtx.NewBytes returns an opaque WASM handle rather than a typed array,
+// so we allocate an ArrayBuffer and wrap it with `new Uint8Array(buffer)`.
+func (r *Runtime) newUint8ArrayLocked(b []byte) (*qjs.Value, error) {
+	if b == nil {
+		return r.qjsCtx.NewNull(), nil
+	}
+	ab := r.qjsCtx.NewArrayBuffer(b)
+	global := r.qjsCtx.Global()
+	u8 := global.GetPropertyStr("Uint8Array")
+	defer u8.Free()
+	out := u8.New(ab)
+	// NewArrayBuffer returns a fresh Value; `New(ab)` consumed it logically
+	// but fastschema's constructor keeps its own copy. Free our reference.
+	ab.Free()
+	return out, nil
+}
+
+// promiseToJSLocked converts a Go *promise.Promise[T] to a JS Promise via
+// Promise.withResolvers — this gives us resolve/reject handles we can call
+// from Go once Await() returns.
+func (r *Runtime) promiseToJSLocked(rv reflect.Value) (*qjs.Value, error) {
+	r.nativeMethodSeq++
+	seq := r.nativeMethodSeq
+	resolveName := fmt.Sprintf("__promise_resolve_%d", seq)
+	rejectName := fmt.Sprintf("__promise_reject_%d", seq)
+
+	jsCode := fmt.Sprintf(
+		`(function(){var p=new Promise(function(resolve,reject){globalThis.%s=function(v){resolve(v)};globalThis.%s=function(e){reject(e)}});return p})()`,
+		resolveName, rejectName,
+	)
+	jsPromise, err := r.evalScriptLocked(jsCode, "promise-bridge")
+	if err != nil {
+		return nil, fmt.Errorf("promiseToJSQJSWasm: %w", err)
+	}
+
+	awaitMethod := rv.MethodByName("Await")
+
+	go func() {
+		results := awaitMethod.Call(nil)
+		r.dispatch(func() {
+			if len(results) >= 2 && !results[1].IsNil() {
+				errMsg := results[1].Interface().(error).Error()
+				msgLit, _ := json.Marshal(errMsg)
+				r.execLocked(fmt.Sprintf("globalThis.%s(new Error(%s));delete globalThis.%s;delete globalThis.%s;",
+					rejectName, string(msgLit), resolveName, rejectName))
+				return
+			}
+			if len(results) >= 1 {
+				val := results[0].Interface()
+				jsVal, convErr := r.goToJSLocked(val)
+				if convErr != nil {
+					msgLit, _ := json.Marshal(convErr.Error())
+					r.execLocked(fmt.Sprintf("globalThis.%s(new Error(%s));delete globalThis.%s;delete globalThis.%s;",
+						rejectName, string(msgLit), resolveName, rejectName))
+					return
+				}
+				tmp := fmt.Sprintf("__pval_%d", seq)
+				global := r.qjsCtx.Global()
+				global.SetPropertyStr(tmp, jsVal)
+				r.execLocked(fmt.Sprintf("globalThis.%s(globalThis.%s);delete globalThis.%s;delete globalThis.%s;delete globalThis.%s;",
+					resolveName, tmp, resolveName, rejectName, tmp))
+			}
+		})
+		r.Wake()
+	}()
+
+	// Ownership: jsPromise is a *Value; caller owns it.
+	return jsPromise.fsv, nil
+}
+
+// structToJSObjectQJSWasm creates a JS object with live getter/setter
+// properties and methods for a Go struct value. Mirrors
+// structToJSObjectQJS / structToJSObject in the other backends.
+func (r *Runtime) structToJSObjectQJSWasm(origVal, rv reflect.Value) (*qjs.Value, error) {
+	methodTarget := origVal
+	if methodTarget.Kind() != reflect.Ptr {
+		ptr := reflect.New(rv.Type())
+		ptr.Elem().Set(rv)
+		methodTarget = ptr
+	}
+
+	r.ensureNativeReg()
+	info := r.nativeReg.ensureTypeRegistered(r, rv.Type())
+	instanceID := r.nativeReg.registerInstance(methodTarget)
+	jsCode := info.generateJSObject(instanceID)
+
+	out, err := r.evalScriptLocked(jsCode, "native-struct")
+	if err != nil {
+		r.nativeReg.releaseInstance(instanceID)
+		return nil, fmt.Errorf("structToJSObjectQJSWasm: %w", err)
+	}
+	return out.fsv, nil
+}
+
+// jsToGoLocked converts a *qjs.Value into a plain Go value. Delegates to
+// the helpers in callback_qjswasm.go via jsArgToGo for consistency with
+// callback argument marshaling.
 func (r *Runtime) jsToGoLocked(v *qjs.Value) (any, error) {
 	return jsArgToGo(r, v), nil
 }

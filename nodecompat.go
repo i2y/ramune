@@ -2129,47 +2129,58 @@ func nodeCompatJSSource() string {
 	}
 
 	// --- performance ---
-	if (typeof globalThis.performance === 'undefined') {
+	// Some backends (fastschema/qjs on qjswasm) pre-install a partial
+	// performance object with only now/timeOrigin. In that case we still
+	// need to add mark/measure/clear*/getEntries* or the PerformanceObserver
+	// wrapper below would capture an undefined _origMark. Guard on
+	// performance.mark rather than performance itself so both fresh-slate
+	// and partially-populated environments work.
+	if (typeof globalThis.performance === 'undefined' || typeof globalThis.performance.mark !== 'function') {
 		var _perfOriginNs = JSON.parse(__go_hrtime());
-		var _perfOriginMs = Date.now();
 		var _perfMarks = {};
 		var _perfMeasures = [];
-		function Performance() {}
-		Performance.prototype.now = function() {
-			var raw = JSON.parse(__go_hrtime());
-			var ds = raw[0] - _perfOriginNs[0];
-			var dn = raw[1] - _perfOriginNs[1];
-			return ds * 1e3 + dn / 1e6;
-		};
-		Performance.prototype.mark = function(name) {
+		var __perf = globalThis.performance;
+		if (!__perf || typeof __perf.now !== 'function') {
+			function Performance() {}
+			Performance.prototype.now = function() {
+				var raw = JSON.parse(__go_hrtime());
+				var ds = raw[0] - _perfOriginNs[0];
+				var dn = raw[1] - _perfOriginNs[1];
+				return ds * 1e3 + dn / 1e6;
+			};
+			Performance.prototype[Symbol.toStringTag] = 'Performance';
+			__perf = new Performance();
+			__perf.timeOrigin = Date.now();
+			globalThis.Performance = Performance;
+			globalThis.performance = __perf;
+		} else if (typeof globalThis.Performance === 'undefined' && __perf.constructor) {
+			globalThis.Performance = __perf.constructor;
+		}
+		if (typeof __perf.timeOrigin !== 'number') __perf.timeOrigin = Date.now();
+		__perf.mark = function(name) {
 			var t = this.now();
 			_perfMarks[name] = t;
 			return { name: name, entryType: 'mark', startTime: t, duration: 0 };
 		};
-		Performance.prototype.measure = function(name, startMark, endMark) {
+		__perf.measure = function(name, startMark, endMark) {
 			var s = startMark && _perfMarks[startMark] !== undefined ? _perfMarks[startMark] : 0;
 			var e = endMark && _perfMarks[endMark] !== undefined ? _perfMarks[endMark] : this.now();
 			var entry = { name: name, entryType: 'measure', startTime: s, duration: e - s };
 			_perfMeasures.push(entry);
 			return entry;
 		};
-		Performance.prototype[Symbol.toStringTag] = 'Performance';
-		var __perf = new Performance();
-		__perf.timeOrigin = _perfOriginMs;
-		globalThis.Performance = Performance;
-		globalThis.performance = __perf;
-		Performance.prototype.getEntriesByName = function(name) {
+		__perf.getEntriesByName = function(name) {
 			return _perfMeasures.filter(function(e) { return e.name === name; });
 		};
-		Performance.prototype.getEntriesByType = function(type) {
+		__perf.getEntriesByType = function(type) {
 			if (type === 'mark') {
 				return Object.keys(_perfMarks).map(function(k) { return { name: k, entryType: 'mark', startTime: _perfMarks[k], duration: 0 }; });
 			}
 			if (type === 'measure') return _perfMeasures.slice();
 			return [];
 		};
-		Performance.prototype.clearMarks = function(name) { if (name) delete _perfMarks[name]; else _perfMarks = {}; };
-		Performance.prototype.clearMeasures = function(name) { if (name) _perfMeasures = _perfMeasures.filter(function(e) { return e.name !== name; }); else _perfMeasures = []; };
+		__perf.clearMarks = function(name) { if (name) delete _perfMarks[name]; else _perfMarks = {}; };
+		__perf.clearMeasures = function(name) { if (name) _perfMeasures = _perfMeasures.filter(function(e) { return e.name !== name; }); else _perfMeasures = []; };
 	}
 
 	// --- structuredClone ---

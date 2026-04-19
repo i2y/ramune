@@ -3,7 +3,20 @@ package ramune_test
 import (
 	"os"
 	"testing"
+
+	"github.com/i2y/ramune"
 )
+
+// skipIfNoAtomics skips the test on backends that don't expose Atomics.
+// On qjswasm, Atomics is not defined (SharedArrayBuffer is, but Atomics is
+// unimplemented). Worker-based tests additionally require Atomics.waitAsync
+// for cross-thread coordination, which is out of scope for the wasm build.
+func skipIfNoAtomics(t *testing.T, r *ramune.Runtime) {
+	t.Helper()
+	if r.Engine() == "qjswasm" {
+		t.Skip("Atomics not exposed on qjswasm backend (SharedArrayBuffer-only)")
+	}
+}
 
 func TestSharedArrayBufferBasic(t *testing.T) {
 	r := newNodeCompatOrSkip(t)
@@ -37,6 +50,7 @@ func TestSharedArrayBufferBasic(t *testing.T) {
 func TestAtomicsLoadStore(t *testing.T) {
 	r := newNodeCompatOrSkip(t)
 	defer r.Close()
+	skipIfNoAtomics(t, r)
 
 	v, err := r.Eval(`
 		(function() {
@@ -63,6 +77,7 @@ func TestAtomicsLoadStore(t *testing.T) {
 func TestAtomicsAddSub(t *testing.T) {
 	r := newNodeCompatOrSkip(t)
 	defer r.Close()
+	skipIfNoAtomics(t, r)
 
 	v, err := r.Eval(`
 		(function() {
@@ -90,6 +105,7 @@ func TestAtomicsAddSub(t *testing.T) {
 func TestAtomicsCompareExchange(t *testing.T) {
 	r := newNodeCompatOrSkip(t)
 	defer r.Close()
+	skipIfNoAtomics(t, r)
 
 	v, err := r.Eval(`
 		(function() {
@@ -118,6 +134,7 @@ func TestAtomicsCompareExchange(t *testing.T) {
 func TestAtomicsIsLockFree(t *testing.T) {
 	r := newNodeCompatOrSkip(t)
 	defer r.Close()
+	skipIfNoAtomics(t, r)
 
 	v, err := r.Eval(`
 		JSON.stringify({
@@ -142,6 +159,7 @@ func TestAtomicsIsLockFree(t *testing.T) {
 func TestSharedArrayBufferWorker(t *testing.T) {
 	r := newNodeCompatOrSkip(t)
 	defer r.Close()
+	skipIfNoAtomics(t, r)
 
 	workerFile := "/tmp/ramune_test_sab_worker.js"
 	err := os.WriteFile(workerFile, []byte(`
@@ -219,6 +237,7 @@ func TestSharedArrayBufferSlice(t *testing.T) {
 func TestAtomicsWaitAsync(t *testing.T) {
 	r := newNodeCompatOrSkip(t)
 	defer r.Close()
+	skipIfNoAtomics(t, r)
 
 	v, err := r.EvalAsync(`
 		new Promise(function(resolve) {
@@ -252,6 +271,7 @@ func TestAtomicsWaitAsync(t *testing.T) {
 func TestAtomicsNotifyCount(t *testing.T) {
 	r := newNodeCompatOrSkip(t)
 	defer r.Close()
+	skipIfNoAtomics(t, r)
 
 	v, err := r.Eval(`
 		(function() {

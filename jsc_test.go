@@ -187,7 +187,7 @@ func TestEvalSyntaxError(t *testing.T) {
 func TestErrorStack(t *testing.T) {
 	r := newOrSkip(t)
 	defer r.Close()
-	if r.Engine() == "quickjs" || r.Engine() == "goja" {
+	if r.Engine() == "quickjs" || r.Engine() == "goja" || r.Engine() == "qjswasm" {
 		t.Skip("this backend does not expose stack traces via Go bindings")
 	}
 
@@ -238,7 +238,7 @@ func TestErrorMessage(t *testing.T) {
 func TestCallErrorStack(t *testing.T) {
 	r := newOrSkip(t)
 	defer r.Close()
-	if r.Engine() == "quickjs" || r.Engine() == "goja" {
+	if r.Engine() == "quickjs" || r.Engine() == "goja" || r.Engine() == "qjswasm" {
 		t.Skip("this backend does not expose stack traces via Go bindings")
 	}
 

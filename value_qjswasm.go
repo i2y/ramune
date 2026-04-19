@@ -298,7 +298,7 @@ func (v *Value) SetAttr(name string, value any) error {
 	}
 	var err error
 	v.rt.dispatch(func() {
-		jv, e := qjs.ToJsValue(v.rt.qjsCtx, value)
+		jv, e := v.rt.goToJSLocked(value)
 		if e != nil {
 			err = e
 			return
@@ -377,7 +377,7 @@ func (v *Value) Call(args ...any) (*Value, error) {
 	v.rt.dispatch(func() {
 		jsArgs := make([]*qjs.Value, 0, len(args))
 		for _, a := range args {
-			jv, e := qjs.ToJsValue(v.rt.qjsCtx, a)
+			jv, e := v.rt.goToJSLocked(a)
 			if e != nil {
 				err = e
 				return
