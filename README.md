@@ -4,13 +4,13 @@
 
 # Ramune
 
-> **A JavaScript/TypeScript runtime you embed in Go. Cloudflare-Workers-compatible handlers that run on your own infrastructure.**
+> **A JavaScript/TypeScript runtime you embed in Go. Cloudflare Workers-style fetch handlers that run on your own infrastructure.**
 
 Ramune solves four concrete problems:
 
 - **"I'm building a Go service and I want my users to write custom logic in JS/TS."** Until now the options were [`goja`](https://github.com/dop251/goja) (ES2017-ish, reflection-based) or [`otto`](https://github.com/robertkrimen/otto) (an order of magnitude slower). Ramune is a drop-in with the same `import`-once ergonomics, choosing between JIT-accelerated JSC, pure-Go QuickJS-NG on wazero, or goja — all behind one API.
 - **"I want my customers to upload JS code that my SaaS runs on their behalf."** Ramune is a self-ownable substrate for this shape: `WithPermissions(SandboxPermissions())` denies I/O by default, `WithResourceLimits` caps JS memory/stack/GC on the qjswasm backend, `DBBackend` / `KVBackend` / `WithExtraEnvJS` define what `env.*` each tenant can reach, and qjswasm under sandbox additionally closes its WASI FS mount so VM escapes can't pivot to host files. Direct comparables — Cloudflare Workers for Platforms, Deno Subhosting — are managed SaaS. Ramune runs in your process, on your hardware, with your `env` design.
-- **"I like the Cloudflare Workers model but I don't want vendor lock-in — or I need to run air-gapped."** `export default { fetch, scheduled }` code written against Cloudflare runs unchanged on your VM, bare metal, or `FROM scratch` container. `env.KV` / `env.DB` are Go interfaces; swap for Redis / Postgres / DynamoDB / anything.
+- **"I like the Cloudflare Workers model but I don't want vendor lock-in — or I need to run air-gapped."** Handlers written in the Cloudflare Workers shape — `export default { fetch, scheduled }` — run on your VM, bare metal, or `FROM scratch` container. `env.KV` / `env.DB` are Go interfaces; swap for Redis / Postgres / DynamoDB / anything. (Shape only — Durable Objects, R2, and other Cloudflare-runtime-specific bindings are not implemented.)
 - **"I just want a fast JS/TS runtime."** Use Bun or Deno — that's not our main battlefield. Ramune ships `run` / `test` / `repl` / `check` / `fmt` / `lint` / `compile` and is competitive in single-process benchmarks (Node-equivalent HTTP, 1.3× faster than Node on CPU-fib on our M4 Max), but raw CLI speed is not where Ramune's value lives. Use it here if (1)-(3) are your primary reason and you want one less binary to install.
 
 ```go
@@ -24,7 +24,7 @@ rt.Eval(`queryDB("SELECT 1")`)
 ```
 
 ```ts
-// Workers-compatible handler, self-hosted
+// Workers-style handler, self-hosted
 export default {
   async fetch(request, env, ctx) {
     const user = await env.DB.prepare("SELECT * FROM users WHERE id = ?")
@@ -45,9 +45,9 @@ Four use cases, four audiences. Jump to the section that matches your motivation
 
 **1. Embed a JS engine in a Go program.** Competitors: `goja`, `otto`. Ramune's `goja` backend (`-tags goja`) is a drop-in replacement for existing goja users, with esbuild auto-lowering so modern JS syntax works. Switch to `-tags qjswasm` (pure-Go QuickJS-NG on wazero, ES2023) or the default JSC backend (JIT, 60×+ faster than goja on CPU-bound JS). Same API across all three — swap at build time to trade off startup vs throughput vs platform reach. Call any Go library from JS via `RegisterFunc`; expose typed Go functions as `require()`-able modules via `NativeModuleFromFuncs`. → see [Embed in Go](#embed-in-go)
 
-**2. Build a platform where customers run JS on your service.** The self-ownable counterpart to Cloudflare Workers for Platforms / Deno Subhosting. Multi-tenant isolation via `RuntimePool` (N independent JS VMs per process, round-robined at HTTP layer), layered defense-in-depth sandbox via qjswasm's WASM linear memory + `SandboxPermissions()` (auto-disables WASI FS mount) + `WithResourceLimits` (memory/stack/GC caps at the QuickJS-NG level) + permission-gated Go bridges, per-tenant `env.*` via pluggable `KVBackend` / `DBBackend`. Your customers write normal Workers code. You own the data plane. → see [In-process Sandbox for Untrusted JS](#in-process-sandbox-for-untrusted-js-qjswasm--permissions)
+**2. Build a platform where customers run JS on your service.** The self-ownable counterpart to Cloudflare Workers for Platforms / Deno Subhosting. Multi-tenant isolation via `RuntimePool` (N independent JS VMs per process, round-robined at HTTP layer), layered defense-in-depth sandbox via qjswasm's WASM linear memory + `SandboxPermissions()` (auto-disables WASI FS mount) + `WithResourceLimits` (memory/stack/GC caps at the QuickJS-NG level) + permission-gated Go bridges, per-tenant `env.*` via pluggable `KVBackend` / `DBBackend`. Your customers write code in the Workers fetch-handler shape. You own the data plane. → see [In-process Sandbox for Untrusted JS](#in-process-sandbox-for-untrusted-js-qjswasm--permissions)
 
-**3. Self-host Cloudflare Workers code.** You have `export default { fetch, scheduled }` handlers and want them running on your VM, bare metal, or `FROM scratch` Docker. `ramune serve worker.ts` or `ramune compile worker.ts -o myworker` — single binary, no Wrangler, no Dockerfile, no Node. Default surface covers `fetch` / `env.KV` / `env.DB` / `env.SECRETS` / `ctx.waitUntil` / `scheduled` / cron / WinterCG; see the [Workers serve](#workers-style-modules-ramune-serve) section for the full scope (what ships, what's user-supplied, what's still partial).
+**3. Self-host Cloudflare Workers-style handlers.** You have `export default { fetch, scheduled }` handlers and want them running on your VM, bare metal, or `FROM scratch` Docker. `ramune serve worker.ts` or `ramune compile worker.ts -o myworker` — single binary, no Wrangler, no Dockerfile, no Node. Default surface covers `fetch` / `env.KV` / `env.DB` / `env.SECRETS` / `ctx.waitUntil` / `scheduled` / cron / WinterCG; see the [Workers serve](#workers-style-modules-ramune-serve) section for the full scope (what ships, what's user-supplied, what's still partial).
 
 **4. Run JS/TS from the command line.** Not our main battlefield — Bun and Deno are faster for pure CLI use. But Ramune ships `ramune run` / `test` / `check` / `fmt` / `lint` / `repl` / `compile` with tsgo + rslint + esbuild built in, and is competitive (Node-equivalent HTTP, 1.3× faster than Node on CPU-fib). → see [Quick Start](#quick-start)
 
@@ -78,7 +78,7 @@ Three backends, same API:
 |---|---|---|---|
 | **Engine** | Apple JavaScriptCore via [purego](https://github.com/ebitengine/purego) | [fastschema/qjs](https://github.com/fastschema/qjs) — QuickJS-NG on [wazero](https://github.com/tetratelabs/wazero) (pure Go) | [dop251/goja](https://github.com/dop251/goja) (pure Go, reflect-based) |
 | **JIT** | Yes | No | No |
-| **Platforms** | macOS, Linux | macOS, Linux, **Windows**, FreeBSD | macOS, Linux, **Windows**, FreeBSD |
+| **Platforms** | macOS, Linux | macOS, Linux, **Windows** | macOS, Linux, **Windows** |
 | **System deps** | macOS: none. Linux: libjavascriptcoregtk | None | None |
 | **Spec coverage** | ES2023 | ES2023 | ES2023 effective (goja native ~ES2017; esbuild lowers newer syntax transparently on Eval) |
 | **Best for** | Performance, HTTP servers | Embedding, scripting, portability | Pure-Go embedding, Windows-native, no cgo signal forwarding |
@@ -116,7 +116,7 @@ go install -tags qjswasm github.com/i2y/ramune/cmd/ramune@latest
 go install -tags qjswasm github.com/i2y/ramune/cmd/ramune-toolchain@latest  # optional: check / fmt / lint / compile
 ```
 
-The qjswasm backend uses [fastschema/qjs](https://github.com/fastschema/qjs) — QuickJS-NG compiled to WebAssembly and driven by [wazero](https://github.com/tetratelabs/wazero)'s compiler-mode JIT (AOT WASM→native). Pure Go, ES2023, no shared libraries — works on **Windows**, macOS, Linux, and FreeBSD. Trade-off: no JS JIT, so CPU-bound code is slower than JSC (see [Performance](#performance)).
+The qjswasm backend uses [fastschema/qjs](https://github.com/fastschema/qjs) — QuickJS-NG compiled to WebAssembly and driven by [wazero](https://github.com/tetratelabs/wazero)'s compiler-mode JIT (AOT WASM→native). Pure Go, ES2023, no shared libraries — works on **Windows**, macOS, and Linux. Trade-off: no JS JIT, so CPU-bound code is slower than JSC (see [Performance](#performance)).
 
 ### Goja backend (`-tags goja`, pure Go, reflect-based)
 
@@ -369,14 +369,14 @@ ramune run build   # runs "scripts.build"
 
 ### Workers-style Modules (`ramune serve`)
 
-The flagship command. Serve a Cloudflare-Workers-style ES-module
+The flagship command. Serve a Cloudflare Workers-style ES-module
 handler — export a default object with `fetch(request, env, ctx)` and
 the CLI wires it up.
 
 **Scope.** Three categories so you know what's on the critical path:
 
-- **Ships today:** `fetch`, `env.KV`, `env.SECRETS`, `ctx.waitUntil`, `scheduled`, cron, WinterCG basics, plus `env.DB` (D1-compatible API subset: `prepare` / `bind` / `all` / `first` / `run` / `exec`).
-- **Partial / API shape only:** `env.DB` `.batch` and `.raw` not yet implemented, `.all()` meta fields not populated. "D1-compatible" and "Workers-KV-like" describe the handler-side API shape only — the defaults are a single-node local SQLite file, not Cloudflare's edge-replicated D1 or globally eventually-consistent Workers KV. Swap in Postgres / Planetscale / Redis / DynamoDB via `DBBackend` / `KVBackend` when you need distributed scaling.
+- **Ships today:** `fetch`, `env.KV`, `env.SECRETS`, `ctx.waitUntil`, `scheduled`, cron, WinterCG basics, plus `env.DB` (D1-style API subset: `prepare` / `bind` / `all` / `first` / `run` / `exec`).
+- **Partial / API shape only:** `env.DB` `.batch` and `.raw` not yet implemented, `.all()` meta fields not populated. "D1-style" and "Workers-KV-like" describe the handler-side API shape only — the defaults are a single-node local SQLite file, not Cloudflare's edge-replicated D1 or globally eventually-consistent Workers KV. Swap in Postgres / Planetscale / Redis / DynamoDB via `DBBackend` / `KVBackend` when you need distributed scaling.
 - **User-supplied `env.*` bindings (not core):** Durable Objects, Queues, R2, AI Gateway, Service Bindings, Hyperdrive. Implement them as Go callbacks + tiny JS facades — walkthrough in [`workers/BINDINGS.md`](workers/BINDINGS.md). The core stays small so you aren't blocked waiting on us to ship a Cloudflare-equivalent.
 
 ```ts
@@ -398,7 +398,7 @@ ramune serve --sqlite :memory:  worker.ts # non-persistent env.DB/env.KV
 
 `ctx.waitUntil(promise)` keeps the executor alive after the response
 goes out. `env.SECRETS` reads `RAMUNE_SECRET_*` env vars. `env.DB`
-(D1-compatible API subset, see scope above) and `env.KV`
+(D1-style API subset, see scope above) and `env.KV`
 (Workers-KV-like API) are backed by a single-node local SQLite file at
 `.ramune/data.db` by default — this matches the D1/Workers-KV handler
 surface, not their distributed storage profile. For production
@@ -1151,7 +1151,7 @@ Status is experimental; generated code may need manual fixes for complex codebas
 | | JSC backend (default) | qjswasm backend (`-tags qjswasm`) | goja backend (`-tags goja`) |
 |---|---|---|---|
 | **Go** | 1.26+ | 1.26+ | 1.26+ |
-| **Platforms** | macOS, Linux | macOS, Linux, Windows, FreeBSD | macOS, Linux, Windows, FreeBSD |
+| **Platforms** | macOS, Linux | macOS, Linux, Windows | macOS, Linux, Windows |
 | **System deps** | macOS: none. Linux: `apt install libjavascriptcoregtk-4.1-dev` | None | None |
 
 All tools are built in — no external dependencies needed for `check`, `fmt`, `lint`, or TypeScript transpilation. npm packages are fetched directly from the npm registry — no npm or bun CLI required.
