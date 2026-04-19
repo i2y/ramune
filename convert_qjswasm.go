@@ -134,20 +134,16 @@ func (r *Runtime) jsonToJSLocked(v any) (*qjs.Value, error) {
 	return r.qjsCtx.ParseJSON(string(data)), nil
 }
 
-// newUint8ArrayLocked creates a proper JS Uint8Array from a []byte. Using
-// qjsCtx.NewBytes returns an opaque WASM handle rather than a typed array,
-// so we allocate an ArrayBuffer and wrap it with `new Uint8Array(buffer)`.
+// newUint8ArrayLocked creates a JS Uint8Array from a []byte. qjsCtx.NewBytes
+// returns an opaque WASM handle (not a typed array), so we allocate an
+// ArrayBuffer and wrap it with `new Uint8Array(buffer)`. The Uint8Array
+// constructor is cached on the Runtime.
 func (r *Runtime) newUint8ArrayLocked(b []byte) (*qjs.Value, error) {
 	if b == nil {
 		return r.qjsCtx.NewNull(), nil
 	}
 	ab := r.qjsCtx.NewArrayBuffer(b)
-	global := r.qjsCtx.Global()
-	u8 := global.GetPropertyStr("Uint8Array")
-	defer u8.Free()
-	out := u8.New(ab)
-	// NewArrayBuffer returns a fresh Value; `New(ab)` consumed it logically
-	// but fastschema's constructor keeps its own copy. Free our reference.
+	out := r.uint8ArrayCtor.New(ab)
 	ab.Free()
 	return out, nil
 }
@@ -234,10 +230,4 @@ func (r *Runtime) structToJSObjectQJSWasm(origVal, rv reflect.Value) (*qjs.Value
 // callback argument marshaling.
 func (r *Runtime) jsToGoLocked(v *qjs.Value) (any, error) {
 	return jsArgToGo(r, v), nil
-}
-
-// jsonUnmarshal is a small wrapper so callback/jsfunc can share a JSON
-// decoder without each importing encoding/json.
-func jsonUnmarshal(data []byte, out any) error {
-	return json.Unmarshal(data, out)
 }

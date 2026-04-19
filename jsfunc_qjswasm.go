@@ -3,6 +3,7 @@
 package ramune
 
 import (
+	"encoding/json"
 	"sync/atomic"
 
 	"github.com/fastschema/qjs"
@@ -32,8 +33,13 @@ func (f *JSFunc) Call(args ...any) (any, error) {
 	var err error
 	f.rt.dispatch(func() {
 		jsArgs := make([]*qjs.Value, 0, len(args))
+		defer func() {
+			for _, jv := range jsArgs {
+				jv.Free()
+			}
+		}()
 		for _, a := range args {
-			jv, e := qjs.ToJsValue(f.rt.qjsCtx, a)
+			jv, e := f.rt.goToJSLocked(a)
 			if e != nil {
 				err = e
 				return
@@ -62,14 +68,12 @@ func (f *JSFunc) Call(args ...any) (any, error) {
 			out = nil
 			return
 		}
-		// Object / array: JSON round-trip for back-compat with other
-		// backends (they decode into map[string]any / []any).
 		j, e := res.JSONStringify()
 		if e != nil {
 			err = e
 			return
 		}
-		if e := jsonUnmarshal([]byte(j), &out); e != nil {
+		if e := json.Unmarshal([]byte(j), &out); e != nil {
 			err = e
 		}
 	})

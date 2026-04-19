@@ -36,7 +36,6 @@ type Runtime struct {
 	wakeCh chan struct{}
 	qjsGID atomic.Int64
 
-	goFuncs         []GoFunc
 	nativeMethodSeq int
 	nativeReg       *nativeTypeRegistry
 	fsMgr           *fsManager
@@ -59,7 +58,11 @@ type Runtime struct {
 	perms           *Permissions
 	stdout          io.Writer
 	stderr          io.Writer
-	poolHandleFn    uintptr
+	poolHandleFn    uintptr // unused in qjswasm; pool HTTP dispatch not wired
+
+	// uint8ArrayCtor caches globalThis.Uint8Array so newUint8ArrayLocked
+	// doesn't walk the global object on every conversion.
+	uint8ArrayCtor *qjs.Value
 
 	closeOnce sync.Once
 	closed    atomic.Bool
@@ -252,6 +255,14 @@ func (r *Runtime) qjswasmLoop(ready chan<- error, cfg *config) {
 	r.qjsRT = rt
 	r.qjsCtx = rt.Context()
 
+	// Cache the Uint8Array constructor once. Pulled from Global by name,
+	// held via .Clone() so we never need to walk globalThis on the hot path.
+	if g := r.qjsCtx.Global(); g != nil {
+		if ctor := g.GetPropertyStr("Uint8Array"); ctor != nil {
+			r.uint8ArrayCtor = ctor
+		}
+	}
+
 	if err := r.installEventLoop(); err != nil {
 		ready <- fmt.Errorf("ramune: event loop: %w", err)
 		r.teardownLocked()
@@ -383,6 +394,10 @@ func (r *Runtime) qjswasmLoop(ready chan<- error, cfg *config) {
 }
 
 func (r *Runtime) teardownLocked() {
+	if r.uint8ArrayCtor != nil {
+		r.uint8ArrayCtor.Free()
+		r.uint8ArrayCtor = nil
+	}
 	if r.qjsRT != nil {
 		r.qjsRT.Close()
 		r.qjsRT = nil

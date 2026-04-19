@@ -53,23 +53,13 @@ func (v *Value) Close() error {
 	return nil
 }
 
-// Ptr returns an opaque handle identifier (not a real pointer). Two
-// different runtime objects may happen to share the same identifier
-// value; callers should use Ptr only to compare JSValue identity within
-// the same Runtime.
+// Ptr returns an opaque handle identifier (the raw NaN-boxed JSValue).
+// Useful only for identity comparisons within the same Runtime.
 func (v *Value) Ptr() uintptr {
 	if v == nil || v.fsv == nil {
 		return 0
 	}
-	// fastschema exposes the raw QuickJS JSValue as a uint64 via Raw()
-	// if available; fallback is a pointer identity on the wrapper.
-	type rawer interface {
-		Raw() uint64
-	}
-	if r, ok := any(v.fsv).(rawer); ok {
-		return uintptr(r.Raw())
-	}
-	return uintptr(0)
+	return uintptr(v.fsv.Raw())
 }
 
 // -----------------------------------------------------------------------
@@ -139,34 +129,34 @@ func (v *Value) Bool() (bool, error) {
 }
 
 // Bytes returns the underlying bytes for a Uint8Array or ArrayBuffer.
-// Tries fastschema's JsTypedArrayToGo / JsArrayBufferToGo helpers first
-// and falls back to Array.from(v) + JSON for anything else (covers cases
-// where the value is a Uint8Array whose constructor signature makes the
-// typed-array helpers reject it).
+// Tries the typed-array helper first (Uint8Array is the common case from
+// fetch / crypto / fs.readFile), then ArrayBuffer, then a JS fallback
+// via Array.from(v). All three failures surface as a concrete error
+// rather than a silent empty slice.
 func (v *Value) Bytes() ([]byte, error) {
 	if err := v.preflight(); err != nil {
 		return nil, err
 	}
 	var out []byte
+	var retErr error
 	v.rt.dispatch(func() {
-		if b, e := qjs.JsArrayBufferToGo(v.fsv); e == nil && b != nil {
-			out = b
-			return
-		}
 		if b, e := qjs.JsTypedArrayToGo(v.fsv); e == nil && b != nil {
 			out = b
 			return
 		}
-		// Fallback: JSON.stringify gives {"0":10,"1":20,...} for typed
-		// arrays, which isn't what we want. Use Array.from(v) to flatten
-		// into a plain JS array and read the length/elements.
+		if b, e := qjs.JsArrayBufferToGo(v.fsv); e == nil && b != nil {
+			out = b
+			return
+		}
 		helper, err := v.rt.qjsCtx.Eval("<bytes>", qjs.Code("((v)=>Array.from(v))"))
 		if err != nil {
+			retErr = &JSError{Context: "Bytes", Message: err.Error()}
 			return
 		}
 		defer helper.Free()
 		arr, err := v.rt.qjsCtx.Invoke(helper, nil, v.fsv)
 		if err != nil {
+			retErr = &JSError{Context: "Bytes", Message: err.Error()}
 			return
 		}
 		defer arr.Free()
@@ -180,7 +170,7 @@ func (v *Value) Bytes() ([]byte, error) {
 			}
 		}
 	})
-	return out, nil
+	return out, retErr
 }
 
 // -----------------------------------------------------------------------
@@ -376,6 +366,11 @@ func (v *Value) Call(args ...any) (*Value, error) {
 	var err error
 	v.rt.dispatch(func() {
 		jsArgs := make([]*qjs.Value, 0, len(args))
+		defer func() {
+			for _, jv := range jsArgs {
+				jv.Free()
+			}
+		}()
 		for _, a := range args {
 			jv, e := v.rt.goToJSLocked(a)
 			if e != nil {

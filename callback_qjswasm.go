@@ -4,7 +4,6 @@ package ramune
 
 import (
 	"encoding/json"
-	"fmt"
 
 	"github.com/fastschema/qjs"
 )
@@ -58,7 +57,7 @@ func (r *Runtime) registerFuncLocked(name string, fn GoFunc) error {
 	// internal dispatch, checks for the __ramuneError envelope, and throws
 	// an Error whose toString() returns the bare message (matching the
 	// JSC/QuickJS/goja backends).
-	wrapperCode := "globalThis[" + jsStringLit(name) + "]=function(){" +
+	wrapperCode := "globalThis[" + jsQuoteName(name) + "]=function(){" +
 		"var r=" + internalName + ".apply(null,arguments);" +
 		"if(r&&typeof r==='object'&&r.__ramuneError===true){" +
 		"var m=r.msg;" +
@@ -69,7 +68,7 @@ func (r *Runtime) registerFuncLocked(name string, fn GoFunc) error {
 		"return r;" +
 		"};"
 	if err := r.execLocked(wrapperCode); err != nil {
-		return fmt.Errorf("registerFunc wrapper %s: %w", name, err)
+		return &JSError{Context: "registerFunc wrapper " + name, Message: err.Error()}
 	}
 	return nil
 }
@@ -121,7 +120,7 @@ func jsArgToGo(r *Runtime, a *qjs.Value) any {
 		return nil
 	}
 	var v any
-	_ = jsonUnmarshal([]byte(j), &v)
+	_ = json.Unmarshal([]byte(j), &v)
 	return v
 }
 
@@ -148,10 +147,4 @@ func sanitizeJSIdent(s string) string {
 	return string(b)
 }
 
-// jsStringLit turns a Go string into a JS string literal (quoted, with
-// JS-safe escapes) suitable for embedding in generated JS source.
-func jsStringLit(s string) string {
-	b, _ := json.Marshal(s)
-	return string(b)
-}
 

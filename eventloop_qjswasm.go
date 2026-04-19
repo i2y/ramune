@@ -5,6 +5,8 @@ package ramune
 import (
 	"strconv"
 	"time"
+
+	"github.com/fastschema/qjs"
 )
 
 // drainMicrotasks runs JS_ExecutePendingJob via the fastschema runtime.
@@ -40,7 +42,7 @@ func (r *Runtime) nextDelayLocked() time.Duration {
 // Scalar eval helpers used by the event loop and shared code.
 
 func (r *Runtime) evalBoolLocked(code string) bool {
-	v, err := r.qjsCtx.Eval("<bool>", codeOpt(code))
+	v, err := r.qjsCtx.Eval("<bool>", qjs.Code(code))
 	if err != nil {
 		return false
 	}
@@ -49,7 +51,7 @@ func (r *Runtime) evalBoolLocked(code string) bool {
 }
 
 func (r *Runtime) evalStringLocked(code string) string {
-	v, err := r.qjsCtx.Eval("<string>", codeOpt(code))
+	v, err := r.qjsCtx.Eval("<string>", qjs.Code(code))
 	if err != nil {
 		return ""
 	}
@@ -58,7 +60,7 @@ func (r *Runtime) evalStringLocked(code string) string {
 }
 
 func (r *Runtime) evalIsUndefinedLocked(code string) bool {
-	v, err := r.qjsCtx.Eval("<isundef>", codeOpt(code))
+	v, err := r.qjsCtx.Eval("<isundef>", qjs.Code(code))
 	if err != nil {
 		return true
 	}
