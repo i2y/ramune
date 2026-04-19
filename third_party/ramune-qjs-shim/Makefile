@@ -46,7 +46,8 @@ CFLAGS := --target=wasm32-wasi \
           -DJS_NAN_BOXING=1 \
           -DQUICKJS_NG_BUILD \
           -Dqjs_VERSION=\"ramune-$(WASI_SDK_VERSION)\" \
-          -O2 -flto \
+          -O3 -flto \
+          -DNDEBUG \
           -fno-exceptions \
           -fvisibility=hidden \
           -Wno-unknown-attributes \
@@ -57,10 +58,8 @@ CFLAGS := --target=wasm32-wasi \
 # Reactor module (no _start): exports functions for wazero to call.
 LDFLAGS := -Wl,--no-entry \
            -Wl,--export-dynamic \
-           -Wl,--initial-memory=8388608 \
-           -Wl,--max-memory=268435456 \
+           -Wl,--initial-memory=1310720 \
            -Wl,--stack-first \
-           -Wl,-z,stack-size=1048576 \
            -Wl,--allow-undefined \
            -lwasi-emulated-process-clocks \
            -lwasi-emulated-signal \

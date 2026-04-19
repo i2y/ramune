@@ -60,6 +60,17 @@ type Runtime struct {
 	wakeCh chan struct{}
 	qjsGID atomic.Int64
 
+	// scratch{Base,End,Cursor} form a bump allocator on a pre-allocated
+	// wasm-memory region used to avoid rmn_malloc / rmn_free per Eval.
+	// writeStringLocked bumps `scratchCursor` forward; wasmFreeLocked
+	// rewinds it when the freed ptr is the last-allocated slice (LIFO
+	// freeing, which matches our `defer free` usage). Anything that
+	// overflows the buffer or that frees out-of-order falls back to
+	// per-call rmn_malloc.
+	scratchBase   uint32
+	scratchEnd    uint32
+	scratchCursor uint32
+
 	goFuncs         []GoFunc
 	nativeMethodSeq int
 	nativeReg       *nativeTypeRegistry
@@ -319,7 +330,27 @@ func (r *Runtime) qjswasmLoop(ready chan<- error, cfg *config) {
 		return
 	}
 
-	mod, err := r.wzRt.Instantiate(ctx, quickjsWASM)
+	// Use CompileModule + InstantiateModule with a ModuleConfig that
+	// wires real host-backed time/clock syscalls through wazero. Without
+	// this, QuickJS-NG falls back to stubs emitted by wasi-emulated-*
+	// libs that it links against — the stubs are functional but emit
+	// zero for clock_gettime, which causes QuickJS's GC heuristics to
+	// run more aggressively than intended. Matching fastschema/qjs
+	// (which uses WithSysWalltime / WithSysNanotime / WithSysNanosleep)
+	// closes the performance gap.
+	compiled, err := r.wzRt.CompileModule(ctx, quickjsWASM)
+	if err != nil {
+		ready <- fmt.Errorf("ramune: wasm compile: %w", err)
+		r.wzRt.Close(ctx)
+		return
+	}
+	mod, err := r.wzRt.InstantiateModule(ctx, compiled,
+		wazero.NewModuleConfig().
+			WithSysWalltime().
+			WithSysNanotime().
+			WithSysNanosleep().
+			WithStdout(r.stdout).
+			WithStderr(r.stderr))
 	if err != nil {
 		ready <- fmt.Errorf("ramune: wasm instantiate: %w", err)
 		r.wzRt.Close(ctx)
@@ -359,6 +390,20 @@ func (r *Runtime) qjswasmLoop(ready chan<- error, cfg *config) {
 		r.teardownLocked()
 		return
 	}
+
+	// Pre-allocate a scratch bump-allocator. Strings crossing the wasm
+	// boundary during Eval / Attr / Call / etc. go here so we don't
+	// rmn_malloc + rmn_free on every operation.
+	const scratchSize = 64 * 1024
+	scratchRes, err := r.wzExp.rmnMalloc.Call(ctx, scratchSize)
+	if err != nil || scratchRes[0] == 0 {
+		ready <- fmt.Errorf("ramune: scratch malloc: %w", err)
+		r.teardownLocked()
+		return
+	}
+	r.scratchBase = uint32(scratchRes[0])
+	r.scratchEnd = r.scratchBase + scratchSize
+	r.scratchCursor = r.scratchBase
 
 	// Install the JS-side event loop and console polyfills. Both are
 	// backend-agnostic (they go through RegisterFunc + execLocked) so
@@ -592,10 +637,6 @@ func (r *Runtime) rawEvalLocked(code, fname string, flags uint32) (uint64, error
 	if err != nil {
 		return 0, fmt.Errorf("ramune: eval: %w", err)
 	}
-	// Drain any microtasks queued by the eval (Promise.resolve().then(...)
-	// etc.) so callers don't have to remember to pump. The defer guards
-	// insideMicrotasks against leaking "true" through a panic deeper in
-	// the call stack.
 	if !r.insideMicrotasks {
 		r.insideMicrotasks = true
 		defer func() { r.insideMicrotasks = false }()
@@ -604,18 +645,31 @@ func (r *Runtime) rawEvalLocked(code, fname string, flags uint32) (uint64, error
 	return res[0], nil
 }
 
-// writeStringLocked allocates len(s)+1 bytes in wasm memory, writes s,
-// NUL-terminates. The trailing NUL isn't required by APIs like JS_Eval
-// which take an explicit length, but QuickJS-NG's tokenizer peeks one
-// byte past the end in some paths ("a" + b reads the next char to
-// decide token boundary) and uninitialized bytes there trip UTF-8
-// validation. Returns (ptr, len); caller owns ptr and frees via
-// wasmFreeLocked.
+// writeStringLocked writes s (NUL-terminated) into wasm memory and
+// returns (ptr, len). Short strings bump the pre-allocated scratch
+// buffer — callers free by rewinding the cursor via wasmFreeLocked.
+// Long strings (or nested allocations that overflow scratch) fall back
+// to per-call rmn_malloc. The NUL byte is required because QuickJS-NG's
+// tokenizer peeks one byte past the declared end in some paths.
 func (r *Runtime) writeStringLocked(s string) (uint32, uint32, error) {
 	if s == "" {
 		return 0, 0, nil
 	}
-	ptr, err := r.wasmMallocLocked(uint32(len(s)) + 1)
+	n := uint32(len(s))
+	// 8-byte align the next cursor to keep subsequent allocations happy.
+	need := (n + 1 + 7) &^ 7
+	if r.scratchBase != 0 && r.scratchCursor+need <= r.scratchEnd {
+		ptr := r.scratchCursor
+		if !r.wzMem.Write(ptr, []byte(s)) {
+			return 0, 0, errors.New("ramune: wasm scratch write out of range")
+		}
+		if !r.wzMem.WriteByte(ptr+n, 0) {
+			return 0, 0, errors.New("ramune: wasm scratch NUL out of range")
+		}
+		r.scratchCursor += need
+		return ptr, n, nil
+	}
+	ptr, err := r.wasmMallocLocked(n + 1)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -623,11 +677,11 @@ func (r *Runtime) writeStringLocked(s string) (uint32, uint32, error) {
 		r.wasmFreeLocked(ptr)
 		return 0, 0, errors.New("ramune: wasm memory write out of range")
 	}
-	if !r.wzMem.WriteByte(ptr+uint32(len(s)), 0) {
+	if !r.wzMem.WriteByte(ptr+n, 0) {
 		r.wasmFreeLocked(ptr)
 		return 0, 0, errors.New("ramune: wasm memory NUL-terminate out of range")
 	}
-	return ptr, uint32(len(s)), nil
+	return ptr, n, nil
 }
 
 func (r *Runtime) readStringLocked(ptr, length uint32) (string, error) {
@@ -657,6 +711,15 @@ func (r *Runtime) wasmMallocLocked(size uint32) (uint32, error) {
 
 func (r *Runtime) wasmFreeLocked(ptr uint32) {
 	if ptr == 0 {
+		return
+	}
+	// Scratch slice: rewind the cursor back to this ptr. LIFO matches
+	// our `defer r.wasmFreeLocked(x)` pattern — nested frees return the
+	// cursor to exactly where the outer write left it.
+	if ptr >= r.scratchBase && ptr < r.scratchEnd {
+		if ptr < r.scratchCursor {
+			r.scratchCursor = ptr
+		}
 		return
 	}
 	_, _ = r.wzExp.rmnFree.Call(r.wzCtx, uint64(ptr))
