@@ -378,6 +378,9 @@ func TestPicker_Rejects_NestedArray(t *testing.T) {
 	if c.Extracted {
 		t.Fatalf("expected rejection for number[][] (inner element is object-typed array)")
 	}
+	if c.Reason.Code != "object-type" {
+		t.Fatalf("expected object-type, got %q", c.Reason.Code)
+	}
 }
 
 func TestPicker_Rejects_ArrayIndexByString(t *testing.T) {
@@ -386,6 +389,11 @@ func TestPicker_Rejects_ArrayIndexByString(t *testing.T) {
 	c, _ := byName(res, "pick")
 	if c.Extracted {
 		t.Fatalf("expected rejection for non-numeric index")
+	}
+	if c.Reason.Code != "any-type" && c.Reason.Code != "unhandled-ast-kind" {
+		// `k as any` widens to `any`; that gets caught either at the index-type
+		// gate (unhandled-ast-kind) or at the param walker's any check.
+		t.Fatalf("expected any-type or unhandled-ast-kind, got %q", c.Reason.Code)
 	}
 }
 
