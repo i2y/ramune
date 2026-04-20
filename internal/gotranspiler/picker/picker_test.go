@@ -145,6 +145,61 @@ func TestPicker_Rejects_AnyParam(t *testing.T) {
 	}
 }
 
+func TestPicker_Rejects_NonBoolIfCondition(t *testing.T) {
+	src := `
+export function isTruthy(n: number): number {
+  if (n) return 1;
+  return 0;
+}`
+	res := pickOne(t, src)
+	c, _ := byName(res, "isTruthy")
+	if c.Extracted {
+		t.Fatalf("expected rejection for if (number) — JS truthy coercion not preserved")
+	}
+	if c.Reason.Code != "object-type" {
+		t.Fatalf("expected object-type, got %q", c.Reason.Code)
+	}
+}
+
+func TestPicker_Rejects_NonBoolWhileCondition(t *testing.T) {
+	src := `
+export function countDown(n: number): number {
+  let m = n;
+  while (m) m = m - 1;
+  return 0;
+}`
+	res := pickOne(t, src)
+	c, _ := byName(res, "countDown")
+	if c.Extracted {
+		t.Fatalf("expected rejection for while (number)")
+	}
+}
+
+func TestPicker_Rejects_NonBoolTernary(t *testing.T) {
+	src := `export function pick(n: number): number { return n ? 1 : 0; }`
+	res := pickOne(t, src)
+	c, _ := byName(res, "pick")
+	if c.Extracted {
+		t.Fatalf("expected rejection for ternary on non-boolean")
+	}
+}
+
+func TestPicker_Accepts_BoolFromComparison(t *testing.T) {
+	// Sanity check: comparisons return bool so the new requireBoolCondition
+	// must accept them. These were all extractable before; assert non-regression.
+	src := `
+export function nonNegative(n: number): boolean { return n >= 0; }
+export function clampPos(x: number): number { return x > 0 ? x : 0; }
+`
+	res := pickOne(t, src)
+	for _, name := range []string{"nonNegative", "clampPos"} {
+		c, ok := byName(res, name)
+		if !ok || !c.Extracted {
+			t.Fatalf("expected `%s` extracted; got %+v", name, c.Reason)
+		}
+	}
+}
+
 func TestPicker_Rejects_DefaultParam(t *testing.T) {
 	src := `export function withDefault(x: number = 5): number { return x + 1; }`
 	res := pickOne(t, src)

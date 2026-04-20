@@ -174,7 +174,7 @@ func checkBody(node *ast.Node, ctx *bodyCtx) *Reason {
 		if is == nil {
 			return nil
 		}
-		if r := checkExpr(is.Expression, ctx); r != nil {
+		if r := requireBoolCondition(is.Expression, ctx); r != nil {
 			return r
 		}
 		if r := checkBody(is.ThenStatement, ctx); r != nil {
@@ -198,7 +198,7 @@ func checkBody(node *ast.Node, ctx *bodyCtx) *Reason {
 			}
 		}
 		if fs.Condition != nil {
-			if r := checkExpr(fs.Condition, ctx); r != nil {
+			if r := requireBoolCondition(fs.Condition, ctx); r != nil {
 				return r
 			}
 		}
@@ -214,7 +214,7 @@ func checkBody(node *ast.Node, ctx *bodyCtx) *Reason {
 		if ws == nil {
 			return nil
 		}
-		if r := checkExpr(ws.Expression, ctx); r != nil {
+		if r := requireBoolCondition(ws.Expression, ctx); r != nil {
 			return r
 		}
 		return checkBody(ws.Statement, ctx)
@@ -227,7 +227,7 @@ func checkBody(node *ast.Node, ctx *bodyCtx) *Reason {
 		if r := checkBody(ds.Statement, ctx); r != nil {
 			return r
 		}
-		return checkExpr(ds.Expression, ctx)
+		return requireBoolCondition(ds.Expression, ctx)
 
 	case ast.KindBreakStatement, ast.KindContinueStatement, ast.KindEmptyStatement:
 		if node.AsBreakStatement() != nil && node.AsBreakStatement().Label != nil {
@@ -342,7 +342,7 @@ func checkExpr(node *ast.Node, ctx *bodyCtx) *Reason {
 
 	case ast.KindConditionalExpression:
 		ce := node.AsConditionalExpression()
-		if r := checkExpr(ce.Condition, ctx); r != nil {
+		if r := requireBoolCondition(ce.Condition, ctx); r != nil {
 			return r
 		}
 		if r := checkExpr(ce.WhenTrue, ctx); r != nil {
@@ -495,6 +495,28 @@ func checkElementAccess(node *ast.Node, ctx *bodyCtx) *Reason {
 		if idx == nil || idx.Flags()&checker.TypeFlagsNumberLike == 0 {
 			return &Reason{Code: reasonUnhandledKind, Detail: "array index must be number-typed"}
 		}
+	}
+	return nil
+}
+
+// requireBoolCondition walks expr and requires its checker type be boolean
+// (or `boolean | undefined` etc. via TypeFlagsBooleanLike). Without this,
+// `if (n)` over a non-boolean drives the emitter to wrap with `jsrt.ToBool`,
+// which drags ramune into otherwise-standalone Go output. JS truthy coercion
+// over arbitrary types is not preserved by extracted code.
+func requireBoolCondition(expr *ast.Node, ctx *bodyCtx) *Reason {
+	if expr == nil {
+		return nil
+	}
+	if r := checkExpr(expr, ctx); r != nil {
+		return r
+	}
+	if ctx.ck == nil {
+		return nil
+	}
+	t := ctx.ck.GetTypeAtLocation(expr)
+	if t == nil || t.Flags()&checker.TypeFlagsBooleanLike == 0 {
+		return &Reason{Code: reasonObjectType, Detail: "condition must be boolean-typed (no JS truthy coercion in v1)"}
 	}
 	return nil
 }
