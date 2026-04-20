@@ -481,6 +481,44 @@ export function dupe(xs: number[]): number[] { return [0, ...xs]; }
 	}
 }
 
+func TestPicker_Accepts_SwitchStatement(t *testing.T) {
+	src := `
+export function classify(n: number): string {
+  switch (n) {
+    case 0: return "zero";
+    case 1: return "one";
+    default: return "other";
+  }
+}
+export function dayName(d: number): string {
+  switch (d) {
+    case 0: return "sun";
+    case 1: return "mon";
+    case 2: return "tue";
+    default: return "?";
+  }
+}`
+	res := pickOne(t, src)
+	for _, name := range []string{"classify", "dayName"} {
+		c, ok := byName(res, name)
+		if !ok || !c.Extracted {
+			t.Fatalf("expected `%s` extracted; got %+v", name, c.Reason)
+		}
+	}
+}
+
+func TestPicker_Rejects_SwitchOnObjectDiscriminant(t *testing.T) {
+	src := `
+export function weird(xs: number[]): string {
+  switch (xs) { default: return "huh"; }
+}`
+	res := pickOne(t, src)
+	c, _ := byName(res, "weird")
+	if c.Extracted {
+		t.Fatalf("expected rejection for non-primitive switch discriminant")
+	}
+}
+
 func TestPicker_Accepts_TemplateLiterals(t *testing.T) {
 	src := `
 export function greet(name: string, age: number): string { return ` + "`Hello, ${name}, age ${age}!`" + `; }

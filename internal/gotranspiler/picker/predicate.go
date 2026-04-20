@@ -228,7 +228,9 @@ func checkBody(node *ast.Node, ctx *bodyCtx) *Reason {
 		return &Reason{Code: reasonTry, Detail: "try/catch not supported in v1"}
 	case ast.KindThrowStatement:
 		return &Reason{Code: reasonThrow, Detail: "throw not supported in v1"}
-	case ast.KindSwitchStatement, ast.KindForInStatement, ast.KindForOfStatement,
+	case ast.KindSwitchStatement:
+		return checkSwitchStatement(node, ctx)
+	case ast.KindForInStatement, ast.KindForOfStatement,
 		ast.KindWithStatement, ast.KindDebuggerStatement:
 		return &Reason{Code: reasonUnhandledKind, Detail: fmt.Sprintf("statement kind %v not supported in v1", node.Kind)}
 	}
@@ -504,6 +506,55 @@ func rejectNonStringReceiver(expr *ast.Node, ctx *bodyCtx) *Reason {
 	t := ctx.ck.GetTypeAtLocation(expr)
 	if t == nil || t.Flags()&checker.TypeFlagsStringLike == 0 {
 		return &Reason{Code: reasonObjectType, Detail: "receiver is not a string"}
+	}
+	return nil
+}
+
+// checkSwitchStatement accepts switches whose discriminant is a walker-safe,
+// primitive-typed expression. Every case-clause expression and every case
+// body is walked individually; fall-through `break` statements are already
+// handled by the emitter.
+func checkSwitchStatement(node *ast.Node, ctx *bodyCtx) *Reason {
+	sw := node.AsSwitchStatement()
+	if sw == nil {
+		return nil
+	}
+	if sw.Expression == nil {
+		return &Reason{Code: reasonUnhandledKind, Detail: "switch with no discriminant"}
+	}
+	if r := checkExpr(sw.Expression, ctx); r != nil {
+		return r
+	}
+	if ctx.ck != nil {
+		t := ctx.ck.GetTypeAtLocation(sw.Expression)
+		if t == nil || !isPrimitiveOrVoid(t.Flags()) {
+			return &Reason{Code: reasonObjectType, Detail: "switch discriminant must be primitive"}
+		}
+	}
+	if sw.CaseBlock == nil {
+		return nil
+	}
+	block := sw.CaseBlock.AsCaseBlock()
+	if block == nil || block.Clauses == nil {
+		return nil
+	}
+	for _, clause := range block.Clauses.Nodes {
+		cc := clause.AsCaseOrDefaultClause()
+		if cc == nil {
+			continue
+		}
+		if cc.Expression != nil {
+			if r := checkExpr(cc.Expression, ctx); r != nil {
+				return r
+			}
+		}
+		if cc.Statements != nil {
+			for _, stmt := range cc.Statements.Nodes {
+				if r := checkBody(stmt, ctx); r != nil {
+					return r
+				}
+			}
+		}
 	}
 	return nil
 }
