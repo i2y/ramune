@@ -314,7 +314,19 @@ func checkExpr(node *ast.Node, ctx *bodyCtx) *Reason {
 	case ast.KindPrefixUnaryExpression:
 		pu := node.AsPrefixUnaryExpression()
 		switch pu.Operator {
-		case ast.KindPlusToken, ast.KindMinusToken, ast.KindExclamationToken, ast.KindTildeToken:
+		case ast.KindExclamationToken:
+			// Same reason as logical && / ||: emitted Go's `!` requires bool.
+			return requireBoolOperand(pu.Operand, ctx, "logical not")
+		case ast.KindTildeToken:
+			// Bitwise NOT has the same int↔float64 problem as binary bitwise ops.
+			if ctx.ck != nil {
+				t := ctx.ck.GetTypeAtLocation(pu.Operand)
+				if t != nil && t.Flags()&checker.TypeFlagsNumberLike != 0 {
+					return &Reason{Code: reasonForbiddenOp, Detail: "bitwise NOT on number returns int in emitted Go"}
+				}
+			}
+			return checkExpr(pu.Operand, ctx)
+		case ast.KindPlusToken, ast.KindMinusToken:
 			return checkExpr(pu.Operand, ctx)
 		case ast.KindPlusPlusToken, ast.KindMinusMinusToken:
 			if r := rejectParamMutation(pu.Operand, ctx); r != nil {
@@ -413,10 +425,36 @@ func checkBinaryExpr(node *ast.Node, ctx *bodyCtx) *Reason {
 		ast.KindLessThanToken, ast.KindLessThanEqualsToken,
 		ast.KindGreaterThanToken, ast.KindGreaterThanEqualsToken,
 		ast.KindEqualsEqualsEqualsToken, ast.KindExclamationEqualsEqualsToken,
-		ast.KindAmpersandAmpersandToken, ast.KindBarBarToken, ast.KindQuestionQuestionToken,
-		ast.KindAmpersandToken, ast.KindBarToken, ast.KindCaretToken,
+		ast.KindQuestionQuestionToken:
+		// arithmetic, comparison, nullish coalescing - safe on primitives
+
+	case ast.KindAmpersandAmpersandToken, ast.KindBarBarToken:
+		// JS short-circuit returns the last/first operand value; preserving
+		// that under static typing requires both sides bool. Otherwise the
+		// emitter would need jsrt.ToBool wrapping (ramune dep) or the Go
+		// `&&`/`||` would be a type error on float64 / string operands.
+		if r := requireBoolOperand(be.Left, ctx, "logical operator"); r != nil {
+			return r
+		}
+		if r := requireBoolOperand(be.Right, ctx, "logical operator"); r != nil {
+			return r
+		}
+
+	case ast.KindAmpersandToken, ast.KindBarToken, ast.KindCaretToken,
 		ast.KindLessThanLessThanToken, ast.KindGreaterThanGreaterThanToken,
 		ast.KindGreaterThanGreaterThanGreaterThanToken:
+		// Bitwise ops produce `int` in the emitted Go (`int(n) & 1`), which
+		// the surrounding float64 context cannot consume without a back-cast
+		// the emitter doesn't currently insert. Pure-bool bitwise is fine
+		// (rare in practice); reject the float case.
+		if ctx.ck != nil {
+			lt := ctx.ck.GetTypeAtLocation(be.Left)
+			rt := ctx.ck.GetTypeAtLocation(be.Right)
+			if (lt != nil && lt.Flags()&checker.TypeFlagsNumberLike != 0) ||
+				(rt != nil && rt.Flags()&checker.TypeFlagsNumberLike != 0) {
+				return &Reason{Code: reasonForbiddenOp, Detail: "bitwise op on number returns int in emitted Go but float64 was expected"}
+			}
+		}
 
 	case ast.KindEqualsEqualsToken, ast.KindExclamationEqualsToken:
 		return &Reason{Code: reasonForbiddenOp, Detail: "== and != (use === / !==)"}
@@ -495,6 +533,25 @@ func checkElementAccess(node *ast.Node, ctx *bodyCtx) *Reason {
 		if idx == nil || idx.Flags()&checker.TypeFlagsNumberLike == 0 {
 			return &Reason{Code: reasonUnhandledKind, Detail: "array index must be number-typed"}
 		}
+	}
+	return nil
+}
+
+// requireBoolOperand walks expr and requires its checker type be boolean.
+// Used by `&&` / `||` / `!` operands.
+func requireBoolOperand(expr *ast.Node, ctx *bodyCtx, where string) *Reason {
+	if expr == nil {
+		return nil
+	}
+	if r := checkExpr(expr, ctx); r != nil {
+		return r
+	}
+	if ctx.ck == nil {
+		return nil
+	}
+	t := ctx.ck.GetTypeAtLocation(expr)
+	if t == nil || t.Flags()&checker.TypeFlagsBooleanLike == 0 {
+		return &Reason{Code: reasonObjectType, Detail: where + " operand must be boolean-typed"}
 	}
 	return nil
 }

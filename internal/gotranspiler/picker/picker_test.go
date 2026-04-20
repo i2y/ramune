@@ -145,6 +145,64 @@ func TestPicker_Rejects_AnyParam(t *testing.T) {
 	}
 }
 
+func TestPicker_Rejects_LogicalAndOnNumbers(t *testing.T) {
+	src := `export function pickFirst(a: number, b: number): number { return a && b; }`
+	res := pickOne(t, src)
+	c, _ := byName(res, "pickFirst")
+	if c.Extracted {
+		t.Fatalf("expected rejection for `&&` on numbers")
+	}
+	if c.Reason.Code != "object-type" {
+		t.Fatalf("expected object-type, got %q", c.Reason.Code)
+	}
+}
+
+func TestPicker_Rejects_LogicalOrOnStrings(t *testing.T) {
+	src := `export function fallback(a: string, b: string): string { return a || b; }`
+	res := pickOne(t, src)
+	c, _ := byName(res, "fallback")
+	if c.Extracted {
+		t.Fatalf("expected rejection for `||` on strings")
+	}
+}
+
+func TestPicker_Rejects_LogicalNotOnNumber(t *testing.T) {
+	src := `export function isZero(n: number): boolean { return !n; }`
+	res := pickOne(t, src)
+	c, _ := byName(res, "isZero")
+	if c.Extracted {
+		t.Fatalf("expected rejection for `!` on number")
+	}
+}
+
+func TestPicker_Rejects_BitwiseOnNumber(t *testing.T) {
+	src := `export function lowBit(n: number): number { return n & 1; }`
+	res := pickOne(t, src)
+	c, _ := byName(res, "lowBit")
+	if c.Extracted {
+		t.Fatalf("expected rejection for bitwise on number-returning context")
+	}
+	if c.Reason.Code != "forbidden-operator" {
+		t.Fatalf("expected forbidden-operator, got %q", c.Reason.Code)
+	}
+}
+
+func TestPicker_Accepts_BooleanAndOr(t *testing.T) {
+	// Sanity: && / || / ! on actual booleans must still extract.
+	src := `
+export function bothPositive(a: number, b: number): boolean { return a > 0 && b > 0; }
+export function negate(b: boolean): boolean { return !b; }
+export function eitherTrue(a: boolean, b: boolean): boolean { return a || b; }
+`
+	res := pickOne(t, src)
+	for _, name := range []string{"bothPositive", "negate", "eitherTrue"} {
+		c, ok := byName(res, name)
+		if !ok || !c.Extracted {
+			t.Fatalf("expected `%s` extracted; got %+v", name, c.Reason)
+		}
+	}
+}
+
 func TestPicker_Rejects_NonBoolIfCondition(t *testing.T) {
 	src := `
 export function isTruthy(n: number): number {
