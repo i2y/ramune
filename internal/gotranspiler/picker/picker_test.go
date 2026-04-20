@@ -145,6 +145,27 @@ func TestPicker_Rejects_AnyParam(t *testing.T) {
 	}
 }
 
+func TestPicker_Rejects_AsAnyCast(t *testing.T) {
+	src := `export function bad(n: number, s: string): number { return n * (s as any); }`
+	res := pickOne(t, src)
+	c, _ := byName(res, "bad")
+	if c.Extracted {
+		t.Fatalf("expected rejection for `as any` cast")
+	}
+	if c.Reason.Code != "any-type" {
+		t.Fatalf("expected any-type, got %q", c.Reason.Code)
+	}
+}
+
+func TestPicker_Rejects_AsUnknownCast(t *testing.T) {
+	src := `export function bad(s: string): number { return (s as unknown) as number; }`
+	res := pickOne(t, src)
+	c, _ := byName(res, "bad")
+	if c.Extracted {
+		t.Fatalf("expected rejection for `as unknown` cast")
+	}
+}
+
 func TestPicker_Rejects_LogicalAndOnNumbers(t *testing.T) {
 	src := `export function pickFirst(a: number, b: number): number { return a && b; }`
 	res := pickOne(t, src)

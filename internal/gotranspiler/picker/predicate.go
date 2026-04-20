@@ -306,7 +306,19 @@ func checkExpr(node *ast.Node, ctx *bodyCtx) *Reason {
 		return checkExpr(node.AsParenthesizedExpression().Expression, ctx)
 
 	case ast.KindAsExpression:
-		return checkExpr(node.AsAsExpression().Expression, ctx)
+		// `x as any` would widen the inner expression to `any` invisibly to
+		// the rest of the walker, then the emitter forces a `.(float64)` (or
+		// similar) type assertion that fails on the static-typed operand.
+		// Reject any cast whose target widens; fall through for everything else.
+		ae := node.AsAsExpression()
+		if ctx.ck != nil && ae.Type != nil {
+			if t := ctx.ck.GetTypeAtLocation(ae.Type); t != nil {
+				if t.Flags()&(checker.TypeFlagsAny|checker.TypeFlagsUnknown) != 0 {
+					return &Reason{Code: reasonAnyType, Detail: "as-cast widens to any/unknown"}
+				}
+			}
+		}
+		return checkExpr(ae.Expression, ctx)
 
 	case ast.KindNonNullExpression:
 		return checkExpr(node.AsNonNullExpression().Expression, ctx)
