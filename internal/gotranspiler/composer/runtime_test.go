@@ -209,6 +209,7 @@ export function dist(x: number, y: number): number {
   return Math.sqrt(Math.pow(x, 2) + Math.pow(y, 2));
 }
 export function circumference(r: number): number { return 2 * Math.PI * r; }
+export function fmtPair(a: number, b: number): string { return ` + "`(${a}, ${b})`" + `; }
 export function sumArr(xs: number[]): number {
   let total = 0;
   for (let i = 0; i < xs.length; i++) total = total + xs[i];
@@ -390,6 +391,35 @@ func shout(s string) string { return gostrings.TrimSpace(gostrings.ToUpper(s)) }
 
 // splitWords stands in for `export function splitWords(s: string): string[] { return s.split(" "); }`.
 func splitWords(s string) []string { return gostrings.Split(s, " ") }
+
+func TestHybrid_TemplateLiteral_RoundTrip(t *testing.T) {
+	src := "export function fmtPair(a: number, b: number): string { return `(${a}, ${b})`; }"
+	sf, program, _ := setupProgram(t, src)
+	ck, done := program.GetTypeCheckerForFile(context.Background(), sf)
+	defer done()
+	res, err := composer.Compose(sf, ck, composer.Options{NativeModuleName: "native:tpl"})
+	if err != nil {
+		t.Fatalf("compose: %v", err)
+	}
+	if !strings.Contains(res.GoSource, "fmt.Sprintf") {
+		t.Fatalf("expected fmt.Sprintf in emitted Go:\n%s", res.GoSource)
+	}
+	fmtPair := func(a, b float64) string { return "(" + strconv.FormatFloat(a, 'g', -1, 64) + ", " + strconv.FormatFloat(b, 'g', -1, 64) + ")" }
+	mod := ramune.NativeModuleFromFuncs("native:tpl", map[string]any{"fmtPair": fmtPair})
+	r := newRamune(t, ramune.NodeCompat(), ramune.WithModule(mod))
+	defer r.Close()
+	if err := r.Exec(res.ShimJS); err != nil {
+		t.Fatalf("shim: %v", err)
+	}
+	v, err := r.Eval(`fmtPair(1, 2)`)
+	if err != nil {
+		t.Fatalf("eval: %v", err)
+	}
+	got := v.String()
+	if got != "(1, 2)" {
+		t.Fatalf(`fmtPair(1,2) = %q, want "(1, 2)"`, got)
+	}
+}
 
 func TestHybrid_StringSplit_RoundTrip(t *testing.T) {
 	src := `

@@ -340,8 +340,10 @@ func checkExpr(node *ast.Node, ctx *bodyCtx) *Reason {
 		return &Reason{Code: reasonRegex, Detail: "regex literal"}
 	case ast.KindSpreadElement:
 		return &Reason{Code: reasonSpread, Detail: "spread"}
-	case ast.KindTemplateExpression, ast.KindTaggedTemplateExpression:
-		return &Reason{Code: reasonUnhandledKind, Detail: "template literal not supported in v1"}
+	case ast.KindTemplateExpression:
+		return checkTemplateExpression(node, ctx)
+	case ast.KindTaggedTemplateExpression:
+		return &Reason{Code: reasonUnhandledKind, Detail: "tagged template not supported in v1"}
 	case ast.KindPropertyAccessExpression:
 		return checkPropertyAccess(node, ctx)
 	case ast.KindElementAccessExpression:
@@ -500,6 +502,34 @@ func rejectNonStringReceiver(expr *ast.Node, ctx *bodyCtx) *Reason {
 	t := ctx.ck.GetTypeAtLocation(expr)
 	if t == nil || t.Flags()&checker.TypeFlagsStringLike == 0 {
 		return &Reason{Code: reasonObjectType, Detail: "receiver is not a string"}
+	}
+	return nil
+}
+
+// checkTemplateExpression walks each interpolated span's expression. The
+// emitter lowers the whole template into one `fmt.Sprintf` call with a
+// format specifier chosen per-span from the expression's Go type; both paths
+// need the span expression to be walker-safe AND primitive-typed so the
+// format specifier is deterministic.
+func checkTemplateExpression(node *ast.Node, ctx *bodyCtx) *Reason {
+	tmpl := node.AsTemplateExpression()
+	if tmpl == nil || tmpl.TemplateSpans == nil {
+		return nil
+	}
+	for _, span := range tmpl.TemplateSpans.Nodes {
+		ts := span.AsTemplateSpan()
+		if ts == nil || ts.Expression == nil {
+			continue
+		}
+		if r := checkExpr(ts.Expression, ctx); r != nil {
+			return r
+		}
+		if ctx.ck != nil {
+			t := ctx.ck.GetTypeAtLocation(ts.Expression)
+			if t == nil || !isPrimitiveOrVoid(t.Flags()) {
+				return &Reason{Code: reasonObjectType, Detail: "template interpolation must be primitive-typed"}
+			}
+		}
 	}
 	return nil
 }

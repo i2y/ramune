@@ -446,6 +446,29 @@ export function scale(x: number): number { return x * K; }
 	}
 }
 
+func TestPicker_Accepts_TemplateLiterals(t *testing.T) {
+	src := `
+export function greet(name: string, age: number): string { return ` + "`Hello, ${name}, age ${age}!`" + `; }
+export function fmtPair(a: number, b: number): string { return ` + "`(${a}, ${b})`" + `; }
+`
+	res := pickOne(t, src)
+	for _, name := range []string{"greet", "fmtPair"} {
+		c, ok := byName(res, name)
+		if !ok || !c.Extracted {
+			t.Fatalf("expected `%s` extracted; got %+v", name, c.Reason)
+		}
+	}
+}
+
+func TestPicker_Rejects_TaggedTemplate(t *testing.T) {
+	src := "export function bad(x: number): string { return String.raw`literal ${x}`; }"
+	res := pickOne(t, src)
+	c, _ := byName(res, "bad")
+	if c.Extracted {
+		t.Fatalf("expected rejection for tagged template")
+	}
+}
+
 func TestPicker_Rejects_ThrowAndTry(t *testing.T) {
 	for _, src := range []string{
 		`export function bomb(): number { throw 1; }`,
