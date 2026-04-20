@@ -265,13 +265,17 @@ func TestPicker_Rejects_LooseEquality(t *testing.T) {
 }
 
 func TestPicker_Rejects_PropertyAccess(t *testing.T) {
-	// charAt is not in the string safelist; picker must reject unknown methods
-	// even on string receivers.
+	// charAt has different byte-vs-char semantics between JS (UTF-16 code unit)
+	// and Go (byte), so the emitter's `string(str[i])` would diverge on
+	// multi-byte characters. Picker must stay conservative.
 	src := `export function first(s: string): string { return s.charAt(0); }`
 	res := pickOne(t, src)
 	c, _ := byName(res, "first")
 	if c.Extracted {
 		t.Fatalf("expected rejection for unsafelisted method .charAt")
+	}
+	if c.Reason.Code != "builtin-call" {
+		t.Fatalf("expected builtin-call reason for charAt, got %q", c.Reason.Code)
 	}
 }
 

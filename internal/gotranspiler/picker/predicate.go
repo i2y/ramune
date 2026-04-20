@@ -577,10 +577,11 @@ func checkBareCallee(name string, ctx *bodyCtx) *Reason {
 	return nil
 }
 
-// mathSafeMethods lists Math.<method> calls the emitter maps to Go's math
-// package (or the Go 1.21 `min`/`max` builtins / `rand.Float64`). Adding a
-// method here requires the emitter path at expr.go:emitMathAccess to handle
-// it correctly for the matching Go signature.
+// mathSafeMethods lists Math.<method> calls that round-trip through the
+// emitter into a valid Go expression (`math.<Title>`, Go 1.21 `min`/`max`,
+// or `rand.Float64`). Every entry must have a corresponding Go math symbol;
+// `Math.sign` was dropped because Go's math package has no Sign function.
+// The TestHybrid_MathSafelistCompiles smoke guards drift.
 var mathSafeMethods = map[string]bool{
 	"abs": true, "floor": true, "ceil": true, "round": true, "trunc": true,
 	"sqrt": true, "cbrt": true, "pow": true, "exp": true,
@@ -588,7 +589,7 @@ var mathSafeMethods = map[string]bool{
 	"min": true, "max": true,
 	"sin": true, "cos": true, "tan": true,
 	"asin": true, "acos": true, "atan": true, "atan2": true,
-	"sign": true, "hypot": true, "random": true,
+	"hypot": true, "random": true,
 }
 
 // stringSafeMethods lists instance methods on `string` values that the
@@ -610,24 +611,38 @@ func checkBuiltinCallee(callee *ast.Node, ctx *bodyCtx) *Reason {
 	if pa.Name() == nil || pa.Name().Kind != ast.KindIdentifier {
 		return &Reason{Code: reasonDynamicCallee, Detail: "non-identifier method"}
 	}
-	method := pa.Name().AsIdentifier().Text
-
-	// Math.<method> - receiver is the global `Math` identifier, not shadowed.
-	if pa.Expression.Kind == ast.KindIdentifier {
-		recvName := pa.Expression.AsIdentifier().Text
-		if recvName == "Math" && !ctx.paramNames[recvName] && !ctx.localNames[recvName] {
-			if mathSafeMethods[method] {
-				return nil
-			}
-			return &Reason{Code: reasonBuiltinCall, Detail: "Math." + method + " not in safelist"}
-		}
+	if r := checkMathCall(pa, ctx); r == nil {
+		return nil
 	}
-
-	// <stringExpr>.<method> - receiver is any walker-safe string-typed expression.
-	if stringSafeMethods[method] {
-		if r := rejectNonStringReceiver(pa.Expression, ctx); r == nil {
-			return nil
-		}
+	if r := checkStringMethodCall(pa, ctx); r == nil {
+		return nil
 	}
 	return &Reason{Code: reasonBuiltinCall, Detail: "builtin call not in safelist"}
+}
+
+// checkMathCall returns nil iff callee is `Math.<method>` where Math is the
+// global (not shadowed) and method is in the safelist.
+func checkMathCall(pa *ast.PropertyAccessExpression, ctx *bodyCtx) *Reason {
+	if pa.Expression.Kind != ast.KindIdentifier {
+		return &Reason{Code: reasonBuiltinCall, Detail: "not a Math call"}
+	}
+	recv := pa.Expression.AsIdentifier().Text
+	if recv != "Math" || ctx.paramNames[recv] || ctx.localNames[recv] {
+		return &Reason{Code: reasonBuiltinCall, Detail: "not the global Math"}
+	}
+	method := pa.Name().AsIdentifier().Text
+	if !mathSafeMethods[method] {
+		return &Reason{Code: reasonBuiltinCall, Detail: "Math." + method + " not in safelist"}
+	}
+	return nil
+}
+
+// checkStringMethodCall returns nil iff method is in the string safelist and
+// the receiver is a walker-safe string-typed expression.
+func checkStringMethodCall(pa *ast.PropertyAccessExpression, ctx *bodyCtx) *Reason {
+	method := pa.Name().AsIdentifier().Text
+	if !stringSafeMethods[method] {
+		return &Reason{Code: reasonBuiltinCall, Detail: "." + method + " not in string safelist"}
+	}
+	return rejectNonStringReceiver(pa.Expression, ctx)
 }

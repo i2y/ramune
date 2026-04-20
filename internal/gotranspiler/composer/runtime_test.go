@@ -247,6 +247,70 @@ func dist(x float64, y float64) float64 {
 	return gomath.Sqrt(gomath.Pow(x, 2) + gomath.Pow(y, 2))
 }
 
+// TestHybrid_MathSafelistCompiles guards against drift between the picker's
+// mathSafeMethods set and the emitter's capability. If the picker admits a
+// Math.<method> that the emitter's default branch can't lower to a real Go
+// symbol (e.g. `math.Sign`, which does not exist), the generated Go fails
+// to compile and this test fires. Update this when changing the safelist.
+func TestHybrid_MathSafelistCompiles(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skipf("go toolchain not available: %v", err)
+	}
+	// Must enumerate every picker-admitted Math method with the correct arity.
+	src := `
+export function useMath(x: number, y: number): number {
+  let r = 0;
+  r = r + Math.random();
+  r = r + Math.abs(x);
+  r = r + Math.floor(x);
+  r = r + Math.ceil(x);
+  r = r + Math.round(x);
+  r = r + Math.trunc(x);
+  r = r + Math.sqrt(x);
+  r = r + Math.cbrt(x);
+  r = r + Math.exp(x);
+  r = r + Math.log(x);
+  r = r + Math.log2(x);
+  r = r + Math.log10(x);
+  r = r + Math.sin(x);
+  r = r + Math.cos(x);
+  r = r + Math.tan(x);
+  r = r + Math.asin(x);
+  r = r + Math.acos(x);
+  r = r + Math.atan(x);
+  r = r + Math.pow(x, y);
+  r = r + Math.atan2(x, y);
+  r = r + Math.hypot(x, y);
+  r = r + Math.min(x, y);
+  r = r + Math.max(x, y);
+  return r;
+}
+`
+	sf, program, _ := setupProgram(t, src)
+	ck, done := program.GetTypeCheckerForFile(context.Background(), sf)
+	defer done()
+	res, err := composer.Compose(sf, ck, composer.Options{PkgName: "mathsmoke"})
+	if err != nil {
+		t.Fatalf("compose: %v", err)
+	}
+	if res.GoSource == "" {
+		t.Fatalf("picker skipped useMath - one of the safelisted methods is not extractable")
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module mathsmoke\n\ngo 1.21\n"), 0o644); err != nil {
+		t.Fatalf("go.mod: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "m.go"), []byte(res.GoSource), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	cmd := exec.Command("go", "build", "./...")
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("go build failed - picker admits a Math method the emitter can't lower:\n%s\nsource:\n%s", out, res.GoSource)
+	}
+}
+
 func TestHybrid_MathCalls_RoundTrip(t *testing.T) {
 	src := `
 export function dist(x: number, y: number): number {
