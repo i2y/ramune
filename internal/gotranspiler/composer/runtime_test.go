@@ -312,6 +312,45 @@ export function useMath(x: number, y: number): number {
 	}
 }
 
+// TestHybrid_SafeGlobalCalleesCompile is the safe-globals counterpart to
+// TestHybrid_MathSafelistCompiles: each entry in safeGlobalCallees must
+// produce Go that compiles standalone. If the emitter ever switches a safe
+// callee to one that drags in a ramune runtime dependency (e.g. jsrt.ToBool
+// from a bool-coercion path), this test fires.
+func TestHybrid_SafeGlobalCalleesCompile(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skipf("go toolchain not available: %v", err)
+	}
+	// Direct return to avoid implicit bool coercion paths that pull in jsrt.
+	src := `
+export function checkNaN(x: number): boolean { return isNaN(x); }
+export function checkFinite(x: number): boolean { return isFinite(x); }
+export function parseF(s: string): number { return parseFloat(s); }
+`
+	sf, program, _ := setupProgram(t, src)
+	ck, done := program.GetTypeCheckerForFile(context.Background(), sf)
+	defer done()
+	res, err := composer.Compose(sf, ck, composer.Options{PkgName: "safeglobals"})
+	if err != nil {
+		t.Fatalf("compose: %v", err)
+	}
+	if res.GoSource == "" {
+		t.Fatalf("picker skipped all three safe-global functions")
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module safeglobals\n\ngo 1.21\n"), 0o644); err != nil {
+		t.Fatalf("go.mod: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "g.go"), []byte(res.GoSource), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	cmd := exec.Command("go", "build", "./...")
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("go build failed - a safe-global callee's emitter output no longer compiles standalone:\n%s\nsource:\n%s", out, res.GoSource)
+	}
+}
+
 func TestHybrid_MathCalls_RoundTrip(t *testing.T) {
 	src := `
 export function dist(x: number, y: number): number {
@@ -395,6 +434,9 @@ func TestHybrid_ParseFloat_RoundTrip(t *testing.T) {
 	res, err := composer.Compose(sf, ck, composer.Options{NativeModuleName: "native:pf"})
 	if err != nil {
 		t.Fatalf("compose: %v", err)
+	}
+	if !strings.Contains(res.GoSource, "strconv.ParseFloat") {
+		t.Fatalf("expected strconv.ParseFloat in emitted Go:\n%s", res.GoSource)
 	}
 	mod := ramune.NativeModuleFromFuncs("native:pf", map[string]any{"parseF": parseF})
 	r := newRamune(t, ramune.NodeCompat(), ramune.WithModule(mod))

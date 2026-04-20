@@ -353,6 +353,9 @@ func TestPicker_Rejects_UnsafeGlobalCallees(t *testing.T) {
 	if c.Extracted {
 		t.Fatalf("expected rejection for parseInt (emitter type mismatch)")
 	}
+	if c.Reason.Code != "builtin-call" {
+		t.Fatalf("expected builtin-call reason, got %q", c.Reason.Code)
+	}
 }
 
 func TestPicker_Rejects_NonMathBuiltinCall(t *testing.T) {
