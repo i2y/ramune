@@ -464,6 +464,20 @@ export function scale(x: number): number { return x * K; }
 	}
 }
 
+func TestPicker_Accepts_ChainedArrayAccess(t *testing.T) {
+	src := `
+export function firstWord(s: string): string { return s.split(" ")[0]; }
+export function pickFirst(a: number, b: number): number { return [a, b][0]; }
+`
+	res := pickOne(t, src)
+	for _, name := range []string{"firstWord", "pickFirst"} {
+		c, ok := byName(res, name)
+		if !ok || !c.Extracted {
+			t.Fatalf("expected `%s` extracted; got %+v", name, c.Reason)
+		}
+	}
+}
+
 func TestPicker_Accepts_PrimitiveArrayLiterals(t *testing.T) {
 	src := `
 export function pair(a: number, b: number): number[] { return [a, b]; }

@@ -478,14 +478,22 @@ func checkElementAccess(node *ast.Node, ctx *bodyCtx) *Reason {
 	return nil
 }
 
+// rejectNonArrayReceiver accepts any walker-safe expression whose type is a
+// primitive array - covers bare identifiers (`xs[i]`) and chained results
+// like `s.split(",")[0]` / `pair(a, b)[0]`.
 func rejectNonArrayReceiver(expr *ast.Node, ctx *bodyCtx) *Reason {
-	name, r := requireLocalIdentifier(expr, ctx)
-	if r != nil {
+	if expr == nil {
+		return &Reason{Code: reasonUnhandledKind, Detail: "nil array receiver"}
+	}
+	if r := checkExpr(expr, ctx); r != nil {
 		return r
+	}
+	if ctx.ck == nil {
+		return &Reason{Code: reasonUnhandledKind, Detail: "no checker for array receiver"}
 	}
 	t := ctx.ck.GetTypeAtLocation(expr)
 	if t == nil || arrayElementType(ctx.ck, t) == nil {
-		return &Reason{Code: reasonObjectType, Detail: "receiver `" + name + "` is not an array"}
+		return &Reason{Code: reasonObjectType, Detail: "receiver is not an array"}
 	}
 	return nil
 }
@@ -638,22 +646,6 @@ func rejectNonLengthableReceiver(expr *ast.Node, ctx *bodyCtx) *Reason {
 	return &Reason{Code: reasonObjectType, Detail: "receiver is not an array or string"}
 }
 
-// requireLocalIdentifier verifies expr is a bare Identifier resolving to a
-// function parameter or local variable. Returns the identifier name and nil
-// Reason on success.
-func requireLocalIdentifier(expr *ast.Node, ctx *bodyCtx) (string, *Reason) {
-	if expr == nil || expr.Kind != ast.KindIdentifier {
-		return "", &Reason{Code: reasonUnhandledKind, Detail: "receiver must be a bare identifier"}
-	}
-	name := expr.AsIdentifier().Text
-	if !ctx.paramNames[name] && !ctx.localNames[name] {
-		return name, &Reason{Code: reasonClosureCapture, Detail: "receiver `" + name + "` is not a param/local"}
-	}
-	if ctx.ck == nil {
-		return name, &Reason{Code: reasonUnhandledKind, Detail: "no checker for receiver"}
-	}
-	return name, nil
-}
 
 // rejectParamMutation returns a Reason when target is an Identifier that
 // refers to a function parameter. Mutations of locals are fine.
