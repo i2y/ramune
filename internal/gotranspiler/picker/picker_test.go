@@ -657,6 +657,21 @@ func TestPicker_Rejects_MixedArrayLiteral(t *testing.T) {
 	}
 }
 
+func TestPicker_Accepts_EmptyArrayLiteral(t *testing.T) {
+	src := `export function empty(): number[] { return []; }`
+	res := pickOne(t, src)
+	c, ok := byName(res, "empty")
+	if !ok {
+		t.Fatalf("candidate not found")
+	}
+	// Either extracted (good - tsgo widens [] to number[] from the return
+	// annotation) or rejected with object-type (acceptable - we'd rather skip
+	// than emit broken Go). Flag a regression if neither.
+	if !c.Extracted && c.Reason.Code != "object-type" {
+		t.Fatalf("expected extract or object-type rejection, got %+v", c.Reason)
+	}
+}
+
 func TestPicker_Rejects_ArrayLiteralWithSpread(t *testing.T) {
 	src := `
 export function dupe(xs: number[]): number[] { return [0, ...xs]; }
