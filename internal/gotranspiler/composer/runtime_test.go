@@ -210,6 +210,7 @@ export function dist(x: number, y: number): number {
 }
 export function circumference(r: number): number { return 2 * Math.PI * r; }
 export function fmtPair(a: number, b: number): string { return ` + "`(${a}, ${b})`" + `; }
+export function makeCoords(a: number, b: number): number[] { return [a, b]; }
 export function sumArr(xs: number[]): number {
   let total = 0;
   for (let i = 0; i < xs.length; i++) total = total + xs[i];

@@ -446,6 +446,41 @@ export function scale(x: number): number { return x * K; }
 	}
 }
 
+func TestPicker_Accepts_PrimitiveArrayLiterals(t *testing.T) {
+	src := `
+export function pair(a: number, b: number): number[] { return [a, b]; }
+export function origin(): number[] { return [0, 0]; }
+export function words(): string[] { return ["a", "b", "c"]; }
+`
+	res := pickOne(t, src)
+	for _, name := range []string{"pair", "origin", "words"} {
+		c, ok := byName(res, name)
+		if !ok || !c.Extracted {
+			t.Fatalf("expected `%s` extracted; got %+v", name, c.Reason)
+		}
+	}
+}
+
+func TestPicker_Rejects_MixedArrayLiteral(t *testing.T) {
+	src := `export function mix(a: number, b: string): (number|string)[] { return [a, b]; }`
+	res := pickOne(t, src)
+	c, _ := byName(res, "mix")
+	if c.Extracted {
+		t.Fatalf("expected rejection for mixed-type array literal (union element)")
+	}
+}
+
+func TestPicker_Rejects_ArrayLiteralWithSpread(t *testing.T) {
+	src := `
+export function dupe(xs: number[]): number[] { return [0, ...xs]; }
+`
+	res := pickOne(t, src)
+	c, _ := byName(res, "dupe")
+	if c.Extracted {
+		t.Fatalf("expected rejection for array literal with spread")
+	}
+}
+
 func TestPicker_Accepts_TemplateLiterals(t *testing.T) {
 	src := `
 export function greet(name: string, age: number): string { return ` + "`Hello, ${name}, age ${age}!`" + `; }

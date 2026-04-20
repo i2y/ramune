@@ -350,8 +350,10 @@ func checkExpr(node *ast.Node, ctx *bodyCtx) *Reason {
 		return checkElementAccess(node, ctx)
 	case ast.KindNewExpression:
 		return &Reason{Code: reasonUnhandledKind, Detail: "new expression not supported in v1"}
-	case ast.KindArrayLiteralExpression, ast.KindObjectLiteralExpression:
-		return &Reason{Code: reasonUnhandledKind, Detail: "array/object literal not supported in v1"}
+	case ast.KindArrayLiteralExpression:
+		return checkArrayLiteral(node, ctx)
+	case ast.KindObjectLiteralExpression:
+		return &Reason{Code: reasonUnhandledKind, Detail: "object literal not supported in v1"}
 	case ast.KindTypeOfExpression:
 		return &Reason{Code: reasonUnhandledKind, Detail: "typeof not supported in v1"}
 	case ast.KindDeleteExpression, ast.KindVoidExpression:
@@ -502,6 +504,31 @@ func rejectNonStringReceiver(expr *ast.Node, ctx *bodyCtx) *Reason {
 	t := ctx.ck.GetTypeAtLocation(expr)
 	if t == nil || t.Flags()&checker.TypeFlagsStringLike == 0 {
 		return &Reason{Code: reasonObjectType, Detail: "receiver is not a string"}
+	}
+	return nil
+}
+
+// checkArrayLiteral accepts primitive-element array literals without spread.
+// The literal's contextual type must itself be extractable (Array<primitive>)
+// so the emitter writes a well-formed `[]T{...}`.
+func checkArrayLiteral(node *ast.Node, ctx *bodyCtx) *Reason {
+	arr := node.AsArrayLiteralExpression()
+	if arr == nil || arr.Elements == nil {
+		return nil
+	}
+	for _, elem := range arr.Elements.Nodes {
+		if elem.Kind == ast.KindSpreadElement {
+			return &Reason{Code: reasonSpread, Detail: "spread in array literal"}
+		}
+		if r := checkExpr(elem, ctx); r != nil {
+			return r
+		}
+	}
+	if ctx.ck != nil {
+		t := ctx.ck.GetTypeAtLocation(node)
+		if r := isExtractableType(ctx.ck, t); r != nil {
+			return &Reason{Code: r.Code, Detail: "array literal: " + r.Detail}
+		}
 	}
 	return nil
 }
