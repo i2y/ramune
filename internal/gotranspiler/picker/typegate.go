@@ -39,10 +39,13 @@ const (
 )
 
 // isExtractableType returns nil when t is a v1-extractable type, else a
-// Reason describing the rejection. v1 accepts only primitives (number, string,
-// boolean) and void; `T | null`, arrays, objects, generics, and everything
-// else bail out with a named Reason code.
-func isExtractableType(t *checker.Type) *Reason {
+// Reason describing the rejection. Accepts:
+//   - primitives (number, string, boolean) and void
+//   - Array<T> / ReadonlyArray<T> / T[] where T is itself extractable
+//
+// Unions (including `T | null`), tuples, objects, generics, Map/Set/Promise,
+// and everything else bail with a named Reason code.
+func isExtractableType(ck *checker.Checker, t *checker.Type) *Reason {
 	if t == nil {
 		return &Reason{Code: reasonAnyType, Detail: "nil type"}
 	}
@@ -73,7 +76,42 @@ func isExtractableType(t *checker.Type) *Reason {
 		return &Reason{Code: reasonUnionType, Detail: "union type not supported in v1"}
 	}
 	if flags&checker.TypeFlagsObject != 0 {
+		if elem := arrayElementType(ck, t); elem != nil {
+			// v1.2 limits array elements to primitives so the body walker's
+			// single-level `arr[i]` pattern always type-checks. Multi-dim
+			// arrays would require nested access patterns the walker doesn't
+			// yet support.
+			if elem.Flags()&(checker.TypeFlagsStringLike|checker.TypeFlagsNumberLike|checker.TypeFlagsBooleanLike) == 0 {
+				return &Reason{Code: reasonObjectType, Detail: "array element must be primitive in v1"}
+			}
+			return nil
+		}
 		return &Reason{Code: reasonObjectType, Detail: "object/reference type not supported in v1"}
 	}
 	return &Reason{Code: reasonUnhandledKind, Detail: "unclassified type"}
+}
+
+// arrayElementType returns T when t is `Array<T>` / `ReadonlyArray<T>` /
+// `T[]`, else nil. Tuples (e.g. `[number, string]`) are intentionally excluded.
+func arrayElementType(ck *checker.Checker, t *checker.Type) *checker.Type {
+	if ck == nil || t == nil {
+		return nil
+	}
+	if t.ObjectFlags()&checker.ObjectFlagsReference == 0 {
+		return nil
+	}
+	target := t.Target()
+	if target == nil || target.Symbol() == nil {
+		return nil
+	}
+	switch target.Symbol().Name {
+	case "Array", "ReadonlyArray":
+	default:
+		return nil
+	}
+	args := ck.GetTypeArguments(t)
+	if len(args) != 1 {
+		return nil
+	}
+	return args[0]
 }

@@ -66,12 +66,12 @@ func IsFunctionExtractable(node *ast.Node, ck *checker.Checker, topLevelFuncs ma
 			continue
 		}
 		paramNames[paramSym.Name] = true
-		if r := isExtractableType(ck.GetTypeOfSymbol(paramSym)); r != nil {
+		if r := isExtractableType(ck, ck.GetTypeOfSymbol(paramSym)); r != nil {
 			return false, Reason{Code: r.Code, Detail: fmt.Sprintf("param %d (%s): %s", i, paramSym.Name, r.Detail)}
 		}
 	}
 
-	if r := isExtractableType(ck.GetReturnTypeOfSignature(sig)); r != nil {
+	if r := isExtractableType(ck, ck.GetReturnTypeOfSignature(sig)); r != nil {
 		return false, Reason{Code: r.Code, Detail: "return: " + r.Detail}
 	}
 
@@ -121,7 +121,11 @@ func checkBody(node *ast.Node, ctx *bodyCtx) *Reason {
 		if vs == nil || vs.DeclarationList == nil {
 			return nil
 		}
-		decls := vs.DeclarationList.AsVariableDeclarationList()
+		return checkBody(vs.DeclarationList, ctx)
+
+	case ast.KindVariableDeclarationList:
+		// Used by `for (let i = 0; ...)` initializers and plain var statements.
+		decls := node.AsVariableDeclarationList()
 		if decls == nil || decls.Declarations == nil {
 			return nil
 		}
@@ -247,7 +251,7 @@ func checkVarDecl(node *ast.Node, ctx *bodyCtx) *Reason {
 
 	if ctx.ck != nil {
 		if t := ctx.ck.GetTypeAtLocation(vd.Name()); t != nil {
-			if r := isExtractableType(t); r != nil {
+			if r := isExtractableType(ctx.ck, t); r != nil {
 				return &Reason{Code: r.Code, Detail: "local `" + name + "`: " + r.Detail}
 			}
 		}
@@ -338,8 +342,10 @@ func checkExpr(node *ast.Node, ctx *bodyCtx) *Reason {
 		return &Reason{Code: reasonSpread, Detail: "spread"}
 	case ast.KindTemplateExpression, ast.KindTaggedTemplateExpression:
 		return &Reason{Code: reasonUnhandledKind, Detail: "template literal not supported in v1"}
-	case ast.KindPropertyAccessExpression, ast.KindElementAccessExpression:
-		return &Reason{Code: reasonUnhandledKind, Detail: "property/element access not supported in v1"}
+	case ast.KindPropertyAccessExpression:
+		return checkPropertyAccess(node, ctx)
+	case ast.KindElementAccessExpression:
+		return checkElementAccess(node, ctx)
 	case ast.KindNewExpression:
 		return &Reason{Code: reasonUnhandledKind, Detail: "new expression not supported in v1"}
 	case ast.KindArrayLiteralExpression, ast.KindObjectLiteralExpression:
@@ -410,6 +416,67 @@ func checkBinaryExpr(node *ast.Node, ctx *bodyCtx) *Reason {
 		return r
 	}
 	return checkExpr(be.Right, ctx)
+}
+
+// checkPropertyAccess currently accepts only `<arrayVar>.length`. Anything
+// else (method calls, nested property access, non-array receivers) falls back
+// to the general "property access not supported in v1" rejection.
+func checkPropertyAccess(node *ast.Node, ctx *bodyCtx) *Reason {
+	pa := node.AsPropertyAccessExpression()
+	if pa == nil || pa.Name() == nil || pa.Name().Kind != ast.KindIdentifier {
+		return &Reason{Code: reasonUnhandledKind, Detail: "property access not supported in v1"}
+	}
+	propName := pa.Name().AsIdentifier().Text
+	if propName != "length" {
+		return &Reason{Code: reasonUnhandledKind, Detail: "only .length is supported in v1 (got ." + propName + ")"}
+	}
+	if r := requireArrayReceiver(pa.Expression, ctx); r != nil {
+		return r
+	}
+	return nil
+}
+
+// checkElementAccess accepts `arrayVar[i]` where the index is a number-typed
+// expression from this function's locals/params and the base is an array-typed
+// identifier.
+func checkElementAccess(node *ast.Node, ctx *bodyCtx) *Reason {
+	ea := node.AsElementAccessExpression()
+	if ea == nil {
+		return &Reason{Code: reasonUnhandledKind, Detail: "nil element access"}
+	}
+	if r := requireArrayReceiver(ea.Expression, ctx); r != nil {
+		return r
+	}
+	if r := checkExpr(ea.ArgumentExpression, ctx); r != nil {
+		return r
+	}
+	if ctx.ck != nil {
+		idx := ctx.ck.GetTypeAtLocation(ea.ArgumentExpression)
+		if idx == nil || idx.Flags()&checker.TypeFlagsNumberLike == 0 {
+			return &Reason{Code: reasonUnhandledKind, Detail: "array index must be number-typed"}
+		}
+	}
+	return nil
+}
+
+// requireArrayReceiver returns nil when expr is an Identifier that resolves
+// to a parameter or local whose type is `T[]` / `Array<T>` / `ReadonlyArray<T>`.
+func requireArrayReceiver(expr *ast.Node, ctx *bodyCtx) *Reason {
+	if expr == nil || expr.Kind != ast.KindIdentifier {
+		return &Reason{Code: reasonUnhandledKind, Detail: "receiver must be a bare identifier"}
+	}
+	name := expr.AsIdentifier().Text
+	if !ctx.paramNames[name] && !ctx.localNames[name] {
+		return &Reason{Code: reasonClosureCapture, Detail: "receiver `" + name + "` is not a param/local"}
+	}
+	if ctx.ck == nil {
+		return &Reason{Code: reasonUnhandledKind, Detail: "no checker for array receiver"}
+	}
+	t := ctx.ck.GetTypeAtLocation(expr)
+	if t == nil || arrayElementType(ctx.ck, t) == nil {
+		return &Reason{Code: reasonObjectType, Detail: "receiver `" + name + "` is not an array"}
+	}
+	return nil
 }
 
 // rejectParamMutation returns a Reason when target is an Identifier that

@@ -193,15 +193,76 @@ func TestPicker_Rejects_ObjectParam(t *testing.T) {
 	}
 }
 
-func TestPicker_Rejects_ArrayParam(t *testing.T) {
-	src := `export function sum(xs: number[]): number { return 0; }`
+func TestPicker_Accepts_PrimitiveArrayRead(t *testing.T) {
+	src := `
+export function sum(xs: number[]): number {
+  let total = 0;
+  for (let i = 0; i < xs.length; i++) {
+    total = total + xs[i];
+  }
+  return total;
+}`
 	res := pickOne(t, src)
-	c, _ := byName(res, "sum")
+	c, ok := byName(res, "sum")
+	if !ok || !c.Extracted {
+		t.Fatalf("expected `sum` extracted; got %+v", c.Reason)
+	}
+}
+
+func TestPicker_Accepts_StringArrayAndReadonlyArray(t *testing.T) {
+	src := `
+export function firstOrEmpty(xs: readonly string[]): string {
+  if (xs.length === 0) return "";
+  return xs[0];
+}`
+	res := pickOne(t, src)
+	c, ok := byName(res, "firstOrEmpty")
+	if !ok || !c.Extracted {
+		t.Fatalf("expected `firstOrEmpty` extracted; got %+v", c.Reason)
+	}
+}
+
+func TestPicker_Rejects_ArrayOfAny(t *testing.T) {
+	src := `export function leak(xs: any[]): number { return xs.length; }`
+	res := pickOne(t, src)
+	c, _ := byName(res, "leak")
 	if c.Extracted {
-		t.Fatalf("expected rejection for array param")
+		t.Fatalf("expected rejection for any[]")
 	}
 	if c.Reason.Code != "object-type" {
-		t.Fatalf("expected object-type, got %q", c.Reason.Code)
+		t.Fatalf("expected object-type reason, got %q", c.Reason.Code)
+	}
+	if !strings.Contains(c.Reason.Detail, "primitive") {
+		t.Fatalf("expected detail about primitive element, got %q", c.Reason.Detail)
+	}
+}
+
+func TestPicker_Rejects_NestedArray(t *testing.T) {
+	src := `export function flatLen(xs: number[][]): number { return xs.length; }`
+	res := pickOne(t, src)
+	c, _ := byName(res, "flatLen")
+	if c.Extracted {
+		t.Fatalf("expected rejection for number[][] (inner element is object-typed array)")
+	}
+}
+
+func TestPicker_Rejects_ArrayLengthOnNonArray(t *testing.T) {
+	// `n` is a number, so n.length would be invalid TS but picker must reject
+	// property access on non-array receiver regardless.
+	src := `export function bad(s: string): number { return s.length; }`
+	res := pickOne(t, src)
+	c, _ := byName(res, "bad")
+	if c.Extracted {
+		t.Fatalf("expected rejection for property access on non-array")
+	}
+}
+
+func TestPicker_Rejects_ArrayIndexByString(t *testing.T) {
+	src := `export function pick(xs: number[], k: string): number { return xs[k as any]; }`
+	res := pickOne(t, src)
+	c, _ := byName(res, "pick")
+	if c.Extracted {
+		t.Fatalf("expected rejection for non-numeric index")
 	}
 }
 

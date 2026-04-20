@@ -30,6 +30,17 @@ func fib(n float64) float64 {
 
 func add(a float64, b float64) float64 { return a + b }
 
+// sumArr mirrors what the transpiler should emit for
+//
+//	export function sumArr(xs: number[]): number { let t=0; for (let i=0; i<xs.length; i++) t+=xs[i]; return t; }
+func sumArr(xs []float64) float64 {
+	var t float64
+	for i := 0; i < len(xs); i++ {
+		t = t + xs[i]
+	}
+	return t
+}
+
 // newRamune returns a live Runtime or skips when the configured backend is
 // unavailable (e.g. JSC on Windows / Linux without the shared library).
 func newRamune(t *testing.T, opts ...ramune.Option) *ramune.Runtime {
@@ -191,6 +202,11 @@ export function clamp(x: number, lo: number, hi: number): number {
   if (x > hi) return hi;
   return x;
 }
+export function sumArr(xs: number[]): number {
+  let total = 0;
+  for (let i = 0; i < xs.length; i++) total = total + xs[i];
+  return total;
+}
 `
 	sf, program, _ := setupProgram(t, src)
 	ck, done := program.GetTypeCheckerForFile(context.Background(), sf)
@@ -213,6 +229,48 @@ export function clamp(x: number, lo: number, hi: number): number {
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("go build failed: %v\noutput:\n%s\nsource:\n%s", err, out, res.GoSource)
+	}
+}
+
+func TestHybrid_ArrayRead_RoundTrips(t *testing.T) {
+	src := `
+export function sumArr(xs: number[]): number {
+  let t = 0;
+  for (let i = 0; i < xs.length; i++) t = t + xs[i];
+  return t;
+}
+`
+	sf, program, _ := setupProgram(t, src)
+	ck, done := program.GetTypeCheckerForFile(context.Background(), sf)
+	defer done()
+
+	res, err := composer.Compose(sf, ck, composer.Options{NativeModuleName: "native:arr"})
+	if err != nil {
+		t.Fatalf("compose: %v", err)
+	}
+	if !strings.Contains(res.GoSource, "func SumArr(") {
+		t.Fatalf("expected SumArr in emitted Go, got:\n%s", res.GoSource)
+	}
+	if !strings.Contains(res.GoSource, "[]float64") {
+		t.Fatalf("expected []float64 in emitted Go, got:\n%s", res.GoSource)
+	}
+
+	mod := ramune.NativeModuleFromFuncs("native:arr", map[string]any{"sumArr": sumArr})
+	r := newRamune(t, ramune.NodeCompat(), ramune.WithModule(mod))
+	defer r.Close()
+	if err := r.Exec(res.ShimJS); err != nil {
+		t.Fatalf("shim exec: %v", err)
+	}
+	v, err := r.Eval(`sumArr([1, 2, 3, 4, 5])`)
+	if err != nil {
+		t.Fatalf("eval sumArr: %v", err)
+	}
+	got, err := v.Float64()
+	if err != nil {
+		t.Fatalf("sumArr result not numeric: %v", err)
+	}
+	if got != 15 {
+		t.Fatalf("sumArr([1..5]) = %v, want 15", got)
 	}
 }
 
