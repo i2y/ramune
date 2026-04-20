@@ -230,7 +230,9 @@ func checkBody(node *ast.Node, ctx *bodyCtx) *Reason {
 		return &Reason{Code: reasonThrow, Detail: "throw not supported in v1"}
 	case ast.KindSwitchStatement:
 		return checkSwitchStatement(node, ctx)
-	case ast.KindForInStatement, ast.KindForOfStatement,
+	case ast.KindForOfStatement:
+		return checkForOfStatement(node, ctx)
+	case ast.KindForInStatement,
 		ast.KindWithStatement, ast.KindDebuggerStatement:
 		return &Reason{Code: reasonUnhandledKind, Detail: fmt.Sprintf("statement kind %v not supported in v1", node.Kind)}
 	}
@@ -514,6 +516,60 @@ func rejectNonStringReceiver(expr *ast.Node, ctx *bodyCtx) *Reason {
 	t := ctx.ck.GetTypeAtLocation(expr)
 	if t == nil || t.Flags()&checker.TypeFlagsStringLike == 0 {
 		return &Reason{Code: reasonObjectType, Detail: "receiver is not a string"}
+	}
+	return nil
+}
+
+// checkForOfStatement accepts `for (const x of xs)` over a walker-safe
+// primitive-array iterable. Destructuring patterns and `for await` are both
+// rejected. Registers the loop variable as a local so the body walker treats
+// it as readable/writable.
+func checkForOfStatement(node *ast.Node, ctx *bodyCtx) *Reason {
+	fio := node.AsForInOrOfStatement()
+	if fio == nil {
+		return nil
+	}
+	if fio.AwaitModifier != nil {
+		return &Reason{Code: reasonAwait, Detail: "for-await-of"}
+	}
+	if fio.Initializer == nil {
+		return &Reason{Code: reasonUnhandledKind, Detail: "for-of without initializer"}
+	}
+	var loopVar string
+	switch fio.Initializer.Kind {
+	case ast.KindVariableDeclarationList:
+		decls := fio.Initializer.AsVariableDeclarationList()
+		if decls == nil || decls.Declarations == nil || len(decls.Declarations.Nodes) != 1 {
+			return &Reason{Code: reasonUnhandledKind, Detail: "for-of declaration list must bind one variable"}
+		}
+		vd := decls.Declarations.Nodes[0].AsVariableDeclaration()
+		if vd == nil || vd.Name() == nil || vd.Name().Kind != ast.KindIdentifier {
+			return &Reason{Code: reasonUnhandledKind, Detail: "for-of destructuring not supported"}
+		}
+		loopVar = vd.Name().AsIdentifier().Text
+	case ast.KindIdentifier:
+		loopVar = fio.Initializer.AsIdentifier().Text
+	default:
+		return &Reason{Code: reasonUnhandledKind, Detail: "for-of initializer must declare a bare identifier"}
+	}
+
+	if fio.Expression == nil {
+		return &Reason{Code: reasonUnhandledKind, Detail: "for-of without iterable"}
+	}
+	if r := checkExpr(fio.Expression, ctx); r != nil {
+		return r
+	}
+	if ctx.ck != nil {
+		t := ctx.ck.GetTypeAtLocation(fio.Expression)
+		if t == nil || arrayElementType(ctx.ck, t) == nil {
+			return &Reason{Code: reasonObjectType, Detail: "for-of iterable must be a primitive array"}
+		}
+	}
+	ctx.localNames[loopVar] = true
+	if fio.Statement != nil {
+		if r := checkBody(fio.Statement, ctx); r != nil {
+			return r
+		}
 	}
 	return nil
 }

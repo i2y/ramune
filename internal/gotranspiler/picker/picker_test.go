@@ -553,6 +553,55 @@ export function reversed(xs: number[]): number[] { return xs.reverse(); }
 	}
 }
 
+func TestPicker_Accepts_ForOfPrimitiveArray(t *testing.T) {
+	src := `
+export function sumOf(xs: number[]): number {
+  let t = 0;
+  for (const x of xs) t = t + x;
+  return t;
+}
+export function joinedSpace(xs: string[]): string {
+  let out = "";
+  for (const s of xs) out = out + " " + s;
+  return out.trim();
+}`
+	res := pickOne(t, src)
+	for _, name := range []string{"sumOf", "joinedSpace"} {
+		c, ok := byName(res, name)
+		if !ok || !c.Extracted {
+			t.Fatalf("expected `%s` extracted; got %+v", name, c.Reason)
+		}
+	}
+}
+
+func TestPicker_Rejects_ForOfDestructuring(t *testing.T) {
+	src := `
+export function pairs(xs: number[]): number {
+  let t = 0;
+  for (const [a, b] of [[1, 2]]) t = t + a;
+  return t;
+}`
+	res := pickOne(t, src)
+	c, _ := byName(res, "pairs")
+	if c.Extracted {
+		t.Fatalf("expected rejection for for-of with destructuring")
+	}
+}
+
+func TestPicker_Rejects_ForAwaitOf(t *testing.T) {
+	src := `
+export async function collect(xs: AsyncIterable<number>): Promise<number> {
+  let t = 0;
+  for await (const x of xs) t = t + x;
+  return t;
+}`
+	res := pickOne(t, src)
+	c, _ := byName(res, "collect")
+	if c.Extracted {
+		t.Fatalf("expected rejection for async + for await of")
+	}
+}
+
 func TestPicker_Accepts_SwitchStatement(t *testing.T) {
 	src := `
 export function classify(n: number): string {

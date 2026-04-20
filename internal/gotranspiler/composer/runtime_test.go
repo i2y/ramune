@@ -223,6 +223,11 @@ export function sanitize(s: string): string { return s.replaceAll("foo", "bar");
 export function prefix(s: string): string { return s.slice(0, 3); }
 export function mid(s: string): string { return s.substring(1, 4); }
 export function leftpad(s: string, n: number): string { return s.padStart(n, "0"); }
+export function sumOf(xs: number[]): number {
+  let t = 0;
+  for (const x of xs) t = t + x;
+  return t;
+}
 export function sumArr(xs: number[]): number {
   let total = 0;
   for (let i = 0; i < xs.length; i++) total = total + xs[i];
