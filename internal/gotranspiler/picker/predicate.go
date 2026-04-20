@@ -751,7 +751,11 @@ var stringSafeMethods = map[string]bool{
 	"trim": true, "trimStart": true, "trimEnd": true,
 	"includes": true, "startsWith": true, "endsWith": true,
 	"indexOf": true, "lastIndexOf": true,
-	"split": true,
+	"split":      true,
+	"repeat":     true,
+	"replaceAll": true,
+	"slice":      true, "substring": true,
+	"padStart": true, "padEnd": true,
 }
 
 // arraySafeMethods lists instance methods on arrays of primitives. These

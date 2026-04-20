@@ -394,6 +394,24 @@ func TestPicker_Rejects_NonMathBuiltinCall(t *testing.T) {
 	}
 }
 
+func TestPicker_Accepts_ExtendedStringMethods(t *testing.T) {
+	src := `
+export function shouty(s: string): string { return s.repeat(3); }
+export function sanitize(s: string): string { return s.replaceAll("foo", "bar"); }
+export function prefix(s: string): string { return s.slice(0, 3); }
+export function mid(s: string): string { return s.substring(1, 4); }
+export function leftpad(s: string, n: number): string { return s.padStart(n, "0"); }
+export function rightpad(s: string, n: number): string { return s.padEnd(n, " "); }
+`
+	res := pickOne(t, src)
+	for _, name := range []string{"shouty", "sanitize", "prefix", "mid", "leftpad", "rightpad"} {
+		c, ok := byName(res, name)
+		if !ok || !c.Extracted {
+			t.Fatalf("expected `%s` extracted; got %+v", name, c.Reason)
+		}
+	}
+}
+
 func TestPicker_Accepts_StringLengthAndMethods(t *testing.T) {
 	src := `
 export function shout(s: string): string { return s.toUpperCase().trim(); }
