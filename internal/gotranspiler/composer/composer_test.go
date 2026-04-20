@@ -139,9 +139,9 @@ export function parseUser(input: any): any { return input; }
 	for _, want := range []string{
 		"__ramuneNativeInstalled",
 		`require("native:app")`,
-		"_me.add = mod.add",
-		"_me.scale = mod.scale",
-		"globalThis.add = mod.add",
+		`_install(_me, "add", mod.add)`,
+		`_install(_me, "scale", mod.scale)`,
+		`_install(globalThis, "add", mod.add)`,
 	} {
 		if !strings.Contains(res.ShimJS, want) {
 			t.Fatalf("shim missing %q; shim:\n%s", want, res.ShimJS)

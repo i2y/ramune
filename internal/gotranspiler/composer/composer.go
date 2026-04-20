@@ -10,13 +10,21 @@
 package composer
 
 import (
+	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/i2y/ramune/internal/gotranspiler"
 	"github.com/i2y/ramune/internal/gotranspiler/picker"
 	"github.com/i2y/ramune/internal/tsgo/ast"
+	"github.com/i2y/ramune/internal/tsgo/bundled"
 	"github.com/i2y/ramune/internal/tsgo/checker"
+	"github.com/i2y/ramune/internal/tsgo/compiler"
+	"github.com/i2y/ramune/internal/tsgo/core"
+	"github.com/i2y/ramune/internal/tsgo/tsoptions"
+	"github.com/i2y/ramune/internal/tsgo/tspath"
+	"github.com/i2y/ramune/internal/tsgo/vfs/osvfs"
 )
 
 // Options controls composer behavior.
@@ -41,6 +49,45 @@ type Result struct {
 	// ExportedJSNames are the JS-visible names (camelCase) that will be swapped
 	// at boot. Same set as ShimJS references, in source order.
 	ExportedJSNames []string
+}
+
+// ComposeFile is a file-path wrapper around Compose that builds the tsgo
+// Program, locates the source file, and threads the checker through.
+// Callers that already hold a *ast.SourceFile + *checker.Checker should call
+// Compose directly and avoid the extra Program construction.
+func ComposeFile(filename string, opts Options) (*Result, error) {
+	abs, err := filepath.Abs(filename)
+	if err != nil {
+		return nil, fmt.Errorf("resolve path: %w", err)
+	}
+	fs := bundled.WrapFS(osvfs.FS())
+	host := compiler.NewCachedFSCompilerHost(filepath.Dir(abs), fs, bundled.LibPath(), nil, nil)
+	cfg := tsoptions.NewParsedCommandLine(
+		&core.CompilerOptions{NoEmit: core.TSTrue, SkipLibCheck: core.TSTrue, AllowJs: core.TSTrue},
+		[]string{abs},
+		tspath.ComparePathsOptions{
+			UseCaseSensitiveFileNames: fs.UseCaseSensitiveFileNames(),
+			CurrentDirectory:          filepath.Dir(abs),
+		},
+	)
+	program := compiler.NewProgram(compiler.ProgramOptions{
+		Config:         cfg,
+		Host:           host,
+		SingleThreaded: core.TSTrue,
+	})
+	var sf *ast.SourceFile
+	for _, f := range program.SourceFiles() {
+		if f.FileName() == abs {
+			sf = f
+			break
+		}
+	}
+	if sf == nil {
+		return nil, fmt.Errorf("source file not found in program: %s", abs)
+	}
+	ck, done := program.GetTypeCheckerForFile(context.Background(), sf)
+	defer done()
+	return Compose(sf, ck, opts)
 }
 
 // Compose runs the picker, transpiles approved candidates, and builds the shim
@@ -88,17 +135,26 @@ func BuildShim(moduleName string, jsNames []string) string {
 		return ""
 	}
 	var b strings.Builder
-	b.Grow(220 + 120*len(jsNames))
+	b.Grow(280 + 180*len(jsNames))
 	b.WriteString("\n;(function(){\n")
 	b.WriteString("  if (globalThis.__ramuneNativeInstalled) return;\n")
 	b.WriteString("  globalThis.__ramuneNativeInstalled = true;\n")
 	fmt.Fprintf(&b, "  var mod = require(%q);\n", moduleName)
 	b.WriteString("  globalThis.__ramuneNativeExports = mod;\n")
 	b.WriteString("  var _me = (typeof module !== 'undefined' && module && module.exports) ? module.exports : null;\n")
+	// esbuild's CommonJS output defines exports via Object.defineProperty with
+	// only a getter, so a plain assignment throws "no setter for property" on
+	// strict engines like QuickJS-NG. defineProperty with writable+configurable
+	// replaces the getter with a writable data slot. Try/catch protects against
+	// non-configurable exports from other bundlers.
+	b.WriteString("  function _install(obj, key, value) {\n")
+	b.WriteString("    try { Object.defineProperty(obj, key, {value: value, writable: true, configurable: true, enumerable: true}); }\n")
+	b.WriteString("    catch (e) { try { obj[key] = value; } catch (e2) { /* getter-only, no setter - skip */ } }\n")
+	b.WriteString("  }\n")
 	for _, name := range jsNames {
 		fmt.Fprintf(&b, "  if (mod.%s) {\n", name)
-		fmt.Fprintf(&b, "    if (_me) _me.%s = mod.%s;\n", name, name)
-		fmt.Fprintf(&b, "    globalThis.%s = mod.%s;\n", name, name)
+		fmt.Fprintf(&b, "    if (_me) _install(_me, %q, mod.%s);\n", name, name)
+		fmt.Fprintf(&b, "    _install(globalThis, %q, mod.%s);\n", name, name)
 		b.WriteString("  }\n")
 	}
 	b.WriteString("})();\n")

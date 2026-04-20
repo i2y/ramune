@@ -21,6 +21,7 @@ import (
 	"github.com/evanw/esbuild/pkg/api"
 	"github.com/i2y/ramune"
 	"github.com/i2y/ramune/internal/gotranspiler"
+	"github.com/i2y/ramune/internal/gotranspiler/composer"
 	"github.com/i2y/ramune/internal/rslint/config"
 	"github.com/i2y/ramune/internal/rslint/linter"
 	"github.com/i2y/ramune/internal/rslint/rule"
@@ -618,6 +619,30 @@ func typegenCmd(args []string) {
 	fmt.Fprintf(os.Stderr, "wrote %s\n", outFile)
 }
 
+// sanitizePkgName turns a filename stem into a Go-package-safe identifier:
+// letters, digits, underscore; must start with a letter. Empty input becomes
+// "app".
+func sanitizePkgName(s string) string {
+	var b strings.Builder
+	for i, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z':
+			b.WriteRune(r)
+		case r >= '0' && r <= '9':
+			if i == 0 {
+				b.WriteByte('_')
+			}
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	if b.Len() == 0 {
+		return "app"
+	}
+	return b.String()
+}
+
 // accumulateNativeFuncs appends the native-import line and bridge-code block
 // for a single native extension module to imports/modules, prints the discovery
 // summary and any generic warnings, and is a no-op when funcs is empty.
@@ -642,13 +667,18 @@ func accumulateNativeFuncs(modName, pkgImport, pkgAlias string, funcs []gotransp
 func compileCmd(args []string) {
 	fs := flag.NewFlagSet("compile", flag.ExitOnError)
 	var output string
-	var minify, httpMode bool
+	var minify, httpMode, hybrid, hybridReport bool
 	var nativeFiles stringSliceFlag
 	fs.StringVar(&output, "o", "", "output binary name")
 	fs.BoolVar(&minify, "minify", false, "minify bundled JS")
 	fs.BoolVar(&httpMode, "http", false, "run event loop for HTTP server")
+	fs.BoolVar(&hybrid, "hybrid", false, "extract type-confirmed TS functions to native Go (JS runtime remains the fallback)")
+	fs.BoolVar(&hybridReport, "hybrid-report", false, "print the picker's extraction report to stderr (implies --hybrid)")
 	fs.Var(&nativeFiles, "native", "TypeScript file to transpile as native extension (repeatable)")
 	fs.Parse(args)
+	if hybridReport {
+		hybrid = true
+	}
 
 	if fs.NArg() < 1 {
 		fmt.Fprintln(os.Stderr, "usage: ramune compile <file> [-o output] [--minify] [--http]")
@@ -705,6 +735,42 @@ func compileCmd(args []string) {
 	}
 	defer os.RemoveAll(tmpDir)
 
+	var nativeImports, nativeModules string
+	if hybrid && isTypeScript(filename) {
+		base := strings.TrimSuffix(filepath.Base(filename), filepath.Ext(filename))
+		pkgAlias := "nativehybrid_" + sanitizePkgName(base)
+		modName := "__hybrid_" + sanitizePkgName(base) + "__"
+		res, err := composer.ComposeFile(filename, composer.Options{
+			PkgName:          pkgAlias,
+			NativeModuleName: "native:" + modName,
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "hybrid compose error: %v\n", err)
+			os.Exit(1)
+		}
+		if hybridReport {
+			res.PickerResult.Format(os.Stderr)
+		}
+		if res.GoSource != "" {
+			pkgDir := filepath.Join(tmpDir, pkgAlias)
+			if err := os.MkdirAll(pkgDir, 0o755); err != nil {
+				fmt.Fprintf(os.Stderr, "error creating hybrid dir: %v\n", err)
+				os.Exit(1)
+			}
+			if err := os.WriteFile(filepath.Join(pkgDir, pkgAlias+".go"), []byte(res.GoSource), 0o644); err != nil {
+				fmt.Fprintf(os.Stderr, "error writing hybrid module: %v\n", err)
+				os.Exit(1)
+			}
+			funcs, err := gotranspiler.DiscoverExportedFuncs(res.GoSource)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "hybrid discovery error: %v\n", err)
+				os.Exit(1)
+			}
+			accumulateNativeFuncs(modName, "ramune-compiled-app/"+pkgAlias, pkgAlias, funcs, &nativeImports, &nativeModules)
+			bundledJS += res.ShimJS
+		}
+	}
+
 	if err := os.WriteFile(filepath.Join(tmpDir, "app.bundle.js"), []byte(bundledJS), 0o644); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
@@ -719,7 +785,6 @@ func compileCmd(args []string) {
 		timeImport = `"time"`
 	}
 
-	var nativeImports, nativeModules string
 	if len(nativeFiles) == 1 {
 		nf := nativeFiles[0]
 		baseName := strings.TrimSuffix(filepath.Base(nf), filepath.Ext(nf))
