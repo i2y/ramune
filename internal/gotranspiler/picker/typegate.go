@@ -69,7 +69,7 @@ func isExtractableType(ck *checker.Checker, t *checker.Type) *Reason {
 	if flags&checker.TypeFlagsIntersection != 0 {
 		return &Reason{Code: reasonIntersection, Detail: "intersection type"}
 	}
-	if flags&(checker.TypeFlagsStringLike|checker.TypeFlagsNumberLike|checker.TypeFlagsBooleanLike|checker.TypeFlagsVoidLike) != 0 {
+	if isPrimitiveOrVoid(flags) {
 		return nil
 	}
 	if flags&checker.TypeFlagsUnion != 0 {
@@ -77,10 +77,9 @@ func isExtractableType(ck *checker.Checker, t *checker.Type) *Reason {
 	}
 	if flags&checker.TypeFlagsObject != 0 {
 		if elem := arrayElementType(ck, t); elem != nil {
-			// v1.2 limits array elements to primitives so the body walker's
-			// single-level `arr[i]` pattern always type-checks. Multi-dim
-			// arrays would require nested access patterns the walker doesn't
-			// yet support.
+			// Restricting element to primitives keeps the body walker's
+			// single-level `arr[i]` pattern sound; nested arrays would need
+			// access-pattern support the walker does not yet have.
 			if elem.Flags()&(checker.TypeFlagsStringLike|checker.TypeFlagsNumberLike|checker.TypeFlagsBooleanLike) == 0 {
 				return &Reason{Code: reasonObjectType, Detail: "array element must be primitive in v1"}
 			}
@@ -91,27 +90,17 @@ func isExtractableType(ck *checker.Checker, t *checker.Type) *Reason {
 	return &Reason{Code: reasonUnhandledKind, Detail: "unclassified type"}
 }
 
+func isPrimitiveOrVoid(flags checker.TypeFlags) bool {
+	return flags&(checker.TypeFlagsStringLike|checker.TypeFlagsNumberLike|checker.TypeFlagsBooleanLike|checker.TypeFlagsVoidLike) != 0
+}
+
 // arrayElementType returns T when t is `Array<T>` / `ReadonlyArray<T>` /
-// `T[]`, else nil. Tuples (e.g. `[number, string]`) are intentionally excluded.
+// `T[]`, else nil. Delegates to the checker's canonical predicate (identity
+// check against globalArrayType / globalReadonlyArrayType), which avoids the
+// false positive of a user type literally named `Array`.
 func arrayElementType(ck *checker.Checker, t *checker.Type) *checker.Type {
 	if ck == nil || t == nil {
 		return nil
 	}
-	if t.ObjectFlags()&checker.ObjectFlagsReference == 0 {
-		return nil
-	}
-	target := t.Target()
-	if target == nil || target.Symbol() == nil {
-		return nil
-	}
-	switch target.Symbol().Name {
-	case "Array", "ReadonlyArray":
-	default:
-		return nil
-	}
-	args := ck.GetTypeArguments(t)
-	if len(args) != 1 {
-		return nil
-	}
-	return args[0]
+	return ck.GetElementTypeOfArrayType(t)
 }
