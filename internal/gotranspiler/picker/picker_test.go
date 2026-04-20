@@ -10,7 +10,6 @@ import (
 	"github.com/i2y/ramune/internal/gotranspiler/picker"
 	"github.com/i2y/ramune/internal/tsgo/ast"
 	"github.com/i2y/ramune/internal/tsgo/bundled"
-	"github.com/i2y/ramune/internal/tsgo/checker"
 	"github.com/i2y/ramune/internal/tsgo/compiler"
 	"github.com/i2y/ramune/internal/tsgo/core"
 	"github.com/i2y/ramune/internal/tsgo/tsoptions"
@@ -314,5 +313,4 @@ export function echo(x: any): any { return x; }
 	if !strings.Contains(out, "1 extracted, 1 skipped") {
 		t.Fatalf("report missing summary: %s", out)
 	}
-	_ = checker.SignatureKindCall // keep checker import live if we drop uses above
 }

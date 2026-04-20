@@ -88,6 +88,7 @@ func BuildShim(moduleName string, jsNames []string) string {
 		return ""
 	}
 	var b strings.Builder
+	b.Grow(220 + 120*len(jsNames))
 	b.WriteString("\n;(function(){\n")
 	b.WriteString("  if (globalThis.__ramuneNativeInstalled) return;\n")
 	b.WriteString("  globalThis.__ramuneNativeInstalled = true;\n")

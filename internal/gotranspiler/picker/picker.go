@@ -13,7 +13,6 @@ package picker
 import (
 	"fmt"
 	"io"
-	"sort"
 
 	"github.com/i2y/ramune/internal/tsgo/ast"
 	"github.com/i2y/ramune/internal/tsgo/checker"
@@ -52,7 +51,6 @@ type Candidate struct {
 	Kind      Kind
 	Extracted bool
 	Reason    Reason
-	Pos, End  int
 }
 
 // Result is the per-file output of Pick.
@@ -76,9 +74,8 @@ func Pick(sf *ast.SourceFile, ck *checker.Checker, _ Options) Result {
 		return r
 	}
 
-	// First pass: collect top-level extractable-candidate names so intra-file
-	// call resolution in IsExtractable can recognize them.
-	topLevelFuncs := map[string]*ast.Node{}
+	// Pre-collect peer names so IsFunctionExtractable can resolve forward calls.
+	topLevelFuncs := map[string]struct{}{}
 	for _, stmt := range sf.Statements.Nodes {
 		if stmt.Kind != ast.KindFunctionDeclaration {
 			continue
@@ -87,10 +84,9 @@ func Pick(sf *ast.SourceFile, ck *checker.Checker, _ Options) Result {
 		if fd == nil || fd.Name() == nil {
 			continue
 		}
-		topLevelFuncs[fd.Name().AsIdentifier().Text] = stmt
+		topLevelFuncs[fd.Name().AsIdentifier().Text] = struct{}{}
 	}
 
-	// Second pass: classify each candidate.
 	for _, stmt := range sf.Statements.Nodes {
 		if stmt.Kind != ast.KindFunctionDeclaration {
 			continue
@@ -107,21 +103,15 @@ func Pick(sf *ast.SourceFile, ck *checker.Checker, _ Options) Result {
 			Kind:      KindFunction,
 			Extracted: ok,
 			Reason:    reason,
-			Pos:       stmt.Pos(),
-			End:       stmt.End(),
 		})
 	}
-
-	sort.SliceStable(r.Candidates, func(i, j int) bool {
-		return r.Candidates[i].Pos < r.Candidates[j].Pos
-	})
 	return r
 }
 
 // ExtractedFunctions returns the names of candidates that were extracted,
 // in source order.
 func (r Result) ExtractedFunctions() []string {
-	var names []string
+	names := make([]string, 0, len(r.Candidates))
 	for _, c := range r.Candidates {
 		if c.Extracted && c.Kind == KindFunction {
 			names = append(names, c.Name)
@@ -133,7 +123,7 @@ func (r Result) ExtractedFunctions() []string {
 // ExtractedNodes returns the AST nodes of extracted candidates in source order.
 // Callers pass these directly to TranspileNode.
 func (r Result) ExtractedNodes() []*ast.Node {
-	var nodes []*ast.Node
+	nodes := make([]*ast.Node, 0, len(r.Candidates))
 	for _, c := range r.Candidates {
 		if c.Extracted {
 			nodes = append(nodes, c.Node)

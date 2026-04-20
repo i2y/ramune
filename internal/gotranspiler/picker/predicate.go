@@ -9,9 +9,9 @@ import (
 
 // IsFunctionExtractable classifies a FunctionDeclaration node.
 //
-// topLevelFuncs maps top-level function names in the same file to their
-// declaration node. This lets the body walker recognize self- and peer-calls
-// without flagging them as free identifiers.
+// topLevelFuncs is the set of top-level function names in the same file,
+// letting the body walker recognize self- and peer-calls instead of flagging
+// them as free identifiers.
 //
 // Only the v1 predicate is implemented:
 //   - non-generic, non-generator, non-async
@@ -21,7 +21,7 @@ import (
 //   - no closure capture beyond params/locals and same-file functions
 //   - no parameter mutation
 //   - no built-in calls (Math.*, String(), etc.)
-func IsFunctionExtractable(node *ast.Node, ck *checker.Checker, topLevelFuncs map[string]*ast.Node) (bool, Reason) {
+func IsFunctionExtractable(node *ast.Node, ck *checker.Checker, topLevelFuncs map[string]struct{}) (bool, Reason) {
 	if node == nil || node.Kind != ast.KindFunctionDeclaration {
 		return false, Reason{Code: reasonUnhandledKind, Detail: "not a function declaration"}
 	}
@@ -30,7 +30,6 @@ func IsFunctionExtractable(node *ast.Node, ck *checker.Checker, topLevelFuncs ma
 		return false, Reason{Code: reasonUnhandledKind, Detail: "nil function declaration"}
 	}
 
-	// 1. Declaration shape.
 	if fd.Name() == nil {
 		return false, Reason{Code: reasonUnnamed, Detail: "function has no name"}
 	}
@@ -47,7 +46,6 @@ func IsFunctionExtractable(node *ast.Node, ck *checker.Checker, topLevelFuncs ma
 		return false, Reason{Code: reasonMissingBody, Detail: "ambient/overload declaration"}
 	}
 
-	// 2. Signature checks.
 	fnType := ck.GetTypeAtLocation(node)
 	if fnType == nil {
 		return false, Reason{Code: reasonEmptyReturn, Detail: "type checker returned nil for function"}
@@ -62,25 +60,21 @@ func IsFunctionExtractable(node *ast.Node, ck *checker.Checker, topLevelFuncs ma
 		return false, Reason{Code: reasonRestParam, Detail: "rest parameter not supported in v1"}
 	}
 
-	// Collect parameter names so the body walker can recognize them as locals.
 	paramNames := map[string]bool{}
 	for i, paramSym := range sig.Parameters() {
 		if paramSym == nil {
 			continue
 		}
 		paramNames[paramSym.Name] = true
-		pt := ck.GetTypeOfSymbol(paramSym)
-		if ok, r := isExtractableType(pt); !ok {
+		if r := isExtractableType(ck.GetTypeOfSymbol(paramSym)); r != nil {
 			return false, Reason{Code: r.Code, Detail: fmt.Sprintf("param %d (%s): %s", i, paramSym.Name, r.Detail)}
 		}
 	}
 
-	retType := ck.GetReturnTypeOfSignature(sig)
-	if ok, r := isExtractableType(retType); !ok {
+	if r := isExtractableType(ck.GetReturnTypeOfSignature(sig)); r != nil {
 		return false, Reason{Code: r.Code, Detail: "return: " + r.Detail}
 	}
 
-	// 3. Body walk.
 	ctx := &bodyCtx{
 		ck:            ck,
 		paramNames:    paramNames,
@@ -97,9 +91,9 @@ func IsFunctionExtractable(node *ast.Node, ck *checker.Checker, topLevelFuncs ma
 // bodyCtx carries state threaded through the body walker.
 type bodyCtx struct {
 	ck            *checker.Checker
-	paramNames    map[string]bool      // function parameters — readable, not writable
-	topLevelFuncs map[string]*ast.Node // same-file top-level functions — callable
-	localNames    map[string]bool      // locals declared in this body (let/const/var) — readable AND writable
+	paramNames    map[string]bool     // function parameters - readable, not writable
+	topLevelFuncs map[string]struct{} // same-file top-level functions - callable
+	localNames    map[string]bool     // locals declared in this body (let/const/var) - readable AND writable
 }
 
 // checkBody walks a block/statement subtree and returns a non-nil Reason if
@@ -110,7 +104,6 @@ func checkBody(node *ast.Node, ctx *bodyCtx) *Reason {
 		return nil
 	}
 	switch node.Kind {
-	// ── Declarations & statements ─────────────────────────────────────
 	case ast.KindBlock:
 		blk := node.AsBlock()
 		if blk == nil || blk.Statements == nil {
@@ -214,7 +207,6 @@ func checkBody(node *ast.Node, ctx *bodyCtx) *Reason {
 		return checkExpr(ds.Expression, ctx)
 
 	case ast.KindBreakStatement, ast.KindContinueStatement, ast.KindEmptyStatement:
-		// Allow unlabeled only. Labeled break/continue have a Label field.
 		if node.AsBreakStatement() != nil && node.AsBreakStatement().Label != nil {
 			return &Reason{Code: reasonLabeledStmt, Detail: "labeled break"}
 		}
@@ -226,7 +218,6 @@ func checkBody(node *ast.Node, ctx *bodyCtx) *Reason {
 	case ast.KindVariableDeclaration:
 		return checkVarDecl(node, ctx)
 
-	// ── Disallowed statement kinds (explicit) ─────────────────────────
 	case ast.KindLabeledStatement:
 		return &Reason{Code: reasonLabeledStmt, Detail: "labeled statement"}
 	case ast.KindTryStatement:
@@ -237,9 +228,6 @@ func checkBody(node *ast.Node, ctx *bodyCtx) *Reason {
 		ast.KindWithStatement, ast.KindDebuggerStatement:
 		return &Reason{Code: reasonUnhandledKind, Detail: fmt.Sprintf("statement kind %v not supported in v1", node.Kind)}
 	}
-
-	// Expression at statement position shouldn't normally reach here — already
-	// covered by KindExpressionStatement — but be defensive.
 	return checkExpr(node, ctx)
 }
 
@@ -252,14 +240,14 @@ func checkVarDecl(node *ast.Node, ctx *bodyCtx) *Reason {
 		return &Reason{Code: reasonUnhandledKind, Detail: "destructuring binding not supported in v1"}
 	}
 	name := vd.Name().AsIdentifier().Text
-	// Registered as a local even if the initializer fails — simpler, and the
-	// whole function is rejected anyway.
+	// Register as local even if the initializer fails - the whole function is
+	// rejected anyway, and this keeps the walker from misclassifying later refs
+	// as captures.
 	ctx.localNames[name] = true
 
-	// Type of the declared variable must be extractable.
 	if ctx.ck != nil {
 		if t := ctx.ck.GetTypeAtLocation(vd.Name()); t != nil {
-			if ok, r := isExtractableType(t); !ok {
+			if r := isExtractableType(t); r != nil {
 				return &Reason{Code: r.Code, Detail: "local `" + name + "`: " + r.Detail}
 			}
 		}
@@ -277,7 +265,6 @@ func checkExpr(node *ast.Node, ctx *bodyCtx) *Reason {
 		return nil
 	}
 	switch node.Kind {
-	// ── Accepted literals & leaf nodes ────────────────────────────────
 	case ast.KindNumericLiteral, ast.KindStringLiteral, ast.KindNoSubstitutionTemplateLiteral,
 		ast.KindTrueKeyword, ast.KindFalseKeyword, ast.KindNullKeyword:
 		return nil
@@ -288,7 +275,6 @@ func checkExpr(node *ast.Node, ctx *bodyCtx) *Reason {
 	case ast.KindThisKeyword:
 		return &Reason{Code: reasonThis, Detail: "`this` not allowed outside methods (v1)"}
 
-	// ── Accepted composite expressions ────────────────────────────────
 	case ast.KindParenthesizedExpression:
 		return checkExpr(node.AsParenthesizedExpression().Expression, ctx)
 
@@ -340,7 +326,6 @@ func checkExpr(node *ast.Node, ctx *bodyCtx) *Reason {
 	case ast.KindCallExpression:
 		return checkCallExpr(node, ctx)
 
-	// ── Hard rejects with named reasons ───────────────────────────────
 	case ast.KindYieldExpression:
 		return &Reason{Code: reasonYield, Detail: "yield"}
 	case ast.KindAwaitExpression:
@@ -390,7 +375,6 @@ func checkBinaryExpr(node *ast.Node, ctx *bodyCtx) *Reason {
 	be := node.AsBinaryExpression()
 	op := be.OperatorToken.Kind
 	switch op {
-	// Arithmetic, comparison (strict only), logical, bitwise.
 	case ast.KindPlusToken, ast.KindMinusToken, ast.KindAsteriskToken, ast.KindAsteriskAsteriskToken,
 		ast.KindSlashToken, ast.KindPercentToken,
 		ast.KindLessThanToken, ast.KindLessThanEqualsToken,
@@ -400,12 +384,10 @@ func checkBinaryExpr(node *ast.Node, ctx *bodyCtx) *Reason {
 		ast.KindAmpersandToken, ast.KindBarToken, ast.KindCaretToken,
 		ast.KindLessThanLessThanToken, ast.KindGreaterThanGreaterThanToken,
 		ast.KindGreaterThanGreaterThanGreaterThanToken:
-		// ok
 
 	case ast.KindEqualsEqualsToken, ast.KindExclamationEqualsToken:
 		return &Reason{Code: reasonForbiddenOp, Detail: "== and != (use === / !==)"}
 
-	// Assignments mutate — allowed only on locals, never on parameters.
 	case ast.KindEqualsToken,
 		ast.KindPlusEqualsToken, ast.KindMinusEqualsToken,
 		ast.KindAsteriskEqualsToken, ast.KindSlashEqualsToken, ast.KindPercentEqualsToken,
@@ -465,7 +447,6 @@ func checkCallExpr(node *ast.Node, ctx *bodyCtx) *Reason {
 	if _, ok := ctx.topLevelFuncs[name]; !ok {
 		return &Reason{Code: reasonBuiltinCall, Detail: "callee `" + name + "` is not a same-file function"}
 	}
-	// Check every argument.
 	if ce.Arguments != nil {
 		for _, arg := range ce.Arguments.Nodes {
 			if r := checkExpr(arg, ctx); r != nil {

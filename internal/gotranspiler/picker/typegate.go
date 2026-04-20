@@ -38,60 +38,42 @@ const (
 	reasonFuncLiteral    = "inline-function-literal"
 )
 
-// isExtractableType returns ok=true when t is a v1-extractable type.
-// v1 accepts only primitives (number, string, boolean) and void.
-// null-only and undefined-only types are also rejected in v1.
-func isExtractableType(t *checker.Type) (ok bool, reason Reason) {
+// isExtractableType returns nil when t is a v1-extractable type, else a
+// Reason describing the rejection. v1 accepts only primitives (number, string,
+// boolean) and void; `T | null`, arrays, objects, generics, and everything
+// else bail out with a named Reason code.
+func isExtractableType(t *checker.Type) *Reason {
 	if t == nil {
-		return false, Reason{Code: reasonAnyType, Detail: "nil type"}
+		return &Reason{Code: reasonAnyType, Detail: "nil type"}
 	}
 	flags := t.Flags()
 
-	// Hard bailouts first.
 	if flags&checker.TypeFlagsAny != 0 {
-		return false, Reason{Code: reasonAnyType, Detail: "type is `any`"}
+		return &Reason{Code: reasonAnyType, Detail: "type is `any`"}
 	}
 	if flags&checker.TypeFlagsUnknown != 0 {
-		return false, Reason{Code: reasonUnknownType, Detail: "type is `unknown`"}
+		return &Reason{Code: reasonUnknownType, Detail: "type is `unknown`"}
 	}
 	if flags&checker.TypeFlagsTypeParameter != 0 {
-		return false, Reason{Code: reasonGenericType, Detail: "type is a generic parameter"}
+		return &Reason{Code: reasonGenericType, Detail: "type is a generic parameter"}
 	}
 	if flags&checker.TypeFlagsBigIntLike != 0 {
-		return false, Reason{Code: reasonBigInt, Detail: "bigint not supported in v1"}
+		return &Reason{Code: reasonBigInt, Detail: "bigint not supported in v1"}
 	}
 	if flags&checker.TypeFlagsESSymbolLike != 0 {
-		return false, Reason{Code: reasonSymbol, Detail: "symbol not supported in v1"}
+		return &Reason{Code: reasonSymbol, Detail: "symbol not supported in v1"}
 	}
 	if flags&checker.TypeFlagsIntersection != 0 {
-		return false, Reason{Code: reasonIntersection, Detail: "intersection type"}
+		return &Reason{Code: reasonIntersection, Detail: "intersection type"}
 	}
-
-	// Accept primitives & void.
-	if flags&checker.TypeFlagsStringLike != 0 {
-		return true, Reason{}
+	if flags&(checker.TypeFlagsStringLike|checker.TypeFlagsNumberLike|checker.TypeFlagsBooleanLike|checker.TypeFlagsVoidLike) != 0 {
+		return nil
 	}
-	if flags&checker.TypeFlagsNumberLike != 0 {
-		return true, Reason{}
-	}
-	if flags&checker.TypeFlagsBooleanLike != 0 {
-		return true, Reason{}
-	}
-	if flags&checker.TypeFlagsVoidLike != 0 {
-		return true, Reason{}
-	}
-
-	// v1 rejects unions (including T | null) to keep the predicate airtight.
-	// v1.2+ will accept `T | null` / `T | undefined` with extractable T.
 	if flags&checker.TypeFlagsUnion != 0 {
-		return false, Reason{Code: reasonUnionType, Detail: "union type not supported in v1"}
+		return &Reason{Code: reasonUnionType, Detail: "union type not supported in v1"}
 	}
-
-	// Object / reference types (arrays, Promise, user structs, function types).
-	// v1 rejects all of these. Later versions will allow a subset.
 	if flags&checker.TypeFlagsObject != 0 {
-		return false, Reason{Code: reasonObjectType, Detail: "object/reference type not supported in v1"}
+		return &Reason{Code: reasonObjectType, Detail: "object/reference type not supported in v1"}
 	}
-
-	return false, Reason{Code: reasonUnhandledKind, Detail: "unclassified type"}
+	return &Reason{Code: reasonUnhandledKind, Detail: "unclassified type"}
 }
