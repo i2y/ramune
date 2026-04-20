@@ -339,7 +339,20 @@ func checkExpr(node *ast.Node, ctx *bodyCtx) *Reason {
 			}
 			return checkExpr(pu.Operand, ctx)
 		case ast.KindPlusToken, ast.KindMinusToken:
-			return checkExpr(pu.Operand, ctx)
+			// JS unary + / - coerces strings/booleans to number; the emitter
+			// just drops the operator and returns the original value, so the
+			// extracted Go would carry a type mismatch (`return s` with
+			// float64 return type). Require numeric operand.
+			if r := checkExpr(pu.Operand, ctx); r != nil {
+				return r
+			}
+			if ctx.ck != nil {
+				t := ctx.ck.GetTypeAtLocation(pu.Operand)
+				if t == nil || t.Flags()&checker.TypeFlagsNumberLike == 0 {
+					return &Reason{Code: reasonObjectType, Detail: "unary +/- requires numeric operand"}
+				}
+			}
+			return nil
 		case ast.KindPlusPlusToken, ast.KindMinusMinusToken:
 			if r := rejectParamMutation(pu.Operand, ctx); r != nil {
 				return r

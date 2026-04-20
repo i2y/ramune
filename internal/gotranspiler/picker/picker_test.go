@@ -145,6 +145,27 @@ func TestPicker_Rejects_AnyParam(t *testing.T) {
 	}
 }
 
+func TestPicker_Rejects_UnaryPlusOnString(t *testing.T) {
+	src := `export function strToNum(s: string): number { return +s as number; }`
+	res := pickOne(t, src)
+	c, _ := byName(res, "strToNum")
+	if c.Extracted {
+		t.Fatalf("expected rejection for unary + on string")
+	}
+	if c.Reason.Code != "object-type" && c.Reason.Code != "any-type" {
+		t.Fatalf("expected object-type or any-type, got %q", c.Reason.Code)
+	}
+}
+
+func TestPicker_Accepts_UnaryMinusOnNumber(t *testing.T) {
+	src := `export function flip(n: number): number { return -n; }`
+	res := pickOne(t, src)
+	c, ok := byName(res, "flip")
+	if !ok || !c.Extracted {
+		t.Fatalf("expected `flip` extracted; got %+v", c.Reason)
+	}
+}
+
 func TestPicker_Rejects_AsAnyCast(t *testing.T) {
 	src := `export function bad(n: number, s: string): number { return n * (s as any); }`
 	res := pickOne(t, src)
