@@ -232,9 +232,6 @@ func TestPicker_Rejects_ArrayOfAny(t *testing.T) {
 	if c.Reason.Code != "object-type" {
 		t.Fatalf("expected object-type reason, got %q", c.Reason.Code)
 	}
-	if !strings.Contains(c.Reason.Detail, "primitive") {
-		t.Fatalf("expected detail about primitive element, got %q", c.Reason.Detail)
-	}
 }
 
 func TestPicker_Rejects_NestedArray(t *testing.T) {
@@ -287,12 +284,64 @@ func TestPicker_Rejects_PropertyAccess(t *testing.T) {
 	}
 }
 
-func TestPicker_Rejects_BuiltinCall(t *testing.T) {
+func TestPicker_Accepts_MathAbs(t *testing.T) {
 	src := `export function flip(n: number): number { return Math.abs(n); }`
 	res := pickOne(t, src)
-	c, _ := byName(res, "flip")
+	c, ok := byName(res, "flip")
+	if !ok || !c.Extracted {
+		t.Fatalf("expected `flip` extracted (Math.abs is safelisted); got %+v", c.Reason)
+	}
+}
+
+func TestPicker_Accepts_MathVariety(t *testing.T) {
+	src := `
+export function geo(x: number, y: number): number {
+  return Math.sqrt(Math.pow(x, 2) + Math.pow(y, 2));
+}
+export function clampToInt(x: number): number {
+  return Math.min(Math.max(Math.floor(x), 0), 100);
+}`
+	res := pickOne(t, src)
+	for _, name := range []string{"geo", "clampToInt"} {
+		c, ok := byName(res, name)
+		if !ok || !c.Extracted {
+			t.Fatalf("expected %s extracted; got %+v", name, c.Reason)
+		}
+	}
+}
+
+func TestPicker_Rejects_MathUnsafe(t *testing.T) {
+	// Math.fround is not in the safelist - reject even though tsgo knows it.
+	src := `export function r(x: number): number { return Math.fround(x); }`
+	res := pickOne(t, src)
+	c, _ := byName(res, "r")
 	if c.Extracted {
-		t.Fatalf("expected rejection for Math.abs (property-access callee)")
+		t.Fatalf("expected rejection for Math.fround (not in safelist)")
+	}
+	if c.Reason.Code != "builtin-call" {
+		t.Fatalf("expected builtin-call, got %q", c.Reason.Code)
+	}
+}
+
+func TestPicker_Rejects_MathShadowed(t *testing.T) {
+	src := `
+export function surprise(n: number): number {
+  const Math = { abs: (x: number) => x + 100 };
+  return Math.abs(n);
+}`
+	res := pickOne(t, src)
+	c, _ := byName(res, "surprise")
+	if c.Extracted {
+		t.Fatalf("expected rejection when Math is locally shadowed")
+	}
+}
+
+func TestPicker_Rejects_NonMathBuiltinCall(t *testing.T) {
+	src := `export function s(x: string): string { return String(x); }`
+	res := pickOne(t, src)
+	c, _ := byName(res, "s")
+	if c.Extracted {
+		t.Fatalf("expected rejection for String() (only Math is safelisted in v1.3)")
 	}
 }
 

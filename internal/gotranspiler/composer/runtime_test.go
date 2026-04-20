@@ -2,6 +2,7 @@ package composer_test
 
 import (
 	"context"
+	gomath "math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -202,6 +203,9 @@ export function clamp(x: number, lo: number, hi: number): number {
   if (x > hi) return hi;
   return x;
 }
+export function dist(x: number, y: number): number {
+  return Math.sqrt(Math.pow(x, 2) + Math.pow(y, 2));
+}
 export function sumArr(xs: number[]): number {
   let total = 0;
   for (let i = 0; i < xs.length; i++) total = total + xs[i];
@@ -229,6 +233,48 @@ export function sumArr(xs: number[]): number {
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("go build failed: %v\noutput:\n%s\nsource:\n%s", err, out, res.GoSource)
+	}
+}
+
+// dist stands in for the transpiler's emission of
+//
+//	export function dist(x: number, y: number): number {
+//	  return Math.sqrt(Math.pow(x, 2) + Math.pow(y, 2));
+//	}
+func dist(x float64, y float64) float64 {
+	return gomath.Sqrt(gomath.Pow(x, 2) + gomath.Pow(y, 2))
+}
+
+func TestHybrid_MathCalls_RoundTrip(t *testing.T) {
+	src := `
+export function dist(x: number, y: number): number {
+  return Math.sqrt(Math.pow(x, 2) + Math.pow(y, 2));
+}`
+	sf, program, _ := setupProgram(t, src)
+	ck, done := program.GetTypeCheckerForFile(context.Background(), sf)
+	defer done()
+
+	res, err := composer.Compose(sf, ck, composer.Options{NativeModuleName: "native:mth"})
+	if err != nil {
+		t.Fatalf("compose: %v", err)
+	}
+	if !strings.Contains(res.GoSource, "math.Sqrt") || !strings.Contains(res.GoSource, "math.Pow") {
+		t.Fatalf("expected math.Sqrt/Pow in emitted Go:\n%s", res.GoSource)
+	}
+
+	mod := ramune.NativeModuleFromFuncs("native:mth", map[string]any{"dist": dist})
+	r := newRamune(t, ramune.NodeCompat(), ramune.WithModule(mod))
+	defer r.Close()
+	if err := r.Exec(res.ShimJS); err != nil {
+		t.Fatalf("shim: %v", err)
+	}
+	v, err := r.Eval(`dist(3, 4)`)
+	if err != nil {
+		t.Fatalf("eval: %v", err)
+	}
+	got, _ := v.Float64()
+	if got != 5 {
+		t.Fatalf("dist(3,4) = %v, want 5", got)
 	}
 }
 

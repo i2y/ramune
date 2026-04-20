@@ -418,9 +418,7 @@ func checkBinaryExpr(node *ast.Node, ctx *bodyCtx) *Reason {
 	return checkExpr(be.Right, ctx)
 }
 
-// checkPropertyAccess currently accepts only `<arrayVar>.length`. Anything
-// else (method calls, nested property access, non-array receivers) falls back
-// to the general "property access not supported in v1" rejection.
+// checkPropertyAccess accepts only `<arrayVar>.length`.
 func checkPropertyAccess(node *ast.Node, ctx *bodyCtx) *Reason {
 	pa := node.AsPropertyAccessExpression()
 	if pa == nil || pa.Name() == nil || pa.Name().Kind != ast.KindIdentifier {
@@ -430,21 +428,17 @@ func checkPropertyAccess(node *ast.Node, ctx *bodyCtx) *Reason {
 	if propName != "length" {
 		return &Reason{Code: reasonUnhandledKind, Detail: "only .length is supported in v1 (got ." + propName + ")"}
 	}
-	if r := requireArrayReceiver(pa.Expression, ctx); r != nil {
-		return r
-	}
-	return nil
+	return rejectNonArrayReceiver(pa.Expression, ctx)
 }
 
-// checkElementAccess accepts `arrayVar[i]` where the index is a number-typed
-// expression from this function's locals/params and the base is an array-typed
-// identifier.
+// checkElementAccess accepts `arrayVar[i]` where the index is number-typed
+// and the base is an array-typed identifier.
 func checkElementAccess(node *ast.Node, ctx *bodyCtx) *Reason {
 	ea := node.AsElementAccessExpression()
 	if ea == nil {
 		return &Reason{Code: reasonUnhandledKind, Detail: "nil element access"}
 	}
-	if r := requireArrayReceiver(ea.Expression, ctx); r != nil {
+	if r := rejectNonArrayReceiver(ea.Expression, ctx); r != nil {
 		return r
 	}
 	if r := checkExpr(ea.ArgumentExpression, ctx); r != nil {
@@ -459,9 +453,7 @@ func checkElementAccess(node *ast.Node, ctx *bodyCtx) *Reason {
 	return nil
 }
 
-// requireArrayReceiver returns nil when expr is an Identifier that resolves
-// to a parameter or local whose type is `T[]` / `Array<T>` / `ReadonlyArray<T>`.
-func requireArrayReceiver(expr *ast.Node, ctx *bodyCtx) *Reason {
+func rejectNonArrayReceiver(expr *ast.Node, ctx *bodyCtx) *Reason {
 	if expr == nil || expr.Kind != ast.KindIdentifier {
 		return &Reason{Code: reasonUnhandledKind, Detail: "receiver must be a bare identifier"}
 	}
@@ -492,9 +484,9 @@ func rejectParamMutation(target *ast.Node, ctx *bodyCtx) *Reason {
 	return nil
 }
 
-// checkCallExpr allows only calls to same-file extractable functions.
-// v1 rejects all property-access callees (Math.floor, arr.map, etc.) — any
-// callee that isn't a bare Identifier is a dynamic callee.
+// checkCallExpr allows calls to same-file extractable functions and to a
+// small safelist of built-in namespaces (`Math.<method>` in v1.3). All other
+// property-access callees (arr.map, user.toString, etc.) are dynamic.
 func checkCallExpr(node *ast.Node, ctx *bodyCtx) *Reason {
 	ce := node.AsCallExpression()
 	if ce.TypeArguments != nil && len(ce.TypeArguments.Nodes) > 0 {
@@ -504,15 +496,17 @@ func checkCallExpr(node *ast.Node, ctx *bodyCtx) *Reason {
 	if callee == nil {
 		return &Reason{Code: reasonDynamicCallee, Detail: "missing callee"}
 	}
-	if callee.Kind != ast.KindIdentifier {
+	switch callee.Kind {
+	case ast.KindIdentifier:
+		if r := checkBareCallee(callee.AsIdentifier().Text, ctx); r != nil {
+			return r
+		}
+	case ast.KindPropertyAccessExpression:
+		if r := checkBuiltinCallee(callee, ctx); r != nil {
+			return r
+		}
+	default:
 		return &Reason{Code: reasonDynamicCallee, Detail: "callee is not a bare identifier"}
-	}
-	name := callee.AsIdentifier().Text
-	if ctx.paramNames[name] || ctx.localNames[name] {
-		return &Reason{Code: reasonDynamicCallee, Detail: "callee `" + name + "` is a local/param (function-typed value)"}
-	}
-	if _, ok := ctx.topLevelFuncs[name]; !ok {
-		return &Reason{Code: reasonBuiltinCall, Detail: "callee `" + name + "` is not a same-file function"}
 	}
 	if ce.Arguments != nil {
 		for _, arg := range ce.Arguments.Nodes {
@@ -522,4 +516,48 @@ func checkCallExpr(node *ast.Node, ctx *bodyCtx) *Reason {
 		}
 	}
 	return nil
+}
+
+func checkBareCallee(name string, ctx *bodyCtx) *Reason {
+	if ctx.paramNames[name] || ctx.localNames[name] {
+		return &Reason{Code: reasonDynamicCallee, Detail: "callee `" + name + "` is a local/param (function-typed value)"}
+	}
+	if _, ok := ctx.topLevelFuncs[name]; !ok {
+		return &Reason{Code: reasonBuiltinCall, Detail: "callee `" + name + "` is not a same-file function"}
+	}
+	return nil
+}
+
+// mathSafeMethods lists Math.<method> calls the emitter maps to Go's math
+// package (or the Go 1.21 `min`/`max` builtins / `rand.Float64`). Adding a
+// method here requires the emitter path at expr.go:emitMathAccess to handle
+// it correctly for the matching Go signature.
+var mathSafeMethods = map[string]bool{
+	"abs": true, "floor": true, "ceil": true, "round": true, "trunc": true,
+	"sqrt": true, "cbrt": true, "pow": true, "exp": true,
+	"log": true, "log2": true, "log10": true,
+	"min": true, "max": true,
+	"sin": true, "cos": true, "tan": true,
+	"asin": true, "acos": true, "atan": true, "atan2": true,
+	"sign": true, "hypot": true, "random": true,
+}
+
+func checkBuiltinCallee(callee *ast.Node, ctx *bodyCtx) *Reason {
+	pa := callee.AsPropertyAccessExpression()
+	if pa == nil || pa.Expression == nil || pa.Expression.Kind != ast.KindIdentifier {
+		return &Reason{Code: reasonDynamicCallee, Detail: "non-identifier receiver"}
+	}
+	if pa.Name() == nil || pa.Name().Kind != ast.KindIdentifier {
+		return &Reason{Code: reasonDynamicCallee, Detail: "non-identifier method"}
+	}
+	recv := pa.Expression.AsIdentifier().Text
+	method := pa.Name().AsIdentifier().Text
+	// Receiver must resolve to the global namespace - shadowed names aren't the real builtin.
+	if ctx.paramNames[recv] || ctx.localNames[recv] {
+		return &Reason{Code: reasonDynamicCallee, Detail: "receiver `" + recv + "` is a local/param, not a builtin"}
+	}
+	if recv == "Math" && mathSafeMethods[method] {
+		return nil
+	}
+	return &Reason{Code: reasonBuiltinCall, Detail: recv + "." + method + " not in safelist"}
 }
