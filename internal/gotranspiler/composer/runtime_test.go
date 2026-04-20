@@ -296,6 +296,12 @@ export function useMath(x: number, y: number): number {
   r = r + Math.atan(x);
   r = r + Math.pow(x, y);
   r = r + Math.atan2(x, y);
+  r = r + Math.sinh(x);
+  r = r + Math.cosh(x);
+  r = r + Math.tanh(x);
+  r = r + Math.asinh(x);
+  r = r + Math.acosh(x);
+  r = r + Math.atanh(x);
   r = r + Math.hypot(x, y);
   r = r + Math.min(x, y);
   r = r + Math.max(x, y);

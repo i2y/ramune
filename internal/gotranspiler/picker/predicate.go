@@ -738,6 +738,8 @@ var mathSafeMethods = map[string]bool{
 	"min": true, "max": true,
 	"sin": true, "cos": true, "tan": true,
 	"asin": true, "acos": true, "atan": true, "atan2": true,
+	"sinh": true, "cosh": true, "tanh": true,
+	"asinh": true, "acosh": true, "atanh": true,
 	"hypot": true, "random": true,
 }
 
