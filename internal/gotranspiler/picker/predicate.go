@@ -761,6 +761,7 @@ var stringSafeMethods = map[string]bool{
 // cover them. Callback-taking methods (map/filter/reduce/etc.) are excluded.
 var arraySafeMethods = map[string]bool{
 	"includes": true, "indexOf": true, "lastIndexOf": true,
+	"join": true, "slice": true, "concat": true, "reverse": true,
 }
 
 func checkBuiltinCallee(callee *ast.Node, ctx *bodyCtx) *Reason {

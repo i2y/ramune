@@ -505,6 +505,22 @@ func TestPicker_Rejects_ArrayMapCallback(t *testing.T) {
 	}
 }
 
+func TestPicker_Accepts_ArrayJoinSliceConcatReverse(t *testing.T) {
+	src := `
+export function joined(xs: string[]): string { return xs.join(","); }
+export function first2(xs: number[]): number[] { return xs.slice(0, 2); }
+export function combined(a: number[], b: number[]): number[] { return a.concat(b); }
+export function reversed(xs: number[]): number[] { return xs.reverse(); }
+`
+	res := pickOne(t, src)
+	for _, name := range []string{"joined", "first2", "combined", "reversed"} {
+		c, ok := byName(res, name)
+		if !ok || !c.Extracted {
+			t.Fatalf("expected `%s` extracted; got %+v", name, c.Reason)
+		}
+	}
+}
+
 func TestPicker_Accepts_SwitchStatement(t *testing.T) {
 	src := `
 export function classify(n: number): string {
