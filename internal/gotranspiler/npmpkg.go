@@ -197,9 +197,5 @@ func isTypeScriptFile(path string) bool {
 }
 
 func sanitizePkgName(name string) string {
-	// @scope/pkg → scope_pkg
-	name = strings.TrimPrefix(name, "@")
-	name = strings.ReplaceAll(name, "/", "_")
-	name = strings.ReplaceAll(name, "-", "_")
-	return name
+	return GoPackageName(strings.TrimPrefix(name, "@"))
 }

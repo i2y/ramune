@@ -76,6 +76,33 @@ func isGoKeyword(s string) bool {
 	return false
 }
 
+// GoPackageName turns an arbitrary string (typically a filename stem or npm
+// package spec) into a valid Go package identifier: ASCII letters, digits,
+// underscore; must start with a letter. Non-alphanumeric characters are
+// replaced with `_`, a leading digit is prefixed with `_`. Empty input
+// returns "app".
+func GoPackageName(s string) string {
+	if s == "" {
+		return "app"
+	}
+	var b strings.Builder
+	b.Grow(len(s) + 1)
+	for i, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z':
+			b.WriteRune(r)
+		case r >= '0' && r <= '9':
+			if i == 0 {
+				b.WriteByte('_')
+			}
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	return b.String()
+}
+
 // isValidGoIdentifier returns true if s is a valid Go identifier (ASCII letters, digits, underscore).
 func isValidGoIdentifier(s string) bool {
 	for i, r := range s {

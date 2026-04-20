@@ -12,19 +12,12 @@ package composer
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 	"strings"
 
 	"github.com/i2y/ramune/internal/gotranspiler"
 	"github.com/i2y/ramune/internal/gotranspiler/picker"
 	"github.com/i2y/ramune/internal/tsgo/ast"
-	"github.com/i2y/ramune/internal/tsgo/bundled"
 	"github.com/i2y/ramune/internal/tsgo/checker"
-	"github.com/i2y/ramune/internal/tsgo/compiler"
-	"github.com/i2y/ramune/internal/tsgo/core"
-	"github.com/i2y/ramune/internal/tsgo/tsoptions"
-	"github.com/i2y/ramune/internal/tsgo/tspath"
-	"github.com/i2y/ramune/internal/tsgo/vfs/osvfs"
 )
 
 // Options controls composer behavior.
@@ -56,34 +49,9 @@ type Result struct {
 // Callers that already hold a *ast.SourceFile + *checker.Checker should call
 // Compose directly and avoid the extra Program construction.
 func ComposeFile(filename string, opts Options) (*Result, error) {
-	abs, err := filepath.Abs(filename)
+	program, sf, err := gotranspiler.BuildProgramForFile(filename)
 	if err != nil {
-		return nil, fmt.Errorf("resolve path: %w", err)
-	}
-	fs := bundled.WrapFS(osvfs.FS())
-	host := compiler.NewCachedFSCompilerHost(filepath.Dir(abs), fs, bundled.LibPath(), nil, nil)
-	cfg := tsoptions.NewParsedCommandLine(
-		&core.CompilerOptions{NoEmit: core.TSTrue, SkipLibCheck: core.TSTrue, AllowJs: core.TSTrue},
-		[]string{abs},
-		tspath.ComparePathsOptions{
-			UseCaseSensitiveFileNames: fs.UseCaseSensitiveFileNames(),
-			CurrentDirectory:          filepath.Dir(abs),
-		},
-	)
-	program := compiler.NewProgram(compiler.ProgramOptions{
-		Config:         cfg,
-		Host:           host,
-		SingleThreaded: core.TSTrue,
-	})
-	var sf *ast.SourceFile
-	for _, f := range program.SourceFiles() {
-		if f.FileName() == abs {
-			sf = f
-			break
-		}
-	}
-	if sf == nil {
-		return nil, fmt.Errorf("source file not found in program: %s", abs)
+		return nil, err
 	}
 	ck, done := program.GetTypeCheckerForFile(context.Background(), sf)
 	defer done()

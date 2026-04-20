@@ -12,12 +12,7 @@ import (
 	"github.com/i2y/ramune/internal/gotranspiler"
 	"github.com/i2y/ramune/internal/gotranspiler/composer"
 	"github.com/i2y/ramune/internal/tsgo/ast"
-	"github.com/i2y/ramune/internal/tsgo/bundled"
 	"github.com/i2y/ramune/internal/tsgo/compiler"
-	"github.com/i2y/ramune/internal/tsgo/core"
-	"github.com/i2y/ramune/internal/tsgo/tsoptions"
-	"github.com/i2y/ramune/internal/tsgo/tspath"
-	"github.com/i2y/ramune/internal/tsgo/vfs/osvfs"
 )
 
 func setupProgram(t *testing.T, source string) (*ast.SourceFile, *compiler.Program, string) {
@@ -27,33 +22,11 @@ func setupProgram(t *testing.T, source string) (*ast.SourceFile, *compiler.Progr
 	if err := os.WriteFile(filename, []byte(source), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	abs, _ := filepath.Abs(filename)
-	fs := bundled.WrapFS(osvfs.FS())
-	host := compiler.NewCachedFSCompilerHost(filepath.Dir(abs), fs, bundled.LibPath(), nil, nil)
-	cfg := tsoptions.NewParsedCommandLine(
-		&core.CompilerOptions{NoEmit: core.TSTrue, SkipLibCheck: core.TSTrue, AllowJs: core.TSTrue},
-		[]string{abs},
-		tspath.ComparePathsOptions{
-			UseCaseSensitiveFileNames: fs.UseCaseSensitiveFileNames(),
-			CurrentDirectory:          filepath.Dir(abs),
-		},
-	)
-	program := compiler.NewProgram(compiler.ProgramOptions{
-		Config:         cfg,
-		Host:           host,
-		SingleThreaded: core.TSTrue,
-	})
-	var sf *ast.SourceFile
-	for _, f := range program.SourceFiles() {
-		if f.FileName() == abs {
-			sf = f
-			break
-		}
+	program, sf, err := gotranspiler.BuildProgramForFile(filename)
+	if err != nil {
+		t.Fatalf("build program: %v", err)
 	}
-	if sf == nil {
-		t.Fatalf("source file missing: %s", abs)
-	}
-	return sf, program, abs
+	return sf, program, sf.FileName()
 }
 
 func TestCompose_MixedExtractAndSkip(t *testing.T) {
@@ -136,12 +109,14 @@ export function parseUser(input: any): any { return input; }
 	if res.ShimJS == "" {
 		t.Fatalf("expected non-empty shim")
 	}
+	// Structural invariants: guard + module spec + both names referenced.
+	// Specific swap-mechanism strings are asserted behaviorally in runtime_test.go
+	// so this test stays robust across shim-template revisions.
 	for _, want := range []string{
 		"__ramuneNativeInstalled",
 		`require("native:app")`,
-		`_install(_me, "add", mod.add)`,
-		`_install(_me, "scale", mod.scale)`,
-		`_install(globalThis, "add", mod.add)`,
+		"mod.add",
+		"mod.scale",
 	} {
 		if !strings.Contains(res.ShimJS, want) {
 			t.Fatalf("shim missing %q; shim:\n%s", want, res.ShimJS)
@@ -179,8 +154,9 @@ func TestCompose_AllSkipped_EmptyArtifacts(t *testing.T) {
 }
 
 func TestCompose_ArtifactInspection(t *testing.T) {
-	// Visual-inspection test: prints the actual artifacts for a canonical input
-	// so developers can eyeball the output. Run with `go test -v -run ArtifactInspection`.
+	if !testing.Verbose() {
+		t.Skip("visual-inspection only; run with -v to see artifacts")
+	}
 	src := `
 export function add(a: number, b: number): number { return a + b; }
 export function fib(n: number): number {

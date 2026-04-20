@@ -619,30 +619,6 @@ func typegenCmd(args []string) {
 	fmt.Fprintf(os.Stderr, "wrote %s\n", outFile)
 }
 
-// sanitizePkgName turns a filename stem into a Go-package-safe identifier:
-// letters, digits, underscore; must start with a letter. Empty input becomes
-// "app".
-func sanitizePkgName(s string) string {
-	var b strings.Builder
-	for i, r := range s {
-		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z':
-			b.WriteRune(r)
-		case r >= '0' && r <= '9':
-			if i == 0 {
-				b.WriteByte('_')
-			}
-			b.WriteRune(r)
-		default:
-			b.WriteByte('_')
-		}
-	}
-	if b.Len() == 0 {
-		return "app"
-	}
-	return b.String()
-}
-
 // accumulateNativeFuncs appends the native-import line and bridge-code block
 // for a single native extension module to imports/modules, prints the discovery
 // summary and any generic warnings, and is a no-op when funcs is empty.
@@ -737,9 +713,9 @@ func compileCmd(args []string) {
 
 	var nativeImports, nativeModules string
 	if hybrid && isTypeScript(filename) {
-		base := strings.TrimSuffix(filepath.Base(filename), filepath.Ext(filename))
-		pkgAlias := "nativehybrid_" + sanitizePkgName(base)
-		modName := "__hybrid_" + sanitizePkgName(base) + "__"
+		safeBase := gotranspiler.GoPackageName(strings.TrimSuffix(filepath.Base(filename), filepath.Ext(filename)))
+		pkgAlias := "nativehybrid_" + safeBase
+		modName := "__hybrid_" + safeBase + "__"
 		res, err := composer.ComposeFile(filename, composer.Options{
 			PkgName:          pkgAlias,
 			NativeModuleName: "native:" + modName,
@@ -788,7 +764,7 @@ func compileCmd(args []string) {
 	if len(nativeFiles) == 1 {
 		nf := nativeFiles[0]
 		baseName := strings.TrimSuffix(filepath.Base(nf), filepath.Ext(nf))
-		pkgAlias := "native" + baseName
+		pkgAlias := "native" + gotranspiler.GoPackageName(baseName)
 		pkgDir := filepath.Join(tmpDir, pkgAlias)
 		if err := os.MkdirAll(pkgDir, 0o755); err != nil {
 			fmt.Fprintf(os.Stderr, "error creating native dir: %v\n", err)

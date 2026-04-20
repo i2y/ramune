@@ -7,14 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/i2y/ramune/internal/gotranspiler"
 	"github.com/i2y/ramune/internal/gotranspiler/picker"
-	"github.com/i2y/ramune/internal/tsgo/ast"
-	"github.com/i2y/ramune/internal/tsgo/bundled"
-	"github.com/i2y/ramune/internal/tsgo/compiler"
-	"github.com/i2y/ramune/internal/tsgo/core"
-	"github.com/i2y/ramune/internal/tsgo/tsoptions"
-	"github.com/i2y/ramune/internal/tsgo/tspath"
-	"github.com/i2y/ramune/internal/tsgo/vfs/osvfs"
 )
 
 // pickOne compiles source as a single-file TS program, runs the picker, and
@@ -26,35 +20,10 @@ func pickOne(t *testing.T, source string) picker.Result {
 	if err := os.WriteFile(filename, []byte(source), 0o644); err != nil {
 		t.Fatalf("write source: %v", err)
 	}
-	absFile, _ := filepath.Abs(filename)
-
-	fs := bundled.WrapFS(osvfs.FS())
-	host := compiler.NewCachedFSCompilerHost(filepath.Dir(absFile), fs, bundled.LibPath(), nil, nil)
-	cfg := tsoptions.NewParsedCommandLine(
-		&core.CompilerOptions{NoEmit: core.TSTrue, SkipLibCheck: core.TSTrue, AllowJs: core.TSTrue},
-		[]string{absFile},
-		tspath.ComparePathsOptions{
-			UseCaseSensitiveFileNames: fs.UseCaseSensitiveFileNames(),
-			CurrentDirectory:          filepath.Dir(absFile),
-		},
-	)
-	program := compiler.NewProgram(compiler.ProgramOptions{
-		Config:         cfg,
-		Host:           host,
-		SingleThreaded: core.TSTrue,
-	})
-
-	var sf *ast.SourceFile
-	for _, f := range program.SourceFiles() {
-		if f.FileName() == absFile {
-			sf = f
-			break
-		}
+	program, sf, err := gotranspiler.BuildProgramForFile(filename)
+	if err != nil {
+		t.Fatalf("build program: %v", err)
 	}
-	if sf == nil {
-		t.Fatalf("source file not found in program: %s", absFile)
-	}
-
 	ck, done := program.GetTypeCheckerForFile(context.Background(), sf)
 	defer done()
 	return picker.Pick(sf, ck, picker.Options{})
