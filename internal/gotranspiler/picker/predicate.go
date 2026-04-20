@@ -60,6 +60,25 @@ func IsFunctionExtractable(node *ast.Node, ck *checker.Checker, topLevelFuncs ma
 		return false, Reason{Code: reasonRestParam, Detail: "rest parameter not supported in v1"}
 	}
 
+	// Default-value and optional parameters silently widen the JS-callable arity
+	// without the emitter generating any compensating Go logic. JS callers
+	// invoking f() against an extracted func F(x float64) get a missing-arg
+	// error from the bridge. Reject up front rather than ship a latent bug.
+	if fd.Parameters != nil {
+		for _, p := range fd.Parameters.Nodes {
+			pd := p.AsParameterDeclaration()
+			if pd == nil {
+				continue
+			}
+			if pd.Initializer != nil {
+				return false, Reason{Code: reasonUnhandledKind, Detail: "default parameter value not supported in v1"}
+			}
+			if pd.QuestionToken != nil {
+				return false, Reason{Code: reasonUnhandledKind, Detail: "optional parameter not supported in v1"}
+			}
+		}
+	}
+
 	paramNames := map[string]bool{}
 	for i, paramSym := range sig.Parameters() {
 		if paramSym == nil {

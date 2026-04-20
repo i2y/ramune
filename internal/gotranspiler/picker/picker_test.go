@@ -145,6 +145,30 @@ func TestPicker_Rejects_AnyParam(t *testing.T) {
 	}
 }
 
+func TestPicker_Rejects_DefaultParam(t *testing.T) {
+	src := `export function withDefault(x: number = 5): number { return x + 1; }`
+	res := pickOne(t, src)
+	c, _ := byName(res, "withDefault")
+	if c.Extracted {
+		t.Fatalf("expected rejection for default parameter")
+	}
+	if c.Reason.Code != "unhandled-ast-kind" {
+		t.Fatalf("expected unhandled-ast-kind, got %q", c.Reason.Code)
+	}
+}
+
+func TestPicker_Rejects_OptionalParam(t *testing.T) {
+	src := `export function withOptional(x?: number): number { return (x ?? 0) + 1; }`
+	res := pickOne(t, src)
+	c, _ := byName(res, "withOptional")
+	if c.Extracted {
+		t.Fatalf("expected rejection for optional parameter")
+	}
+	if c.Reason.Code != "unhandled-ast-kind" {
+		t.Fatalf("expected unhandled-ast-kind, got %q", c.Reason.Code)
+	}
+}
+
 func TestPicker_Rejects_Generic(t *testing.T) {
 	src := `export function id<T>(x: T): T { return x; }`
 	res := pickOne(t, src)
