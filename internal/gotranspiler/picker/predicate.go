@@ -39,9 +39,10 @@ func IsFunctionExtractable(node *ast.Node, ck *checker.Checker, topLevelFuncs ma
 	if fd.AsteriskToken != nil {
 		return false, Reason{Code: reasonGeneratorFunc, Detail: "generator function"}
 	}
-	if ast.HasSyntacticModifier(node, ast.ModifierFlagsAsync) {
-		return false, Reason{Code: reasonAsyncFunc, Detail: "async function not supported in v1"}
-	}
+	// `async` itself is fine - the body walker still rejects `await` and
+	// `yield`, so what's left is sync-resolving Promise<T> functions like
+	// `async function add(a, b): Promise<number> { return a + b }`. The
+	// emitter wraps the body in promise.New[T].
 	if fd.Body == nil {
 		return false, Reason{Code: reasonMissingBody, Detail: "ambient/overload declaration"}
 	}

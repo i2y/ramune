@@ -336,15 +336,14 @@ func TestPicker_Rejects_Generic(t *testing.T) {
 	}
 }
 
-func TestPicker_Rejects_Async(t *testing.T) {
+func TestPicker_Accepts_AsyncReturningPromise(t *testing.T) {
+	// Sync-resolving async functions extract via promise.New[T]; the body
+	// walker still rejects await/yield so this is a strict subset.
 	src := `export async function fetchIt(): Promise<number> { return 42; }`
 	res := pickOne(t, src)
-	c, _ := byName(res, "fetchIt")
-	if c.Extracted {
-		t.Fatalf("expected rejection for async")
-	}
-	if c.Reason.Code != "async-func" {
-		t.Fatalf("expected async-func reason, got %q", c.Reason.Code)
+	c, ok := byName(res, "fetchIt")
+	if !ok || !c.Extracted {
+		t.Fatalf("expected `fetchIt` extracted; got %+v", c.Reason)
 	}
 }
 
@@ -821,13 +820,14 @@ export async function collect(xs: AsyncIterable<number>): Promise<number> {
 	res := pickOne(t, src)
 	c, _ := byName(res, "collect")
 	if c.Extracted {
-		t.Fatalf("expected rejection for async + for await of")
+		t.Fatalf("expected rejection for for-await-of body")
 	}
-	// async-func at the function-level fires before the body walker reaches
-	// the for-await-of. Pinning catches a refactor that drops the function
-	// async check and silently changes which branch rejects this fixture.
-	if c.Reason.Code != "async-func" {
-		t.Fatalf("expected async-func (function-level rejection), got %q", c.Reason.Code)
+	// AsyncIterable<number> is an object type at the param level, so the
+	// signature gate fires first. If async-only Promise<T> functions ever
+	// gain extra body checks, this assertion needs to update to match the
+	// new precedence.
+	if c.Reason.Code != "object-type" {
+		t.Fatalf("expected object-type (AsyncIterable param), got %q", c.Reason.Code)
 	}
 }
 

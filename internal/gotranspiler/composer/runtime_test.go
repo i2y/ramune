@@ -10,10 +10,12 @@ import (
 	gostrings "strings"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/i2y/ramune"
 	"github.com/i2y/ramune/internal/gotranspiler"
 	"github.com/i2y/ramune/internal/gotranspiler/composer"
+	"github.com/i2y/ramune/jsrt/promise"
 )
 
 // fib matches what the transpiler emits for
@@ -443,6 +445,54 @@ func TestHybrid_TemplateLiteral_RoundTrip(t *testing.T) {
 	got := v.String()
 	if got != "(1, 2)" {
 		t.Fatalf(`fmtPair(1,2) = %q, want "(1, 2)"`, got)
+	}
+}
+
+// pAdd stands in for `export async function pAdd(a: number, b: number): Promise<number> { return a + b; }`.
+// The transpiler emits this as `*promise.Promise[float64]` wrapped in promise.New[T]; the test fixture
+// uses ramune's promise package to mirror that shape.
+func pAdd(a, b float64) *promise.Promise[float64] {
+	return promise.New[float64](func(resolve func(float64), _ func(error)) {
+		resolve(a + b)
+	})
+}
+
+func TestHybrid_AsyncPromise_RoundTrip(t *testing.T) {
+	if r, err := ramune.New(); err == nil {
+		engine := r.Engine()
+		r.Close()
+		if engine == "qjswasm" {
+			t.Skip("qjswasm Promise.then dispatch hangs; tracked separately")
+		}
+	}
+	src := `export async function pAdd(a: number, b: number): Promise<number> { return a + b; }`
+	sf, program, _ := setupProgram(t, src)
+	ck, done := program.GetTypeCheckerForFile(context.Background(), sf)
+	defer done()
+	res, err := composer.Compose(sf, ck, composer.Options{NativeModuleName: "native:pp"})
+	if err != nil {
+		t.Fatalf("compose: %v", err)
+	}
+	if !strings.Contains(res.GoSource, "*promise.Promise[float64]") {
+		t.Fatalf("expected *promise.Promise[float64] in emitted Go:\n%s", res.GoSource)
+	}
+	mod := ramune.NativeModuleFromFuncs("native:pp", map[string]any{"pAdd": pAdd})
+	r := newRamune(t, ramune.NodeCompat(), ramune.WithModule(mod))
+	defer r.Close()
+	if err := r.Exec(res.ShimJS); err != nil {
+		t.Fatalf("shim: %v", err)
+	}
+	if err := r.Exec(`globalThis.__result = null; pAdd(2, 3).then(v => { globalThis.__result = v; });`); err != nil {
+		t.Fatalf("eval: %v", err)
+	}
+	r.RunEventLoopFor(500 * time.Millisecond)
+	v, err := r.Eval(`__result`)
+	if err != nil {
+		t.Fatalf("eval result: %v", err)
+	}
+	got, _ := v.Float64()
+	if got != 5 {
+		t.Fatalf("pAdd(2,3) = %v, want 5", got)
 	}
 }
 

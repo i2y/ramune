@@ -17,7 +17,6 @@ const (
 	reasonObjectType     = "object-type"
 	reasonEmptyReturn    = "no-signature"
 	reasonRestParam      = "rest-param"
-	reasonAsyncFunc      = "async-func"
 	reasonGeneratorFunc  = "generator-func"
 	reasonGenericFunc    = "generic-func"
 	reasonUnnamed        = "unnamed"
@@ -83,6 +82,15 @@ func isExtractableType(ck *checker.Checker, t *checker.Type) *Reason {
 			// access-pattern support the walker does not yet have.
 			if elem.Flags()&(checker.TypeFlagsStringLike|checker.TypeFlagsNumberLike|checker.TypeFlagsBooleanLike) == 0 {
 				return &Reason{Code: reasonObjectType, Detail: "array element must be primitive in v1"}
+			}
+			return nil
+		}
+		if inner := ck.GetPromisedTypeOfPromise(t); inner != nil {
+			// Promise<T> bridges via *promise.Promise[T] on all backends.
+			// Restrict the resolved type to primitives so the bridge stays
+			// in the JSON-clean lane.
+			if inner.Flags()&(checker.TypeFlagsStringLike|checker.TypeFlagsNumberLike|checker.TypeFlagsBooleanLike) == 0 {
+				return &Reason{Code: reasonObjectType, Detail: "Promise<T>: T must be primitive in v1"}
 			}
 			return nil
 		}
