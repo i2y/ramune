@@ -331,6 +331,30 @@ export function surprise(n: number): number {
 	}
 }
 
+func TestPicker_Accepts_SafeGlobalCallees(t *testing.T) {
+	src := `
+export function valid(x: number): boolean { return !isNaN(x) && isFinite(x); }
+export function toNum(s: string): number { return parseFloat(s); }
+`
+	res := pickOne(t, src)
+	for _, name := range []string{"valid", "toNum"} {
+		c, ok := byName(res, name)
+		if !ok || !c.Extracted {
+			t.Fatalf("expected `%s` extracted; got %+v", name, c.Reason)
+		}
+	}
+}
+
+func TestPicker_Rejects_UnsafeGlobalCallees(t *testing.T) {
+	// `parseInt` is in the emitter but produces `(int, error)` - not in safelist.
+	src := `export function toInt(s: string): number { return parseInt(s); }`
+	res := pickOne(t, src)
+	c, _ := byName(res, "toInt")
+	if c.Extracted {
+		t.Fatalf("expected rejection for parseInt (emitter type mismatch)")
+	}
+}
+
 func TestPicker_Rejects_NonMathBuiltinCall(t *testing.T) {
 	src := `export function s(x: string): string { return String(x); }`
 	res := pickOne(t, src)

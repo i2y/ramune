@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	gostrings "strings"
 	"strings"
 	"testing"
@@ -376,6 +377,38 @@ export function shout(s: string): string { return s.toUpperCase().trim(); }
 	got := v.String()
 	if got != "HELLO" {
 		t.Fatalf(`shout("  hello  ") = %q, want "HELLO"`, got)
+	}
+}
+
+// parseF stands in for `export function parseF(s: string): number { return parseFloat(s); }`.
+func parseF(s string) float64 {
+	f, _ := strconv.ParseFloat(s, 64)
+	return f
+}
+
+func TestHybrid_ParseFloat_RoundTrip(t *testing.T) {
+	src := `export function parseF(s: string): number { return parseFloat(s); }`
+	sf, program, _ := setupProgram(t, src)
+	ck, done := program.GetTypeCheckerForFile(context.Background(), sf)
+	defer done()
+
+	res, err := composer.Compose(sf, ck, composer.Options{NativeModuleName: "native:pf"})
+	if err != nil {
+		t.Fatalf("compose: %v", err)
+	}
+	mod := ramune.NativeModuleFromFuncs("native:pf", map[string]any{"parseF": parseF})
+	r := newRamune(t, ramune.NodeCompat(), ramune.WithModule(mod))
+	defer r.Close()
+	if err := r.Exec(res.ShimJS); err != nil {
+		t.Fatalf("shim: %v", err)
+	}
+	v, err := r.Eval(`parseF("3.14")`)
+	if err != nil {
+		t.Fatalf("eval: %v", err)
+	}
+	got, _ := v.Float64()
+	if got != 3.14 {
+		t.Fatalf("parseF('3.14') = %v, want 3.14", got)
 	}
 }
 

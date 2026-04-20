@@ -567,14 +567,28 @@ func checkCallExpr(node *ast.Node, ctx *bodyCtx) *Reason {
 	return nil
 }
 
+// safeGlobalCallees lists JS global functions the emitter lowers into Go code
+// that matches the picker's primitive-only contract. `parseInt` is excluded
+// because the emitter writes a bare `strconv.Atoi` reference, producing
+// `(int, error)` at the call site - a type mismatch against the `number`
+// return. `String`/`Boolean` take `any` and return wrappers - unsafe.
+var safeGlobalCallees = map[string]bool{
+	"parseFloat": true,
+	"isNaN":      true,
+	"isFinite":   true,
+}
+
 func checkBareCallee(name string, ctx *bodyCtx) *Reason {
 	if ctx.paramNames[name] || ctx.localNames[name] {
 		return &Reason{Code: reasonDynamicCallee, Detail: "callee `" + name + "` is a local/param (function-typed value)"}
 	}
-	if _, ok := ctx.topLevelFuncs[name]; !ok {
-		return &Reason{Code: reasonBuiltinCall, Detail: "callee `" + name + "` is not a same-file function"}
+	if _, ok := ctx.topLevelFuncs[name]; ok {
+		return nil
 	}
-	return nil
+	if safeGlobalCallees[name] {
+		return nil
+	}
+	return &Reason{Code: reasonBuiltinCall, Detail: "callee `" + name + "` is not a same-file function"}
 }
 
 // mathSafeMethods lists Math.<method> calls that round-trip through the
