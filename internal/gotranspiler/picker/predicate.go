@@ -480,44 +480,37 @@ func checkElementAccess(node *ast.Node, ctx *bodyCtx) *Reason {
 	return nil
 }
 
-// rejectNonArrayReceiver accepts any walker-safe expression whose type is a
-// primitive array - covers bare identifiers (`xs[i]`) and chained results
-// like `s.split(",")[0]` / `pair(a, b)[0]`.
-func rejectNonArrayReceiver(expr *ast.Node, ctx *bodyCtx) *Reason {
+// checkReceiverType walks expr (so closure capture, mutations, etc. are
+// caught) and asserts the checker's type for expr satisfies typePred. Used
+// for receivers of `.length`, `arr[i]`, string methods, and array methods -
+// all of which share the same shape after the bare-identifier constraint
+// was lifted to allow chained expressions.
+func checkReceiverType(expr *ast.Node, ctx *bodyCtx, typePred func(*checker.Type) bool, desc string) *Reason {
 	if expr == nil {
-		return &Reason{Code: reasonUnhandledKind, Detail: "nil array receiver"}
+		return &Reason{Code: reasonUnhandledKind, Detail: "nil " + desc + " receiver"}
 	}
 	if r := checkExpr(expr, ctx); r != nil {
 		return r
 	}
 	if ctx.ck == nil {
-		return &Reason{Code: reasonUnhandledKind, Detail: "no checker for array receiver"}
+		return &Reason{Code: reasonUnhandledKind, Detail: "no checker for " + desc + " receiver"}
 	}
-	t := ctx.ck.GetTypeAtLocation(expr)
-	if t == nil || arrayElementType(ctx.ck, t) == nil {
-		return &Reason{Code: reasonObjectType, Detail: "receiver is not an array"}
+	if !typePred(ctx.ck.GetTypeAtLocation(expr)) {
+		return &Reason{Code: reasonObjectType, Detail: "receiver is not " + desc}
 	}
 	return nil
 }
 
-// rejectNonStringReceiver accepts any walker-safe expression whose type is
-// string - covers bare string params/locals, string literals, and chained
-// method calls like `s.toUpperCase().trim()`.
+func rejectNonArrayReceiver(expr *ast.Node, ctx *bodyCtx) *Reason {
+	return checkReceiverType(expr, ctx, func(t *checker.Type) bool {
+		return t != nil && arrayElementType(ctx.ck, t) != nil
+	}, "an array")
+}
+
 func rejectNonStringReceiver(expr *ast.Node, ctx *bodyCtx) *Reason {
-	if expr == nil {
-		return &Reason{Code: reasonUnhandledKind, Detail: "nil string receiver"}
-	}
-	if r := checkExpr(expr, ctx); r != nil {
-		return r
-	}
-	if ctx.ck == nil {
-		return &Reason{Code: reasonUnhandledKind, Detail: "no checker for string receiver"}
-	}
-	t := ctx.ck.GetTypeAtLocation(expr)
-	if t == nil || t.Flags()&checker.TypeFlagsStringLike == 0 {
-		return &Reason{Code: reasonObjectType, Detail: "receiver is not a string"}
-	}
-	return nil
+	return checkReceiverType(expr, ctx, func(t *checker.Type) bool {
+		return t != nil && t.Flags()&checker.TypeFlagsStringLike != 0
+	}, "a string")
 }
 
 // checkForOfStatement accepts `for (const x of xs)` over a walker-safe
@@ -676,30 +669,13 @@ func checkTemplateExpression(node *ast.Node, ctx *bodyCtx) *Reason {
 	return nil
 }
 
-// rejectNonLengthableReceiver accepts any walker-safe expression whose type
-// is a primitive array or string - both map to Go's `len()`. Covers bare
-// identifiers (`arr.length`) as well as chained expressions like
-// `s.split(" ").length`.
 func rejectNonLengthableReceiver(expr *ast.Node, ctx *bodyCtx) *Reason {
-	if expr == nil {
-		return &Reason{Code: reasonUnhandledKind, Detail: "nil length receiver"}
-	}
-	if r := checkExpr(expr, ctx); r != nil {
-		return r
-	}
-	if ctx.ck == nil {
-		return &Reason{Code: reasonUnhandledKind, Detail: "no checker for length receiver"}
-	}
-	t := ctx.ck.GetTypeAtLocation(expr)
-	if t != nil {
-		if t.Flags()&checker.TypeFlagsStringLike != 0 {
-			return nil
+	return checkReceiverType(expr, ctx, func(t *checker.Type) bool {
+		if t == nil {
+			return false
 		}
-		if arrayElementType(ctx.ck, t) != nil {
-			return nil
-		}
-	}
-	return &Reason{Code: reasonObjectType, Detail: "receiver is not an array or string"}
+		return t.Flags()&checker.TypeFlagsStringLike != 0 || arrayElementType(ctx.ck, t) != nil
+	}, "an array or string")
 }
 
 

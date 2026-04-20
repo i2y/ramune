@@ -356,6 +356,13 @@ export function surprise(n: number): number {
 	if c.Extracted {
 		t.Fatalf("expected rejection when Math is locally shadowed")
 	}
+	// Rejection fires at checkVarDecl's local-type check - `const Math = { abs }`
+	// has object type which isExtractableType rejects, well before the
+	// Math.abs call would be examined. Pinning the cascade catches a refactor
+	// that admits object types and silently stops exercising the shadow path.
+	if c.Reason.Code != "object-type" {
+		t.Fatalf("expected object-type (local var has object type), got %q", c.Reason.Code)
+	}
 }
 
 func TestPicker_Accepts_SafeGlobalCallees(t *testing.T) {
@@ -500,6 +507,9 @@ func TestPicker_Rejects_MixedArrayLiteral(t *testing.T) {
 	if c.Extracted {
 		t.Fatalf("expected rejection for mixed-type array literal (union element)")
 	}
+	if c.Reason.Code != "object-type" {
+		t.Fatalf("expected object-type (array element must be primitive), got %q", c.Reason.Code)
+	}
 }
 
 func TestPicker_Rejects_ArrayLiteralWithSpread(t *testing.T) {
@@ -510,6 +520,9 @@ export function dupe(xs: number[]): number[] { return [0, ...xs]; }
 	c, _ := byName(res, "dupe")
 	if c.Extracted {
 		t.Fatalf("expected rejection for array literal with spread")
+	}
+	if c.Reason.Code != "spread-element" {
+		t.Fatalf("expected spread-element, got %q", c.Reason.Code)
 	}
 }
 
@@ -534,6 +547,9 @@ func TestPicker_Rejects_ArrayMapCallback(t *testing.T) {
 	c, _ := byName(res, "doubled")
 	if c.Extracted {
 		t.Fatalf("expected rejection for .map (callback not in v1 array safelist)")
+	}
+	if c.Reason.Code != "builtin-call" {
+		t.Fatalf("expected builtin-call, got %q", c.Reason.Code)
 	}
 }
 
@@ -586,6 +602,9 @@ export function pairs(xs: number[]): number {
 	if c.Extracted {
 		t.Fatalf("expected rejection for for-of with destructuring")
 	}
+	if c.Reason.Code != "unhandled-ast-kind" {
+		t.Fatalf("expected unhandled-ast-kind, got %q", c.Reason.Code)
+	}
 }
 
 func TestPicker_Rejects_ForAwaitOf(t *testing.T) {
@@ -599,6 +618,12 @@ export async function collect(xs: AsyncIterable<number>): Promise<number> {
 	c, _ := byName(res, "collect")
 	if c.Extracted {
 		t.Fatalf("expected rejection for async + for await of")
+	}
+	// async-func at the function-level fires before the body walker reaches
+	// the for-await-of. Pinning catches a refactor that drops the function
+	// async check and silently changes which branch rejects this fixture.
+	if c.Reason.Code != "async-func" {
+		t.Fatalf("expected async-func (function-level rejection), got %q", c.Reason.Code)
 	}
 }
 
@@ -638,6 +663,9 @@ export function weird(xs: number[]): string {
 	if c.Extracted {
 		t.Fatalf("expected rejection for non-primitive switch discriminant")
 	}
+	if c.Reason.Code != "object-type" {
+		t.Fatalf("expected object-type, got %q", c.Reason.Code)
+	}
 }
 
 func TestPicker_Accepts_TemplateLiterals(t *testing.T) {
@@ -660,6 +688,9 @@ func TestPicker_Rejects_TaggedTemplate(t *testing.T) {
 	c, _ := byName(res, "bad")
 	if c.Extracted {
 		t.Fatalf("expected rejection for tagged template")
+	}
+	if c.Reason.Code != "unhandled-ast-kind" {
+		t.Fatalf("expected unhandled-ast-kind, got %q", c.Reason.Code)
 	}
 }
 
