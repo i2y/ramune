@@ -429,6 +429,57 @@ func TestHybrid_TemplateLiteral_RoundTrip(t *testing.T) {
 	}
 }
 
+// arrHas stands in for `export function has(xs: number[], v: number): boolean { return xs.includes(v); }`
+// The emitter produces `jsarray.Includes(xs, v)`; this hand-written variant
+// is value-equivalent for the test's input.
+func arrHas(xs []float64, v float64) bool {
+	for _, x := range xs {
+		if x == v {
+			return true
+		}
+	}
+	return false
+}
+
+func TestHybrid_ArrayIncludes_RoundTrip(t *testing.T) {
+	src := `export function has(xs: number[], v: number): boolean { return xs.includes(v); }`
+	sf, program, _ := setupProgram(t, src)
+	ck, done := program.GetTypeCheckerForFile(context.Background(), sf)
+	defer done()
+	res, err := composer.Compose(sf, ck, composer.Options{NativeModuleName: "native:ah"})
+	if err != nil {
+		t.Fatalf("compose: %v", err)
+	}
+	if !strings.Contains(res.GoSource, "jsarray.Includes") {
+		t.Fatalf("expected jsarray.Includes in emitted Go:\n%s", res.GoSource)
+	}
+	mod := ramune.NativeModuleFromFuncs("native:ah", map[string]any{"has": arrHas})
+	r := newRamune(t, ramune.NodeCompat(), ramune.WithModule(mod))
+	defer r.Close()
+	if err := r.Exec(res.ShimJS); err != nil {
+		t.Fatalf("shim: %v", err)
+	}
+	for _, c := range []struct {
+		call string
+		want bool
+	}{
+		{`has([1, 2, 3], 2)`, true},
+		{`has([1, 2, 3], 99)`, false},
+	} {
+		v, err := r.Eval(c.call)
+		if err != nil {
+			t.Fatalf("eval %s: %v", c.call, err)
+		}
+		got, err := v.Bool()
+		if err != nil {
+			t.Fatalf("bool: %v", err)
+		}
+		if got != c.want {
+			t.Fatalf("%s = %v, want %v", c.call, got, c.want)
+		}
+	}
+}
+
 func TestHybrid_StringSplit_RoundTrip(t *testing.T) {
 	src := `
 export function splitWords(s: string): string[] { return s.split(" "); }
