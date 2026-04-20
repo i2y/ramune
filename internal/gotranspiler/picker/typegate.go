@@ -1,6 +1,7 @@
 package picker
 
 import (
+	"github.com/i2y/ramune/internal/tsgo/ast"
 	"github.com/i2y/ramune/internal/tsgo/checker"
 )
 
@@ -92,6 +93,16 @@ func isExtractableType(ck *checker.Checker, t *checker.Type) *Reason {
 
 func isPrimitiveOrVoid(flags checker.TypeFlags) bool {
 	return flags&(checker.TypeFlagsStringLike|checker.TypeFlagsNumberLike|checker.TypeFlagsBooleanLike|checker.TypeFlagsVoidLike) != 0
+}
+
+// isNumberLikeNode returns true when ck reports a NumberLike type for n.
+// nil ck or nil type both yield false (cannot prove numeric -> reject).
+func isNumberLikeNode(ck *checker.Checker, n *ast.Node) bool {
+	if ck == nil || n == nil {
+		return false
+	}
+	t := ck.GetTypeAtLocation(n)
+	return t != nil && t.Flags()&checker.TypeFlagsNumberLike != 0
 }
 
 // arrayElementType returns T when t is `Array<T>` / `ReadonlyArray<T>` /

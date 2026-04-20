@@ -309,13 +309,12 @@ func checkExpr(node *ast.Node, ctx *bodyCtx) *Reason {
 		// `x as any` would widen the inner expression to `any` invisibly to
 		// the rest of the walker, then the emitter forces a `.(float64)` (or
 		// similar) type assertion that fails on the static-typed operand.
-		// Reject any cast whose target widens; fall through for everything else.
+		// Delegate to isExtractableType so we also catch as-bigint/as-union/
+		// as-symbol with their precise reason codes.
 		ae := node.AsAsExpression()
 		if ctx.ck != nil && ae.Type != nil {
-			if t := ctx.ck.GetTypeAtLocation(ae.Type); t != nil {
-				if t.Flags()&(checker.TypeFlagsAny|checker.TypeFlagsUnknown) != 0 {
-					return &Reason{Code: reasonAnyType, Detail: "as-cast widens to any/unknown"}
-				}
+			if r := isExtractableType(ctx.ck, ctx.ck.GetTypeAtLocation(ae.Type)); r != nil {
+				return &Reason{Code: r.Code, Detail: "as-cast target: " + r.Detail}
 			}
 		}
 		return checkExpr(ae.Expression, ctx)
@@ -330,27 +329,18 @@ func checkExpr(node *ast.Node, ctx *bodyCtx) *Reason {
 			// Same reason as logical && / ||: emitted Go's `!` requires bool.
 			return requireBoolOperand(pu.Operand, ctx, "logical not")
 		case ast.KindTildeToken:
-			// Bitwise NOT has the same int↔float64 problem as binary bitwise ops.
-			if ctx.ck != nil {
-				t := ctx.ck.GetTypeAtLocation(pu.Operand)
-				if t != nil && t.Flags()&checker.TypeFlagsNumberLike != 0 {
-					return &Reason{Code: reasonForbiddenOp, Detail: "bitwise NOT on number returns int in emitted Go"}
-				}
+			if isNumberLikeNode(ctx.ck, pu.Operand) {
+				return &Reason{Code: reasonForbiddenOp, Detail: "bitwise NOT on number returns int in emitted Go"}
 			}
 			return checkExpr(pu.Operand, ctx)
 		case ast.KindPlusToken, ast.KindMinusToken:
-			// JS unary + / - coerces strings/booleans to number; the emitter
-			// just drops the operator and returns the original value, so the
-			// extracted Go would carry a type mismatch (`return s` with
-			// float64 return type). Require numeric operand.
+			// Emitter drops unary +/- so a non-numeric operand would leak through
+			// (`return s` with a float64 return type). Require numeric operand.
 			if r := checkExpr(pu.Operand, ctx); r != nil {
 				return r
 			}
-			if ctx.ck != nil {
-				t := ctx.ck.GetTypeAtLocation(pu.Operand)
-				if t == nil || t.Flags()&checker.TypeFlagsNumberLike == 0 {
-					return &Reason{Code: reasonObjectType, Detail: "unary +/- requires numeric operand"}
-				}
+			if ctx.ck != nil && !isNumberLikeNode(ctx.ck, pu.Operand) {
+				return &Reason{Code: reasonObjectType, Detail: "unary +/- requires numeric operand"}
 			}
 			return nil
 		case ast.KindPlusPlusToken, ast.KindMinusMinusToken:
@@ -472,13 +462,8 @@ func checkBinaryExpr(node *ast.Node, ctx *bodyCtx) *Reason {
 		// the surrounding float64 context cannot consume without a back-cast
 		// the emitter doesn't currently insert. Pure-bool bitwise is fine
 		// (rare in practice); reject the float case.
-		if ctx.ck != nil {
-			lt := ctx.ck.GetTypeAtLocation(be.Left)
-			rt := ctx.ck.GetTypeAtLocation(be.Right)
-			if (lt != nil && lt.Flags()&checker.TypeFlagsNumberLike != 0) ||
-				(rt != nil && rt.Flags()&checker.TypeFlagsNumberLike != 0) {
-				return &Reason{Code: reasonForbiddenOp, Detail: "bitwise op on number returns int in emitted Go but float64 was expected"}
-			}
+		if isNumberLikeNode(ctx.ck, be.Left) || isNumberLikeNode(ctx.ck, be.Right) {
+			return &Reason{Code: reasonForbiddenOp, Detail: "bitwise op on number returns int in emitted Go but float64 was expected"}
 		}
 
 	case ast.KindEqualsEqualsToken, ast.KindExclamationEqualsToken:
@@ -553,54 +538,40 @@ func checkElementAccess(node *ast.Node, ctx *bodyCtx) *Reason {
 	if r := checkExpr(ea.ArgumentExpression, ctx); r != nil {
 		return r
 	}
-	if ctx.ck != nil {
-		idx := ctx.ck.GetTypeAtLocation(ea.ArgumentExpression)
-		if idx == nil || idx.Flags()&checker.TypeFlagsNumberLike == 0 {
-			return &Reason{Code: reasonUnhandledKind, Detail: "array index must be number-typed"}
-		}
+	if ctx.ck != nil && !isNumberLikeNode(ctx.ck, ea.ArgumentExpression) {
+		return &Reason{Code: reasonUnhandledKind, Detail: "array index must be number-typed"}
 	}
 	return nil
 }
 
-// requireBoolOperand walks expr and requires its checker type be boolean.
-// Used by `&&` / `||` / `!` operands.
+// requireBoolExpr walks expr and asserts its checker type is boolean.
+// Without this, `if (n)` and `n && b` drive the emitter to wrap with
+// `jsrt.ToBool` (which drags ramune into otherwise-standalone Go output)
+// or to emit Go `&&`/`!` against a non-bool (which is a type error). JS
+// truthy coercion over arbitrary types is not preserved by extracted code.
+func requireBoolExpr(expr *ast.Node, ctx *bodyCtx, detail string) *Reason {
+	if expr == nil {
+		return nil
+	}
+	if r := checkExpr(expr, ctx); r != nil {
+		return r
+	}
+	if ctx.ck == nil {
+		return nil
+	}
+	t := ctx.ck.GetTypeAtLocation(expr)
+	if t == nil || t.Flags()&checker.TypeFlagsBooleanLike == 0 {
+		return &Reason{Code: reasonObjectType, Detail: detail}
+	}
+	return nil
+}
+
 func requireBoolOperand(expr *ast.Node, ctx *bodyCtx, where string) *Reason {
-	if expr == nil {
-		return nil
-	}
-	if r := checkExpr(expr, ctx); r != nil {
-		return r
-	}
-	if ctx.ck == nil {
-		return nil
-	}
-	t := ctx.ck.GetTypeAtLocation(expr)
-	if t == nil || t.Flags()&checker.TypeFlagsBooleanLike == 0 {
-		return &Reason{Code: reasonObjectType, Detail: where + " operand must be boolean-typed"}
-	}
-	return nil
+	return requireBoolExpr(expr, ctx, where+" operand must be boolean-typed")
 }
 
-// requireBoolCondition walks expr and requires its checker type be boolean
-// (or `boolean | undefined` etc. via TypeFlagsBooleanLike). Without this,
-// `if (n)` over a non-boolean drives the emitter to wrap with `jsrt.ToBool`,
-// which drags ramune into otherwise-standalone Go output. JS truthy coercion
-// over arbitrary types is not preserved by extracted code.
 func requireBoolCondition(expr *ast.Node, ctx *bodyCtx) *Reason {
-	if expr == nil {
-		return nil
-	}
-	if r := checkExpr(expr, ctx); r != nil {
-		return r
-	}
-	if ctx.ck == nil {
-		return nil
-	}
-	t := ctx.ck.GetTypeAtLocation(expr)
-	if t == nil || t.Flags()&checker.TypeFlagsBooleanLike == 0 {
-		return &Reason{Code: reasonObjectType, Detail: "condition must be boolean-typed (no JS truthy coercion in v1)"}
-	}
-	return nil
+	return requireBoolExpr(expr, ctx, "condition must be boolean-typed (no JS truthy coercion in v1)")
 }
 
 // checkReceiverType walks expr (so closure capture, mutations, etc. are

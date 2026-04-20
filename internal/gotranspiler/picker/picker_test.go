@@ -699,18 +699,20 @@ func TestPicker_Rejects_MixedArrayLiteral(t *testing.T) {
 	}
 }
 
-func TestPicker_Accepts_EmptyArrayLiteral(t *testing.T) {
+func TestPicker_Rejects_EmptyArrayLiteral(t *testing.T) {
+	// tsgo types `[]` as `never[]` even with a `number[]` return annotation,
+	// so the element-must-be-primitive gate trips. Emitter would still produce
+	// `[]any{}` which compiles, but accepting it would be inconsistent with
+	// our other primitive-element guarantees. Skip rather than emit something
+	// behaviorally inert.
 	src := `export function empty(): number[] { return []; }`
 	res := pickOne(t, src)
-	c, ok := byName(res, "empty")
-	if !ok {
-		t.Fatalf("candidate not found")
+	c, _ := byName(res, "empty")
+	if c.Extracted {
+		t.Fatalf("expected rejection: tsgo gives [] type never[], not number[]")
 	}
-	// Either extracted (good - tsgo widens [] to number[] from the return
-	// annotation) or rejected with object-type (acceptable - we'd rather skip
-	// than emit broken Go). Flag a regression if neither.
-	if !c.Extracted && c.Reason.Code != "object-type" {
-		t.Fatalf("expected extract or object-type rejection, got %+v", c.Reason)
+	if c.Reason.Code != "object-type" {
+		t.Fatalf("expected object-type, got %q", c.Reason.Code)
 	}
 }
 
