@@ -418,7 +418,7 @@ func checkBinaryExpr(node *ast.Node, ctx *bodyCtx) *Reason {
 	return checkExpr(be.Right, ctx)
 }
 
-// checkPropertyAccess accepts only `<arrayVar>.length`.
+// checkPropertyAccess accepts `<arrayOrStringVar>.length`.
 func checkPropertyAccess(node *ast.Node, ctx *bodyCtx) *Reason {
 	pa := node.AsPropertyAccessExpression()
 	if pa == nil || pa.Name() == nil || pa.Name().Kind != ast.KindIdentifier {
@@ -428,7 +428,7 @@ func checkPropertyAccess(node *ast.Node, ctx *bodyCtx) *Reason {
 	if propName != "length" {
 		return &Reason{Code: reasonUnhandledKind, Detail: "only .length is supported in v1 (got ." + propName + ")"}
 	}
-	return rejectNonArrayReceiver(pa.Expression, ctx)
+	return rejectNonLengthableReceiver(pa.Expression, ctx)
 }
 
 // checkElementAccess accepts `arrayVar[i]` where the index is number-typed
@@ -454,21 +454,70 @@ func checkElementAccess(node *ast.Node, ctx *bodyCtx) *Reason {
 }
 
 func rejectNonArrayReceiver(expr *ast.Node, ctx *bodyCtx) *Reason {
-	if expr == nil || expr.Kind != ast.KindIdentifier {
-		return &Reason{Code: reasonUnhandledKind, Detail: "receiver must be a bare identifier"}
-	}
-	name := expr.AsIdentifier().Text
-	if !ctx.paramNames[name] && !ctx.localNames[name] {
-		return &Reason{Code: reasonClosureCapture, Detail: "receiver `" + name + "` is not a param/local"}
-	}
-	if ctx.ck == nil {
-		return &Reason{Code: reasonUnhandledKind, Detail: "no checker for array receiver"}
+	name, r := requireLocalIdentifier(expr, ctx)
+	if r != nil {
+		return r
 	}
 	t := ctx.ck.GetTypeAtLocation(expr)
 	if t == nil || arrayElementType(ctx.ck, t) == nil {
 		return &Reason{Code: reasonObjectType, Detail: "receiver `" + name + "` is not an array"}
 	}
 	return nil
+}
+
+// rejectNonStringReceiver accepts any walker-safe expression whose type is
+// string - covers bare string params/locals, string literals, and chained
+// method calls like `s.toUpperCase().trim()`.
+func rejectNonStringReceiver(expr *ast.Node, ctx *bodyCtx) *Reason {
+	if expr == nil {
+		return &Reason{Code: reasonUnhandledKind, Detail: "nil string receiver"}
+	}
+	if r := checkExpr(expr, ctx); r != nil {
+		return r
+	}
+	if ctx.ck == nil {
+		return &Reason{Code: reasonUnhandledKind, Detail: "no checker for string receiver"}
+	}
+	t := ctx.ck.GetTypeAtLocation(expr)
+	if t == nil || t.Flags()&checker.TypeFlagsStringLike == 0 {
+		return &Reason{Code: reasonObjectType, Detail: "receiver is not a string"}
+	}
+	return nil
+}
+
+// rejectNonLengthableReceiver accepts arrays and strings (both map to `len()`).
+func rejectNonLengthableReceiver(expr *ast.Node, ctx *bodyCtx) *Reason {
+	name, r := requireLocalIdentifier(expr, ctx)
+	if r != nil {
+		return r
+	}
+	t := ctx.ck.GetTypeAtLocation(expr)
+	if t != nil {
+		if t.Flags()&checker.TypeFlagsStringLike != 0 {
+			return nil
+		}
+		if arrayElementType(ctx.ck, t) != nil {
+			return nil
+		}
+	}
+	return &Reason{Code: reasonObjectType, Detail: "receiver `" + name + "` is not an array or string"}
+}
+
+// requireLocalIdentifier verifies expr is a bare Identifier resolving to a
+// function parameter or local variable. Returns the identifier name and nil
+// Reason on success.
+func requireLocalIdentifier(expr *ast.Node, ctx *bodyCtx) (string, *Reason) {
+	if expr == nil || expr.Kind != ast.KindIdentifier {
+		return "", &Reason{Code: reasonUnhandledKind, Detail: "receiver must be a bare identifier"}
+	}
+	name := expr.AsIdentifier().Text
+	if !ctx.paramNames[name] && !ctx.localNames[name] {
+		return name, &Reason{Code: reasonClosureCapture, Detail: "receiver `" + name + "` is not a param/local"}
+	}
+	if ctx.ck == nil {
+		return name, &Reason{Code: reasonUnhandledKind, Detail: "no checker for receiver"}
+	}
+	return name, nil
 }
 
 // rejectParamMutation returns a Reason when target is an Identifier that
@@ -542,22 +591,43 @@ var mathSafeMethods = map[string]bool{
 	"sign": true, "hypot": true, "random": true,
 }
 
+// stringSafeMethods lists instance methods on `string` values that the
+// emitter's emitStringMethodCall handles and that take + return primitives
+// (no callbacks, no regex). `replace` is excluded because its function-arg
+// form produces JS callbacks the walker cannot clear in v1.
+var stringSafeMethods = map[string]bool{
+	"toUpperCase": true, "toLowerCase": true,
+	"trim": true, "trimStart": true, "trimEnd": true,
+	"includes": true, "startsWith": true, "endsWith": true,
+	"indexOf": true, "lastIndexOf": true,
+}
+
 func checkBuiltinCallee(callee *ast.Node, ctx *bodyCtx) *Reason {
 	pa := callee.AsPropertyAccessExpression()
-	if pa == nil || pa.Expression == nil || pa.Expression.Kind != ast.KindIdentifier {
-		return &Reason{Code: reasonDynamicCallee, Detail: "non-identifier receiver"}
+	if pa == nil || pa.Expression == nil {
+		return &Reason{Code: reasonDynamicCallee, Detail: "nil receiver"}
 	}
 	if pa.Name() == nil || pa.Name().Kind != ast.KindIdentifier {
 		return &Reason{Code: reasonDynamicCallee, Detail: "non-identifier method"}
 	}
-	recv := pa.Expression.AsIdentifier().Text
 	method := pa.Name().AsIdentifier().Text
-	// Receiver must resolve to the global namespace - shadowed names aren't the real builtin.
-	if ctx.paramNames[recv] || ctx.localNames[recv] {
-		return &Reason{Code: reasonDynamicCallee, Detail: "receiver `" + recv + "` is a local/param, not a builtin"}
+
+	// Math.<method> - receiver is the global `Math` identifier, not shadowed.
+	if pa.Expression.Kind == ast.KindIdentifier {
+		recvName := pa.Expression.AsIdentifier().Text
+		if recvName == "Math" && !ctx.paramNames[recvName] && !ctx.localNames[recvName] {
+			if mathSafeMethods[method] {
+				return nil
+			}
+			return &Reason{Code: reasonBuiltinCall, Detail: "Math." + method + " not in safelist"}
+		}
 	}
-	if recv == "Math" && mathSafeMethods[method] {
-		return nil
+
+	// <stringExpr>.<method> - receiver is any walker-safe string-typed expression.
+	if stringSafeMethods[method] {
+		if r := rejectNonStringReceiver(pa.Expression, ctx); r == nil {
+			return nil
+		}
 	}
-	return &Reason{Code: reasonBuiltinCall, Detail: recv + "." + method + " not in safelist"}
+	return &Reason{Code: reasonBuiltinCall, Detail: "builtin call not in safelist"}
 }

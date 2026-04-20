@@ -243,17 +243,6 @@ func TestPicker_Rejects_NestedArray(t *testing.T) {
 	}
 }
 
-func TestPicker_Rejects_ArrayLengthOnNonArray(t *testing.T) {
-	// `n` is a number, so n.length would be invalid TS but picker must reject
-	// property access on non-array receiver regardless.
-	src := `export function bad(s: string): number { return s.length; }`
-	res := pickOne(t, src)
-	c, _ := byName(res, "bad")
-	if c.Extracted {
-		t.Fatalf("expected rejection for property access on non-array")
-	}
-}
-
 func TestPicker_Rejects_ArrayIndexByString(t *testing.T) {
 	src := `export function pick(xs: number[], k: string): number { return xs[k as any]; }`
 	res := pickOne(t, src)
@@ -276,11 +265,13 @@ func TestPicker_Rejects_LooseEquality(t *testing.T) {
 }
 
 func TestPicker_Rejects_PropertyAccess(t *testing.T) {
-	src := `export function upper(s: string): string { return s.toUpperCase(); }`
+	// charAt is not in the string safelist; picker must reject unknown methods
+	// even on string receivers.
+	src := `export function first(s: string): string { return s.charAt(0); }`
 	res := pickOne(t, src)
-	c, _ := byName(res, "upper")
+	c, _ := byName(res, "first")
 	if c.Extracted {
-		t.Fatalf("expected rejection for property access")
+		t.Fatalf("expected rejection for unsafelisted method .charAt")
 	}
 }
 
@@ -342,6 +333,41 @@ func TestPicker_Rejects_NonMathBuiltinCall(t *testing.T) {
 	c, _ := byName(res, "s")
 	if c.Extracted {
 		t.Fatalf("expected rejection for String() (only Math is safelisted in v1.3)")
+	}
+}
+
+func TestPicker_Accepts_StringLengthAndMethods(t *testing.T) {
+	src := `
+export function shout(s: string): string { return s.toUpperCase().trim(); }
+export function lenOf(s: string): number { return s.length; }
+export function hasFoo(s: string): boolean { return s.includes("foo"); }
+`
+	res := pickOne(t, src)
+	for _, name := range []string{"shout", "lenOf", "hasFoo"} {
+		c, ok := byName(res, name)
+		if !ok || !c.Extracted {
+			t.Fatalf("expected `%s` extracted; got %+v", name, c.Reason)
+		}
+	}
+}
+
+func TestPicker_Rejects_StringMethodUnsafe(t *testing.T) {
+	// replace with callback emits a JS-arrow path the walker bans; picker must reject.
+	src := `export function r(s: string): string { return s.replace("a", (m: string) => m); }`
+	res := pickOne(t, src)
+	c, _ := byName(res, "r")
+	if c.Extracted {
+		t.Fatalf("expected rejection for .replace (not in string safelist)")
+	}
+}
+
+func TestPicker_Rejects_StringIndexing(t *testing.T) {
+	// str[i] has different semantics in Go (byte vs char) - picker must stay away.
+	src := `export function first(s: string): number { return s.length > 0 ? s[0].length : 0; }`
+	res := pickOne(t, src)
+	c, _ := byName(res, "first")
+	if c.Extracted {
+		t.Fatalf("expected rejection for s[0] (not an array receiver)")
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	gostrings "strings"
 	"strings"
 	"testing"
 
@@ -211,6 +212,7 @@ export function sumArr(xs: number[]): number {
   for (let i = 0; i < xs.length; i++) total = total + xs[i];
   return total;
 }
+export function shout(s: string): string { return s.toUpperCase().trim(); }
 `
 	sf, program, _ := setupProgram(t, src)
 	ck, done := program.GetTypeCheckerForFile(context.Background(), sf)
@@ -275,6 +277,41 @@ export function dist(x: number, y: number): number {
 	got, _ := v.Float64()
 	if got != 5 {
 		t.Fatalf("dist(3,4) = %v, want 5", got)
+	}
+}
+
+// shout stands in for `export function shout(s: string): string { return s.toUpperCase().trim(); }`.
+func shout(s string) string { return gostrings.TrimSpace(gostrings.ToUpper(s)) }
+
+func TestHybrid_StringMethods_RoundTrip(t *testing.T) {
+	src := `
+export function shout(s: string): string { return s.toUpperCase().trim(); }
+`
+	sf, program, _ := setupProgram(t, src)
+	ck, done := program.GetTypeCheckerForFile(context.Background(), sf)
+	defer done()
+
+	res, err := composer.Compose(sf, ck, composer.Options{NativeModuleName: "native:str"})
+	if err != nil {
+		t.Fatalf("compose: %v", err)
+	}
+	if !strings.Contains(res.GoSource, "strings.ToUpper") || !strings.Contains(res.GoSource, "strings.TrimSpace") {
+		t.Fatalf("expected strings.ToUpper / strings.TrimSpace in emitted Go:\n%s", res.GoSource)
+	}
+
+	mod := ramune.NativeModuleFromFuncs("native:str", map[string]any{"shout": shout})
+	r := newRamune(t, ramune.NodeCompat(), ramune.WithModule(mod))
+	defer r.Close()
+	if err := r.Exec(res.ShimJS); err != nil {
+		t.Fatalf("shim: %v", err)
+	}
+	v, err := r.Eval(`shout("  hello  ")`)
+	if err != nil {
+		t.Fatalf("eval: %v", err)
+	}
+	got := v.String()
+	if got != "HELLO" {
+		t.Fatalf(`shout("  hello  ") = %q, want "HELLO"`, got)
 	}
 }
 
