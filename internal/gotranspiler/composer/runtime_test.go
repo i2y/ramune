@@ -208,6 +208,7 @@ export function clamp(x: number, lo: number, hi: number): number {
 export function dist(x: number, y: number): number {
   return Math.sqrt(Math.pow(x, 2) + Math.pow(y, 2));
 }
+export function circumference(r: number): number { return 2 * Math.PI * r; }
 export function sumArr(xs: number[]): number {
   let total = 0;
   for (let i = 0; i < xs.length; i++) total = total + xs[i];

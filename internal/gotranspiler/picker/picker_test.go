@@ -318,6 +318,33 @@ func TestPicker_Rejects_MathUnsafe(t *testing.T) {
 	}
 }
 
+func TestPicker_Accepts_MathConstants(t *testing.T) {
+	src := `
+export function circumference(r: number): number { return 2 * Math.PI * r; }
+export function natLog(x: number): number { return Math.log(x) / Math.log(Math.E); }
+`
+	res := pickOne(t, src)
+	for _, name := range []string{"circumference", "natLog"} {
+		c, ok := byName(res, name)
+		if !ok || !c.Extracted {
+			t.Fatalf("expected `%s` extracted; got %+v", name, c.Reason)
+		}
+	}
+}
+
+func TestPicker_Rejects_MathUnknownConstant(t *testing.T) {
+	// Math.LN2 is a real JS constant but not in our safelist.
+	src := `export function ln2(): number { return Math.LN2; }`
+	res := pickOne(t, src)
+	c, _ := byName(res, "ln2")
+	if c.Extracted {
+		t.Fatalf("expected rejection for Math.LN2 (not in constant safelist)")
+	}
+	if c.Reason.Code != "builtin-call" {
+		t.Fatalf("expected builtin-call reason, got %q", c.Reason.Code)
+	}
+}
+
 func TestPicker_Rejects_MathShadowed(t *testing.T) {
 	src := `
 export function surprise(n: number): number {

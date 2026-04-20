@@ -418,17 +418,36 @@ func checkBinaryExpr(node *ast.Node, ctx *bodyCtx) *Reason {
 	return checkExpr(be.Right, ctx)
 }
 
-// checkPropertyAccess accepts `<arrayOrStringVar>.length`.
+// mathSafeConstants lists `Math.<name>` numeric constants the emitter maps
+// to Go (`math.Pi`, `math.E`). Adding here requires emitMathAccess at
+// expr.go:1783 to handle the matching Go symbol.
+var mathSafeConstants = map[string]bool{
+	"PI": true, "E": true,
+}
+
+// checkPropertyAccess accepts `<arrayOrStringVar>.length` and the Math
+// numeric constants listed in mathSafeConstants.
 func checkPropertyAccess(node *ast.Node, ctx *bodyCtx) *Reason {
 	pa := node.AsPropertyAccessExpression()
 	if pa == nil || pa.Name() == nil || pa.Name().Kind != ast.KindIdentifier {
 		return &Reason{Code: reasonUnhandledKind, Detail: "property access not supported in v1"}
 	}
 	propName := pa.Name().AsIdentifier().Text
-	if propName != "length" {
-		return &Reason{Code: reasonUnhandledKind, Detail: "only .length is supported in v1 (got ." + propName + ")"}
+
+	if pa.Expression.Kind == ast.KindIdentifier {
+		recv := pa.Expression.AsIdentifier().Text
+		if recv == "Math" && !ctx.paramNames[recv] && !ctx.localNames[recv] {
+			if mathSafeConstants[propName] {
+				return nil
+			}
+			return &Reason{Code: reasonBuiltinCall, Detail: "Math." + propName + " not in constant safelist"}
+		}
 	}
-	return rejectNonLengthableReceiver(pa.Expression, ctx)
+
+	if propName == "length" {
+		return rejectNonLengthableReceiver(pa.Expression, ctx)
+	}
+	return &Reason{Code: reasonUnhandledKind, Detail: "only .length and Math.<const> supported (got ." + propName + ")"}
 }
 
 // checkElementAccess accepts `arrayVar[i]` where the index is number-typed
