@@ -754,6 +754,15 @@ var stringSafeMethods = map[string]bool{
 	"split": true,
 }
 
+// arraySafeMethods lists instance methods on arrays of primitives. These
+// emit into `jsarray.*` calls (the ramune runtime helper package), so
+// extracted code carries a ramune dependency - that is the norm for the
+// generated native module but means standalone compile-only smokes cannot
+// cover them. Callback-taking methods (map/filter/reduce/etc.) are excluded.
+var arraySafeMethods = map[string]bool{
+	"includes": true, "indexOf": true, "lastIndexOf": true,
+}
+
 func checkBuiltinCallee(callee *ast.Node, ctx *bodyCtx) *Reason {
 	pa := callee.AsPropertyAccessExpression()
 	if pa == nil || pa.Expression == nil {
@@ -766,6 +775,9 @@ func checkBuiltinCallee(callee *ast.Node, ctx *bodyCtx) *Reason {
 		return nil
 	}
 	if r := checkStringMethodCall(pa, ctx); r == nil {
+		return nil
+	}
+	if r := checkArrayMethodCall(pa, ctx); r == nil {
 		return nil
 	}
 	return &Reason{Code: reasonBuiltinCall, Detail: "builtin call not in safelist"}
@@ -796,4 +808,25 @@ func checkStringMethodCall(pa *ast.PropertyAccessExpression, ctx *bodyCtx) *Reas
 		return &Reason{Code: reasonBuiltinCall, Detail: "." + method + " not in string safelist"}
 	}
 	return rejectNonStringReceiver(pa.Expression, ctx)
+}
+
+// checkArrayMethodCall returns nil iff method is in the array safelist and
+// the receiver is a walker-safe primitive-array-typed expression.
+func checkArrayMethodCall(pa *ast.PropertyAccessExpression, ctx *bodyCtx) *Reason {
+	method := pa.Name().AsIdentifier().Text
+	if !arraySafeMethods[method] {
+		return &Reason{Code: reasonBuiltinCall, Detail: "." + method + " not in array safelist"}
+	}
+	expr := pa.Expression
+	if r := checkExpr(expr, ctx); r != nil {
+		return r
+	}
+	if ctx.ck == nil {
+		return &Reason{Code: reasonUnhandledKind, Detail: "no checker for array receiver"}
+	}
+	t := ctx.ck.GetTypeAtLocation(expr)
+	if t == nil || arrayElementType(ctx.ck, t) == nil {
+		return &Reason{Code: reasonObjectType, Detail: "receiver is not an array"}
+	}
+	return nil
 }

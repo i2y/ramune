@@ -481,6 +481,30 @@ export function dupe(xs: number[]): number[] { return [0, ...xs]; }
 	}
 }
 
+func TestPicker_Accepts_ArrayMethods(t *testing.T) {
+	src := `
+export function has(xs: number[], v: number): boolean { return xs.includes(v); }
+export function firstIdx(xs: string[], v: string): number { return xs.indexOf(v); }
+export function lastIdx(xs: number[], v: number): number { return xs.lastIndexOf(v); }
+`
+	res := pickOne(t, src)
+	for _, name := range []string{"has", "firstIdx", "lastIdx"} {
+		c, ok := byName(res, name)
+		if !ok || !c.Extracted {
+			t.Fatalf("expected `%s` extracted; got %+v", name, c.Reason)
+		}
+	}
+}
+
+func TestPicker_Rejects_ArrayMapCallback(t *testing.T) {
+	src := `export function doubled(xs: number[]): number[] { return xs.map(x => x * 2); }`
+	res := pickOne(t, src)
+	c, _ := byName(res, "doubled")
+	if c.Extracted {
+		t.Fatalf("expected rejection for .map (callback not in v1 array safelist)")
+	}
+}
+
 func TestPicker_Accepts_SwitchStatement(t *testing.T) {
 	src := `
 export function classify(n: number): string {
