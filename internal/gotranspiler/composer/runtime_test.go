@@ -388,6 +388,44 @@ export function dist(x: number, y: number): number {
 // shout stands in for `export function shout(s: string): string { return s.toUpperCase().trim(); }`.
 func shout(s string) string { return gostrings.TrimSpace(gostrings.ToUpper(s)) }
 
+// splitWords stands in for `export function splitWords(s: string): string[] { return s.split(" "); }`.
+func splitWords(s string) []string { return gostrings.Split(s, " ") }
+
+func TestHybrid_StringSplit_RoundTrip(t *testing.T) {
+	src := `
+export function splitWords(s: string): string[] { return s.split(" "); }
+export function wordCount(s: string): number { return s.split(" ").length; }
+`
+	sf, program, _ := setupProgram(t, src)
+	ck, done := program.GetTypeCheckerForFile(context.Background(), sf)
+	defer done()
+	res, err := composer.Compose(sf, ck, composer.Options{NativeModuleName: "native:split"})
+	if err != nil {
+		t.Fatalf("compose: %v", err)
+	}
+	if !strings.Contains(res.GoSource, "strings.Split") {
+		t.Fatalf("expected strings.Split in emitted Go:\n%s", res.GoSource)
+	}
+	wordCount := func(s string) float64 { return float64(len(gostrings.Split(s, " "))) }
+	mod := ramune.NativeModuleFromFuncs("native:split", map[string]any{
+		"splitWords": splitWords,
+		"wordCount":  wordCount,
+	})
+	r := newRamune(t, ramune.NodeCompat(), ramune.WithModule(mod))
+	defer r.Close()
+	if err := r.Exec(res.ShimJS); err != nil {
+		t.Fatalf("shim: %v", err)
+	}
+	v, err := r.Eval(`wordCount("hello world foo")`)
+	if err != nil {
+		t.Fatalf("eval wordCount: %v", err)
+	}
+	got, _ := v.Float64()
+	if got != 3 {
+		t.Fatalf("wordCount(3 words) = %v, want 3", got)
+	}
+}
+
 func TestHybrid_StringMethods_RoundTrip(t *testing.T) {
 	src := `
 export function shout(s: string): string { return s.toUpperCase().trim(); }

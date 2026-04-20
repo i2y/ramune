@@ -504,11 +504,19 @@ func rejectNonStringReceiver(expr *ast.Node, ctx *bodyCtx) *Reason {
 	return nil
 }
 
-// rejectNonLengthableReceiver accepts arrays and strings (both map to `len()`).
+// rejectNonLengthableReceiver accepts any walker-safe expression whose type
+// is a primitive array or string - both map to Go's `len()`. Covers bare
+// identifiers (`arr.length`) as well as chained expressions like
+// `s.split(" ").length`.
 func rejectNonLengthableReceiver(expr *ast.Node, ctx *bodyCtx) *Reason {
-	name, r := requireLocalIdentifier(expr, ctx)
-	if r != nil {
+	if expr == nil {
+		return &Reason{Code: reasonUnhandledKind, Detail: "nil length receiver"}
+	}
+	if r := checkExpr(expr, ctx); r != nil {
 		return r
+	}
+	if ctx.ck == nil {
+		return &Reason{Code: reasonUnhandledKind, Detail: "no checker for length receiver"}
 	}
 	t := ctx.ck.GetTypeAtLocation(expr)
 	if t != nil {
@@ -519,7 +527,7 @@ func rejectNonLengthableReceiver(expr *ast.Node, ctx *bodyCtx) *Reason {
 			return nil
 		}
 	}
-	return &Reason{Code: reasonObjectType, Detail: "receiver `" + name + "` is not an array or string"}
+	return &Reason{Code: reasonObjectType, Detail: "receiver is not an array or string"}
 }
 
 // requireLocalIdentifier verifies expr is a bare Identifier resolving to a
@@ -626,14 +634,16 @@ var mathSafeMethods = map[string]bool{
 }
 
 // stringSafeMethods lists instance methods on `string` values that the
-// emitter's emitStringMethodCall handles and that take + return primitives
-// (no callbacks, no regex). `replace` is excluded because its function-arg
-// form produces JS callbacks the walker cannot clear in v1.
+// emitter's emitStringMethodCall handles and that take + return either
+// primitives or `string[]` (no callbacks, no regex). `replace` is excluded
+// because its function-arg form produces JS callbacks the walker cannot
+// clear in v1.
 var stringSafeMethods = map[string]bool{
 	"toUpperCase": true, "toLowerCase": true,
 	"trim": true, "trimStart": true, "trimEnd": true,
 	"includes": true, "startsWith": true, "endsWith": true,
 	"indexOf": true, "lastIndexOf": true,
+	"split": true,
 }
 
 func checkBuiltinCallee(callee *ast.Node, ctx *bodyCtx) *Reason {

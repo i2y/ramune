@@ -399,9 +399,11 @@ func TestPicker_Accepts_StringLengthAndMethods(t *testing.T) {
 export function shout(s: string): string { return s.toUpperCase().trim(); }
 export function lenOf(s: string): number { return s.length; }
 export function hasFoo(s: string): boolean { return s.includes("foo"); }
+export function words(s: string): string[] { return s.split(" "); }
+export function countWords(s: string): number { return s.split(" ").length; }
 `
 	res := pickOne(t, src)
-	for _, name := range []string{"shout", "lenOf", "hasFoo"} {
+	for _, name := range []string{"shout", "lenOf", "hasFoo", "words", "countWords"} {
 		c, ok := byName(res, name)
 		if !ok || !c.Extracted {
 			t.Fatalf("expected `%s` extracted; got %+v", name, c.Reason)
