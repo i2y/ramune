@@ -7,8 +7,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
-	gostrings "strings"
 	"strings"
+	gostrings "strings"
 	"testing"
 	"time"
 
@@ -431,7 +431,9 @@ func TestHybrid_TemplateLiteral_RoundTrip(t *testing.T) {
 	if !strings.Contains(res.GoSource, "fmt.Sprintf") {
 		t.Fatalf("expected fmt.Sprintf in emitted Go:\n%s", res.GoSource)
 	}
-	fmtPair := func(a, b float64) string { return "(" + strconv.FormatFloat(a, 'g', -1, 64) + ", " + strconv.FormatFloat(b, 'g', -1, 64) + ")" }
+	fmtPair := func(a, b float64) string {
+		return "(" + strconv.FormatFloat(a, 'g', -1, 64) + ", " + strconv.FormatFloat(b, 'g', -1, 64) + ")"
+	}
 	mod := ramune.NativeModuleFromFuncs("native:tpl", map[string]any{"fmtPair": fmtPair})
 	r := newRamune(t, ramune.NodeCompat(), ramune.WithModule(mod))
 	defer r.Close()
@@ -458,13 +460,6 @@ func pAdd(a, b float64) *promise.Promise[float64] {
 }
 
 func TestHybrid_AsyncPromise_RoundTrip(t *testing.T) {
-	if r, err := ramune.New(); err == nil {
-		engine := r.Engine()
-		r.Close()
-		if engine == "qjswasm" {
-			t.Skip("qjswasm Promise.then dispatch hangs; tracked separately")
-		}
-	}
 	src := `export async function pAdd(a: number, b: number): Promise<number> { return a + b; }`
 	sf, program, _ := setupProgram(t, src)
 	ck, done := program.GetTypeCheckerForFile(context.Background(), sf)

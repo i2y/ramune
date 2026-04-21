@@ -148,22 +148,40 @@ func (r *Runtime) newUint8ArrayLocked(b []byte) (*qjs.Value, error) {
 	return out, nil
 }
 
-// promiseToJSLocked converts a Go *promise.Promise[T] to a JS Promise via
-// Promise.withResolvers — this gives us resolve/reject handles we can call
-// from Go once Await() returns.
+// promiseToJSLocked converts a Go *promise.Promise[T] to a JS Promise.
+//
+// The bridge stores the new Promise on a globalThis slot rather than
+// returning it from the eval directly: fastschema/qjs's QJS_Eval calls
+// `js_std_await` whenever the script's top-level value is a thenable,
+// which would block the wasm goroutine until the Promise resolves. But
+// the resolver fires from a *different* goroutine via dispatch, so that
+// goroutine can never reach the wasm side - classic deadlock. Using
+// execLocked (which appends `;undefined;`) sidesteps `js_std_await`
+// entirely, and we then pluck the Promise off globalThis.
 func (r *Runtime) promiseToJSLocked(rv reflect.Value) (*qjs.Value, error) {
 	r.nativeMethodSeq++
 	seq := r.nativeMethodSeq
 	resolveName := fmt.Sprintf("__promise_resolve_%d", seq)
 	rejectName := fmt.Sprintf("__promise_reject_%d", seq)
+	slotName := fmt.Sprintf("__promise_slot_%d", seq)
 
-	jsCode := fmt.Sprintf(
-		`(function(){var p=new Promise(function(resolve,reject){globalThis.%s=function(v){resolve(v)};globalThis.%s=function(e){reject(e)}});return p})()`,
-		resolveName, rejectName,
+	setupCode := fmt.Sprintf(
+		`globalThis.%s=new Promise(function(resolve,reject){globalThis.%s=function(v){resolve(v)};globalThis.%s=function(e){reject(e)}});`,
+		slotName, resolveName, rejectName,
 	)
-	jsPromise, err := r.evalScriptLocked(jsCode, "promise-bridge")
-	if err != nil {
-		return nil, fmt.Errorf("promiseToJSQJSWasm: %w", err)
+	if err := r.execLocked(setupCode); err != nil {
+		return nil, fmt.Errorf("promiseToJSQJSWasm setup: %w", err)
+	}
+	global := r.qjsCtx.Global()
+	jsPromise := global.GetPropertyStr(slotName)
+	if jsPromise == nil {
+		return nil, fmt.Errorf("promiseToJSQJSWasm: bridge promise slot empty")
+	}
+	// Clear the slot once we have a handle so it doesn't leak across calls.
+	// JS_GetProperty bumps the refcount, so the Promise stays alive on the
+	// C side via our handle even after the global property is deleted.
+	if err := r.execLocked(fmt.Sprintf("delete globalThis.%s;", slotName)); err != nil {
+		return nil, fmt.Errorf("promiseToJSQJSWasm slot cleanup: %w", err)
 	}
 
 	awaitMethod := rv.MethodByName("Await")
@@ -197,8 +215,7 @@ func (r *Runtime) promiseToJSLocked(rv reflect.Value) (*qjs.Value, error) {
 		r.Wake()
 	}()
 
-	// Ownership: jsPromise is a *Value; caller owns it.
-	return jsPromise.fsv, nil
+	return jsPromise, nil
 }
 
 // structToJSObjectQJSWasm creates a JS object with live getter/setter
