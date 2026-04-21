@@ -387,12 +387,16 @@ func TestPicker_Rejects_AwaitOutsideAsync(t *testing.T) {
 
 func TestPicker_Rejects_AwaitNonPromise(t *testing.T) {
 	// Awaiting a non-Promise (number) - JS no-op, but emitter would call
-	// .Await() on float64 which won't compile.
-	src := `export async function bad(n: number): Promise<number> { return await (n as any); }`
+	// .Await() on float64 which won't compile. Without `as any` so the
+	// as-cast guard doesn't short-circuit before checkAwaitExpr runs.
+	src := `export async function bad(n: number): Promise<number> { return await n; }`
 	res := pickOne(t, src)
 	c, _ := byName(res, "bad")
 	if c.Extracted {
 		t.Fatalf("expected rejection for await on non-Promise")
+	}
+	if c.Reason.Code != "await-expression" {
+		t.Fatalf("expected await-expression, got %q (detail=%q)", c.Reason.Code, c.Reason.Detail)
 	}
 }
 
