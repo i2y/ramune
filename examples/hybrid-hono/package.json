@@ -1,0 +1,7 @@
+{
+  "name": "ramune-hybrid-hono-example",
+  "private": true,
+  "dependencies": {
+    "hono": "^4"
+  }
+}

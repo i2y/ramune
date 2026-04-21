@@ -54,6 +54,7 @@ Four use cases, four audiences. Jump to the section that matches your motivation
 ## Key capabilities
 
 - **Design your own `env`.** `env.KV` / `env.DB` are Go interfaces (`KVBackend`, `DBBackend`) — plug Redis, Postgres, DynamoDB, in-memory, anything. Invent new bindings (`env.QUEUE` / `env.EMAIL` / `env.AI` / `env.R2` …) by registering a Go callback plus a tiny JS facade via `WithExtraEnvJS`. Walkthrough and runnable example: [`workers/BINDINGS.md`](workers/BINDINGS.md), [`examples/workers/custom-binding/`](examples/workers/custom-binding/).
+- **Auto-compile typed hot paths to native Go.** `ramune compile --hybrid` walks every user TS file in the app and extracts any function or pure class whose signature and body are provably semantics-equivalent to Go — the rest stays on the JS floor. No hand-fixes, no silent failures; functions that don't qualify just keep running as JS. Biggest wins land on the no-JIT backends (qjswasm, goja) where extractable CPU-heavy kernels typically go 10×-350× faster than JS-only. On JSC+JIT the gains are narrower and pattern-dependent (recursion / control-flow wins; tight integer-modulo loops and array-arg marshalling can regress). See [`examples/hybrid/`](examples/hybrid/), [`examples/hybrid-hono/`](examples/hybrid-hono/), and the [`--hybrid` section below](#automatic-native-extraction---hybrid).
 - **Single-binary deploy.** `ramune compile worker.ts -o myworker` bundles handler + runtime into one Go executable. No Kubernetes, no Wrangler, no Dockerfile required — `scp ./myworker prod:` and run. qjswasm path is fully self-contained; JSC path still resolves the system JSC at run time (see next bullet).
 - **No Cgo at build; honest about runtime.** `go build` cross-compiles to any `GOOS`/`GOARCH` without a C toolchain. JSC backend loads JavaScriptCore dynamically via [`purego`](https://github.com/ebitengine/purego) — zero install on macOS, `libjavascriptcoregtk-4.1` on Linux. qjswasm is pure Go with zero runtime dependencies (QuickJS-NG compiled to WebAssembly, embedded into the Go binary, driven by wazero) and runs on `FROM scratch` Docker.
 
@@ -271,6 +272,38 @@ c.count = 100;        // setter, writes Go struct field
 c.increment();
 console.log(c.count); // 101
 ```
+
+### Automatic Native Extraction (`--hybrid`)
+
+An alternative to `--native` that walks your app automatically: top-level functions and pure classes whose signature and body fall inside a statically-verified subset get compiled to Go; everything else stays on the JS floor. Rejected functions are not silently skipped — each is reported with a reason code when `--hybrid-report` is set.
+
+Multi-file projects are supported transparently — the picker walks every user TS file reachable from the entry's import graph (excluding `.d.ts` and `node_modules`), so functions declared in a separate `kernel.ts` or `lib/math.ts` are eligible for extraction, and cross-file calls between them are accepted.
+
+```bash
+ramune compile app.ts --hybrid -o myapp                  # auto-extract typed hot paths
+ramune compile app.ts --hybrid --hybrid-report -o myapp  # print per-function report to stderr
+```
+
+The picker is soundness-gated: it accepts a function only when every signature type and every body AST node is statically provable to behave identically in Go. The extracted Go never needs hand-fixes, and rejected functions keep running on the JS floor unchanged — so adding `--hybrid` to an existing `ramune compile` never breaks correctness; at worst nothing gets extracted.
+
+Soundness is proven, speed is not. Each extracted call pays a fixed JS↔Go bridge cost, so extraction can *regress* when the body does trivial per-call work, marshals a large array on every invocation, or hammers a method in a tight loop — `examples/hybrid/` shows one case where `sumSquares(xs)` over a 1000-element array is ~86× slower than plain JS on JSC + JIT because array marshalling dominates the ~1 µs of body work. Rule of thumb: extract recursive or loop-heavy kernels with primitive arguments; leave frequently-called tight methods and array/object-arg APIs on the JS floor. The picker doesn't see these costs — it only proves semantic equivalence — so use `--hybrid-report` to pick targets and then measure.
+
+Accepts: primitive / `T[]` / `Promise<primitive>` signatures; pure classes (primitive fields, constructor-initialized, `this`-method bodies); arithmetic, comparison, `%`, switch, `for` / `while` / `for-of`, template literals, `await`-on-extractable; `Math.*`, `Number.*`, string / array method safelists, callback-driven `map` / `filter` / `forEach` / `some` / `every`; named-interface struct params; same-file `*JSFunc` callback params.
+
+Rejects: `reduce` / `find` / `findIndex`, inline object literal params, `Map` / `Set` / `Date` / `RegExp`, `try` / `catch` / `throw`, generics, generators, closure capture beyond params/locals, parameter mutation, class inheritance / `static` / `#private` / decorators / getters-setters, `str.charAt` / `charCodeAt`, and more. Full reason-code list in the extraction report.
+
+**vs `--native`:**
+
+- `--hybrid` (this section): soundness-gated auto-extraction. Narrower per-function surface but no manual-fix failure mode. Good for "most of my code is plain TS but I have a few typed hot loops."
+- `--native file.ts` (previous section, experimental): transpile the whole designated file. Wider per-function surface (generics, inheritance) but may need hand-fixes for complex patterns. Good for "I have a specific module that's all math/data processing and I want all of it in Go."
+
+Runnable examples with bench numbers:
+
+- [`examples/hybrid/`](examples/hybrid/) — minimal single-file bench (fib / primes / array-marshal) comparing JS-only vs hybrid on JSC and qjswasm; shows both the wins and the bridge-cost pitfalls.
+- [`examples/hybrid-hono/`](examples/hybrid-hono/) — Hono web app with extractable route handlers; `wrk` bench across both backends.
+- [`examples/hybrid-multifile/`](examples/hybrid-multifile/) — kernels split across `lib/math.ts` / `lib/format.ts` imported by the entry, demonstrating cross-file extraction.
+
+Pair with `--tags qjswasm` / `--tags goja` to pick the backend that the compiled binary will embed; hybrid's biggest wins show up on the no-JIT backends (qjswasm is typically 10×-350× faster on extractable kernels vs JS-only when the JIT is out of play).
 
 ### Transpile TypeScript to Go (Experimental)
 
@@ -1129,11 +1162,14 @@ ESM detection: `.mjs` extension, `package.json` `"type": "module"`, or `import`/
 
 Ramune also supports `package.json` `"exports"` field resolution (conditional exports with `require`/`import`/`default` and subpath exports).
 
-## TypeScript-to-Go Transpiler (Experimental)
+## TypeScript-to-Go Transpiler
 
-Ramune ships a built-in TypeScript-to-Go transpiler that converts TS source to idiomatic Go: `number` → `float64`, classes → structs with methods, `Promise<T>` → `*promise.Promise[T]`, generics, enums, discriminated unions. A `go:` prefix lets you import any Go package from TypeScript, and `ramune compile --native` turns TS modules into `require('native:name')`-able Go native modules.
+Ramune ships a built-in TypeScript-to-Go transpiler that converts TS source to idiomatic Go: `number` → `float64`, classes → structs with methods, `Promise<T>` → `*promise.Promise[T]`, generics, enums, discriminated unions. A `go:` prefix lets you import any Go package from TypeScript. Two integration paths with different maturity profiles:
 
-Status is experimental; generated code may need manual fixes for complex codebases. Full feature list, type mapping, native module workflow, `go:` imports, and limitations: [`TRANSPILER.md`](./TRANSPILER.md).
+- `ramune compile --hybrid app.ts` — soundness-gated auto-extraction: the picker walks the app and extracts only functions / pure classes whose signature and body are statically provable to behave identically in Go; everything else stays on the JS floor. The extracted Go never needs hand-fixes. See [Automatic Native Extraction](#automatic-native-extraction---hybrid) above.
+- `ramune compile --native file.ts` (experimental) — transpile a designated TS file wholesale and expose it as a `require('native:name')` module. Wider per-function surface (generics, inheritance) but may need hand-fixes for complex patterns.
+
+Full feature list, type mapping, native module workflow, `go:` imports, and limitations: [`TRANSPILER.md`](./TRANSPILER.md).
 
 ## Known Limitations
 
