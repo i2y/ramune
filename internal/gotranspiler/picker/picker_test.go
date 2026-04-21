@@ -584,6 +584,59 @@ func TestPicker_Rejects_MathUnknownConstant(t *testing.T) {
 	}
 }
 
+func TestPicker_Accepts_NumberStatics(t *testing.T) {
+	src := `
+export function big(): number { return Number.MAX_SAFE_INTEGER; }
+export function eps(): number { return Number.EPSILON; }
+export function inf(): number { return Number.POSITIVE_INFINITY; }
+export function isFiniteN(n: number): boolean { return Number.isFinite(n); }
+export function isNaNStrict(n: number): boolean { return Number.isNaN(n); }
+export function isInt(n: number): boolean { return Number.isInteger(n); }
+export function isSafeInt(n: number): boolean { return Number.isSafeInteger(n); }
+export function parseF(s: string): number { return Number.parseFloat(s); }
+`
+	res := pickOne(t, src)
+	for _, name := range []string{"big", "eps", "inf", "isFiniteN", "isNaNStrict", "isInt", "isSafeInt", "parseF"} {
+		c, ok := byName(res, name)
+		if !ok || !c.Extracted {
+			t.Fatalf("expected `%s` extracted; got %+v", name, c.Reason)
+		}
+	}
+}
+
+func TestPicker_Rejects_NumberUnknownConstant(t *testing.T) {
+	// Number.NEGATIVE_ZERO is not in the constants safelist.
+	src := `export function nz(): number { return (Number as any).NEGATIVE_ZERO; }`
+	res := pickOne(t, src)
+	c, _ := byName(res, "nz")
+	if c.Extracted {
+		t.Fatalf("expected rejection for unknown Number constant")
+	}
+}
+
+func TestPicker_Rejects_NumberShadowed(t *testing.T) {
+	src := `
+export function surprise(n: number): boolean {
+  const Number = { isNaN: (_: number) => true };
+  return Number.isNaN(n);
+}`
+	res := pickOne(t, src)
+	c, _ := byName(res, "surprise")
+	if c.Extracted {
+		t.Fatalf("expected rejection when Number is locally shadowed")
+	}
+}
+
+func TestPicker_Rejects_NumberParseInt(t *testing.T) {
+	// Number.parseInt shares the emitter type-mismatch issue with global parseInt.
+	src := `export function bad(s: string): number { return Number.parseInt(s); }`
+	res := pickOne(t, src)
+	c, _ := byName(res, "bad")
+	if c.Extracted {
+		t.Fatalf("expected rejection for Number.parseInt")
+	}
+}
+
 func TestPicker_Rejects_MathShadowed(t *testing.T) {
 	src := `
 export function surprise(n: number): number {

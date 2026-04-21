@@ -495,6 +495,26 @@ var mathSafeConstants = map[string]bool{
 	"PI": true, "E": true,
 }
 
+// numberSafeConstants lists `Number.<name>` numeric constants the emitter
+// maps to Go literals or math package calls. Adding here requires
+// emitNumberAccess in expr.go to handle the matching Go symbol.
+var numberSafeConstants = map[string]bool{
+	"MAX_VALUE": true, "MIN_VALUE": true,
+	"MAX_SAFE_INTEGER": true, "MIN_SAFE_INTEGER": true,
+	"EPSILON":           true,
+	"POSITIVE_INFINITY": true, "NEGATIVE_INFINITY": true,
+	"NaN": true,
+}
+
+// numberSafeMethods lists `Number.<method>` static calls the emitter lowers
+// to pure-primitive Go. `parseInt` is excluded for the same reason as the
+// global parseInt: the emitter would return `(int, error)`.
+var numberSafeMethods = map[string]bool{
+	"isNaN": true, "isFinite": true,
+	"isInteger": true, "isSafeInteger": true,
+	"parseFloat": true,
+}
+
 // checkPropertyAccess accepts the Math numeric constants, `.length` on
 // arrays/strings, and named-interface field access (`r.width`).
 func checkPropertyAccess(node *ast.Node, ctx *bodyCtx) *Reason {
@@ -506,11 +526,19 @@ func checkPropertyAccess(node *ast.Node, ctx *bodyCtx) *Reason {
 
 	if pa.Expression.Kind == ast.KindIdentifier {
 		recv := pa.Expression.AsIdentifier().Text
-		if recv == "Math" && !ctx.paramNames[recv] && !ctx.localNames[recv] {
-			if mathSafeConstants[propName] {
-				return nil
+		if !ctx.paramNames[recv] && !ctx.localNames[recv] {
+			if recv == "Math" {
+				if mathSafeConstants[propName] {
+					return nil
+				}
+				return &Reason{Code: reasonBuiltinCall, Detail: "Math." + propName + " not in constant safelist"}
 			}
-			return &Reason{Code: reasonBuiltinCall, Detail: "Math." + propName + " not in constant safelist"}
+			if recv == "Number" {
+				if numberSafeConstants[propName] {
+					return nil
+				}
+				return &Reason{Code: reasonBuiltinCall, Detail: "Number." + propName + " not in constant safelist"}
+			}
 		}
 	}
 
@@ -895,6 +923,9 @@ func checkBuiltinCallee(callee *ast.Node, ctx *bodyCtx) *Reason {
 	if r := checkMathCall(pa, ctx); r == nil {
 		return nil
 	}
+	if r := checkNumberCall(pa, ctx); r == nil {
+		return nil
+	}
 	if r := checkStringMethodCall(pa, ctx); r == nil {
 		return nil
 	}
@@ -917,6 +948,23 @@ func checkMathCall(pa *ast.PropertyAccessExpression, ctx *bodyCtx) *Reason {
 	method := pa.Name().AsIdentifier().Text
 	if !mathSafeMethods[method] {
 		return &Reason{Code: reasonBuiltinCall, Detail: "Math." + method + " not in safelist"}
+	}
+	return nil
+}
+
+// checkNumberCall returns nil iff callee is `Number.<method>` where Number
+// is the global (not shadowed) and method is in the safelist.
+func checkNumberCall(pa *ast.PropertyAccessExpression, ctx *bodyCtx) *Reason {
+	if pa.Expression.Kind != ast.KindIdentifier {
+		return &Reason{Code: reasonBuiltinCall, Detail: "not a Number call"}
+	}
+	recv := pa.Expression.AsIdentifier().Text
+	if recv != "Number" || ctx.paramNames[recv] || ctx.localNames[recv] {
+		return &Reason{Code: reasonBuiltinCall, Detail: "not the global Number"}
+	}
+	method := pa.Name().AsIdentifier().Text
+	if !numberSafeMethods[method] {
+		return &Reason{Code: reasonBuiltinCall, Detail: "Number." + method + " not in safelist"}
 	}
 	return nil
 }

@@ -1628,6 +1628,10 @@ func (t *Transpiler) emitPropertyAccess(node *ast.Node) {
 			t.emitMathAccess(propName)
 			return
 		}
+		if objName == "Number" {
+			t.emitNumberAccess(propName)
+			return
+		}
 		if objName == "crypto" && propName == "subtle" {
 			t.w.addImport("github.com/i2y/ramune/jsrt/web", "web")
 			t.w.write("web.Subtle")
@@ -1807,6 +1811,55 @@ func (t *Transpiler) emitMathAccess(prop string) {
 		t.w.write("rand.Float64")
 	default:
 		t.w.writef("math.%s", goExportedName(prop))
+	}
+}
+
+// emitNumberAccess handles Number.* property access and static method refs.
+// Numeric constants (MAX_VALUE, EPSILON, POSITIVE_INFINITY, NaN, ...) are
+// written as Go literals or `math` package calls. Static methods return a
+// callable expression; the surrounding CallExpression then appends the args.
+func (t *Transpiler) emitNumberAccess(prop string) {
+	switch prop {
+	case "MAX_VALUE":
+		t.w.addImport("math", "")
+		t.w.write("math.MaxFloat64")
+	case "MIN_VALUE":
+		t.w.addImport("math", "")
+		t.w.write("math.SmallestNonzeroFloat64")
+	case "MAX_SAFE_INTEGER":
+		t.w.write("float64(9007199254740991)")
+	case "MIN_SAFE_INTEGER":
+		t.w.write("float64(-9007199254740991)")
+	case "EPSILON":
+		t.w.write("2.220446049250313e-16")
+	case "POSITIVE_INFINITY":
+		t.w.addImport("math", "")
+		t.w.write("math.Inf(1)")
+	case "NEGATIVE_INFINITY":
+		t.w.addImport("math", "")
+		t.w.write("math.Inf(-1)")
+	case "NaN":
+		t.w.addImport("math", "")
+		t.w.write("math.NaN()")
+	case "isNaN":
+		// Number.isNaN is the strict form: only actual NaN values, never
+		// coerces. For statically-typed float64 inputs this is math.IsNaN.
+		t.w.addImport("math", "")
+		t.w.write("math.IsNaN")
+	case "isFinite":
+		t.w.addImport("math", "")
+		t.w.write("func(n float64) bool { return !math.IsInf(n, 0) && !math.IsNaN(n) }")
+	case "isInteger":
+		t.w.addImport("math", "")
+		t.w.write("func(n float64) bool { return !math.IsInf(n, 0) && !math.IsNaN(n) && math.Trunc(n) == n }")
+	case "isSafeInteger":
+		t.w.addImport("math", "")
+		t.w.write("func(n float64) bool { return !math.IsInf(n, 0) && !math.IsNaN(n) && math.Trunc(n) == n && math.Abs(n) <= 9007199254740991 }")
+	case "parseFloat":
+		t.w.addImport("strconv", "")
+		t.w.write("func(s string) float64 { f, _ := strconv.ParseFloat(s, 64); return f }")
+	default:
+		t.w.writef("/* unsupported Number.%s */", prop)
 	}
 }
 

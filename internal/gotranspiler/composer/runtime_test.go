@@ -228,6 +228,9 @@ export function mid(s: string): string { return s.substring(1, 4); }
 export function leftpad(s: string, n: number): string { return s.padStart(n, "0"); }
 interface Rect { width: number; height: number; }
 export function rectArea(r: Rect): number { return r.width * r.height; }
+export function maxSafe(): number { return Number.MAX_SAFE_INTEGER; }
+export function isFiniteNum(n: number): boolean { return Number.isFinite(n); }
+export function isIntegerN(n: number): boolean { return Number.isInteger(n); }
 export function sumOf(xs: number[]): number {
   let t = 0;
   for (const x of xs) t = t + x;
@@ -470,6 +473,60 @@ type Rect struct {
 }
 
 func area(r Rect) float64 { return r.Width * r.Height }
+
+// isIntegerN mirrors `Number.isInteger(n)`; emitter lowers to the equivalent
+// math-package expression.
+func isIntegerN(n float64) bool {
+	return !gomath.IsInf(n, 0) && !gomath.IsNaN(n) && gomath.Trunc(n) == n
+}
+
+func TestHybrid_NumberStatics_RoundTrip(t *testing.T) {
+	src := `
+export function isIntegerN(n: number): boolean { return Number.isInteger(n); }
+export function maxSafe(): number { return Number.MAX_SAFE_INTEGER; }
+`
+	sf, program, _ := setupProgram(t, src)
+	ck, done := program.GetTypeCheckerForFile(context.Background(), sf)
+	defer done()
+	res, err := composer.Compose(sf, ck, composer.Options{NativeModuleName: "native:num"})
+	if err != nil {
+		t.Fatalf("compose: %v", err)
+	}
+	maxSafe := func() float64 { return 9007199254740991 }
+	mod := ramune.NativeModuleFromFuncs("native:num", map[string]any{
+		"isIntegerN": isIntegerN,
+		"maxSafe":    maxSafe,
+	})
+	r := newRamune(t, ramune.NodeCompat(), ramune.WithModule(mod))
+	defer r.Close()
+	if err := r.Exec(res.ShimJS); err != nil {
+		t.Fatalf("shim: %v", err)
+	}
+	v, err := r.Eval(`isIntegerN(3)`)
+	if err != nil {
+		t.Fatalf("eval isIntegerN(3): %v", err)
+	}
+	got, _ := v.Bool()
+	if !got {
+		t.Fatalf("isIntegerN(3) = false, want true")
+	}
+	v, err = r.Eval(`isIntegerN(3.5)`)
+	if err != nil {
+		t.Fatalf("eval isIntegerN(3.5): %v", err)
+	}
+	got, _ = v.Bool()
+	if got {
+		t.Fatalf("isIntegerN(3.5) = true, want false")
+	}
+	v, err = r.Eval(`maxSafe()`)
+	if err != nil {
+		t.Fatalf("eval maxSafe: %v", err)
+	}
+	gotN, _ := v.Float64()
+	if gotN != 9007199254740991 {
+		t.Fatalf("maxSafe() = %v, want 9007199254740991", gotN)
+	}
+}
 
 func TestHybrid_NamedInterfaceParam_RoundTrip(t *testing.T) {
 	src := `
