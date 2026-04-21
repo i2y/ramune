@@ -82,7 +82,7 @@ func isExtractableType(ck *checker.Checker, t *checker.Type) *Reason {
 			// Restricting element to primitives keeps the body walker's
 			// single-level `arr[i]` pattern sound; nested arrays would need
 			// access-pattern support the walker does not yet have.
-			if elem.Flags()&(checker.TypeFlagsStringLike|checker.TypeFlagsNumberLike|checker.TypeFlagsBooleanLike) == 0 {
+			if !isPrimitiveType(elem.Flags()) {
 				return &Reason{Code: reasonObjectType, Detail: "array element must be primitive in v1"}
 			}
 			return nil
@@ -91,7 +91,7 @@ func isExtractableType(ck *checker.Checker, t *checker.Type) *Reason {
 			// Promise<T> bridges via *promise.Promise[T] on all backends.
 			// Restrict the resolved type to primitives so the bridge stays
 			// in the JSON-clean lane.
-			if inner.Flags()&(checker.TypeFlagsStringLike|checker.TypeFlagsNumberLike|checker.TypeFlagsBooleanLike) == 0 {
+			if !isPrimitiveType(inner.Flags()) {
 				return &Reason{Code: reasonObjectType, Detail: "Promise<T>: T must be primitive in v1"}
 			}
 			return nil
@@ -104,8 +104,12 @@ func isExtractableType(ck *checker.Checker, t *checker.Type) *Reason {
 	return &Reason{Code: reasonUnhandledKind, Detail: "unclassified type"}
 }
 
+func isPrimitiveType(flags checker.TypeFlags) bool {
+	return flags&(checker.TypeFlagsStringLike|checker.TypeFlagsNumberLike|checker.TypeFlagsBooleanLike) != 0
+}
+
 func isPrimitiveOrVoid(flags checker.TypeFlags) bool {
-	return flags&(checker.TypeFlagsStringLike|checker.TypeFlagsNumberLike|checker.TypeFlagsBooleanLike|checker.TypeFlagsVoidLike) != 0
+	return isPrimitiveType(flags) || flags&checker.TypeFlagsVoidLike != 0
 }
 
 // isBoolLikeType / isNumberLikeType / isStringLikeType are *checker.Type
@@ -173,10 +177,7 @@ func isExtractableObjectType(ck *checker.Checker, t *checker.Type) bool {
 	}
 	for _, p := range props {
 		pt := ck.GetTypeOfSymbol(p)
-		if pt == nil {
-			return false
-		}
-		if pt.Flags()&(checker.TypeFlagsStringLike|checker.TypeFlagsNumberLike|checker.TypeFlagsBooleanLike) == 0 {
+		if pt == nil || !isPrimitiveType(pt.Flags()) {
 			return false
 		}
 	}

@@ -520,20 +520,12 @@ func checkPropertyAccess(node *ast.Node, ctx *bodyCtx) *Reason {
 
 	// Named-interface field access: receiver type must be an extractable
 	// object (named, all-primitive props). The picker accepting `r: Rect`
-	// at the param gate doesn't help by itself - the body walker still needs
-	// to admit `r.width` and reject `obj.foo` on anonymous inline types
-	// (which the emitter would lower via jsrt.Obj reflection).
-	if r := checkExpr(pa.Expression, ctx); r != nil {
-		return r
-	}
-	if ctx.ck == nil {
-		return &Reason{Code: reasonUnhandledKind, Detail: "no checker for field access"}
-	}
-	t := ctx.ck.GetTypeAtLocation(pa.Expression)
-	if !isExtractableObjectType(ctx.ck, t) {
-		return &Reason{Code: reasonObjectType, Detail: "field access requires named-interface receiver (got ." + propName + ")"}
-	}
-	return nil
+	// at the param gate doesn't help by itself - the body walker still
+	// needs to admit `r.width` and reject `obj.foo` on anonymous inline
+	// types (which the emitter would lower via jsrt.Obj reflection).
+	return checkReceiverType(pa.Expression, ctx, func(t *checker.Type) bool {
+		return isExtractableObjectType(ctx.ck, t)
+	}, "a named-interface field receiver")
 }
 
 // checkElementAccess accepts `arrayVar[i]` where the index is number-typed

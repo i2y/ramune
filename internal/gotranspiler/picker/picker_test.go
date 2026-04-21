@@ -404,6 +404,9 @@ export function getX(o: Outer): number { return o.inner.x; }
 	if c.Extracted {
 		t.Fatalf("expected rejection for nested-object interface")
 	}
+	if c.Reason.Code != "object-type" {
+		t.Fatalf("expected object-type, got %q", c.Reason.Code)
+	}
 }
 
 func TestPicker_Rejects_NamedInterfaceWithMethod(t *testing.T) {
@@ -415,6 +418,9 @@ export function greet(g: Greeter): string { return g.greet(); }
 	c, _ := byName(res, "greet")
 	if c.Extracted {
 		t.Fatalf("expected rejection for interface with method (call signature)")
+	}
+	if c.Reason.Code != "object-type" {
+		t.Fatalf("expected object-type, got %q", c.Reason.Code)
 	}
 }
 
