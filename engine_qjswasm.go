@@ -37,30 +37,30 @@ type Runtime struct {
 	wakeCh chan struct{}
 	qjsGID atomic.Int64
 
-	nativeMethodSeq int
-	nativeReg       *nativeTypeRegistry
-	fsMgr           *fsManager
-	fswatchMgr      *fsWatchManager
-	vmMgr           *vmManager
-	procMgr         *processManager
-	sockMgr         *socketManager
-	tcpSrvMgr       *tcpServerManager
-	udpMgr          *udpManager
-	webviewMgr      *webviewManager
-	workerMgr       *workerManager
-	http2Mgr        *http2Manager
+	nativeMethodSeq    int
+	nativeReg          *nativeTypeRegistry
+	fsMgr              *fsManager
+	fswatchMgr         *fsWatchManager
+	vmMgr              *vmManager
+	procMgr            *processManager
+	sockMgr            *socketManager
+	tcpSrvMgr          *tcpServerManager
+	udpMgr             *udpManager
+	webviewMgr         *webviewManager
+	workerMgr          *workerManager
+	http2Mgr           *http2Manager
 	waitAsyncCount     atomic.Int32
 	nativePromiseCount atomic.Int32 // pending Go *promise.Promise[T] -> JS Promise bridges
 	sqliteMgr          *sqliteManager
-	streamMgr       *streamManager
-	fetchMgr        *fetchManager
-	bunSrv          *bunServerState
-	customTickMgrs  []TickManager
-	gcConfig        GCConfig
-	perms           *Permissions
-	stdout          io.Writer
-	stderr          io.Writer
-	poolHandleFn    uintptr // unused in qjswasm but needed for pool.go shared code
+	streamMgr          *streamManager
+	fetchMgr           *fetchManager
+	bunSrv             *bunServerState
+	customTickMgrs     []TickManager
+	gcConfig           GCConfig
+	perms              *Permissions
+	stdout             io.Writer
+	stderr             io.Writer
+	poolHandleFn       uintptr // unused in qjswasm but needed for pool.go shared code
 
 	// uint8ArrayCtor caches globalThis.Uint8Array so newUint8ArrayLocked
 	// doesn't walk the global object on every conversion.

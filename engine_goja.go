@@ -92,37 +92,37 @@ type Runtime struct {
 	wakeCh  chan struct{}
 	gojaGID atomic.Int64
 
-	goFuncs           []GoFunc
-	nativeMethodSeq   int
-	nativeReg         *nativeTypeRegistry
-	fsMgr             *fsManager
-	fswatchMgr        *fsWatchManager
-	vmMgr             *vmManager
-	procMgr           *processManager
-	sockMgr           *socketManager
-	tcpSrvMgr         *tcpServerManager
-	udpMgr            *udpManager
-	webviewMgr        *webviewManager
-	workerMgr         *workerManager
-	http2Mgr          *http2Manager
+	goFuncs            []GoFunc
+	nativeMethodSeq    int
+	nativeReg          *nativeTypeRegistry
+	fsMgr              *fsManager
+	fswatchMgr         *fsWatchManager
+	vmMgr              *vmManager
+	procMgr            *processManager
+	sockMgr            *socketManager
+	tcpSrvMgr          *tcpServerManager
+	udpMgr             *udpManager
+	webviewMgr         *webviewManager
+	workerMgr          *workerManager
+	http2Mgr           *http2Manager
 	waitAsyncCount     atomic.Int32
 	nativePromiseCount atomic.Int32 // pending Go *promise.Promise[T] -> JS Promise bridges
 	sqliteMgr          *sqliteManager
-	streamMgr         *streamManager
-	fetchMgr          *fetchManager
-	bunSrv            *bunServerState
-	bunHandleFastFn   goja.Callable         // cached __bunHandleFast (fast HTTP dispatch)
-	bunAsyncSetupFn   goja.Callable         // cached __bunAsyncSetup (async path promise wiring)
-	bunTickFn         goja.Callable         // cached __eventLoop.tick
-	bunNextDelayFn    goja.Callable         // cached __eventLoop.nextDelay
-	bunMethodValCache map[string]goja.Value // pre-baked goja.Value for common HTTP verbs
-	bunCallArgs       []goja.Value          // reusable 4-slot args buffer for bunHandleFastFn
-	customTickMgrs    []TickManager
-	gcConfig          GCConfig
-	perms             *Permissions
-	stdout            io.Writer
-	stderr            io.Writer
-	poolHandleFn      uintptr // unused in goja but kept to preserve cross-backend Runtime shape
+	streamMgr          *streamManager
+	fetchMgr           *fetchManager
+	bunSrv             *bunServerState
+	bunHandleFastFn    goja.Callable         // cached __bunHandleFast (fast HTTP dispatch)
+	bunAsyncSetupFn    goja.Callable         // cached __bunAsyncSetup (async path promise wiring)
+	bunTickFn          goja.Callable         // cached __eventLoop.tick
+	bunNextDelayFn     goja.Callable         // cached __eventLoop.nextDelay
+	bunMethodValCache  map[string]goja.Value // pre-baked goja.Value for common HTTP verbs
+	bunCallArgs        []goja.Value          // reusable 4-slot args buffer for bunHandleFastFn
+	customTickMgrs     []TickManager
+	gcConfig           GCConfig
+	perms              *Permissions
+	stdout             io.Writer
+	stderr             io.Writer
+	poolHandleFn       uintptr // unused in goja but kept to preserve cross-backend Runtime shape
 
 	closeOnce sync.Once
 	closed    atomic.Bool

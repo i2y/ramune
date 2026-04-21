@@ -173,35 +173,35 @@ type Runtime struct {
 	jsObjectGetArrayBufferBytesPtr   func(uintptr, uintptr, uintptr) uintptr
 	jsObjectGetArrayBufferByteLength func(uintptr, uintptr, uintptr) uint64
 
-	callbacks       []uintptr           // prevent GC of purego callbacks
-	jsonStringifyFn uintptr             // cached JSON.stringify JSObjectRef
-	jsonParseFn     uintptr             // cached JSON.parse JSObjectRef
-	goFuncs         []GoFunc            // registered Go functions (ID dispatch)
-	dispatcherReady bool                // single dispatcher callback created
-	nativeMethodSeq int                 // counter for unique native method callback names
-	nativeReg       *nativeTypeRegistry // per-type struct callback registry
-	fsMgr           *fsManager          // async filesystem manager
-	fswatchMgr      *fsWatchManager     // fs.watch() manager
-	vmMgr           *vmManager          // vm module context manager
-	procMgr         *processManager     // async subprocess manager
-	sockMgr         *socketManager      // async socket manager
-	tcpSrvMgr       *tcpServerManager   // TCP server manager
-	udpMgr          *udpManager         // UDP/dgram manager
-	webviewMgr      *webviewManager     // WebView manager
-	workerMgr       *workerManager      // worker threads manager
-	http2Mgr        *http2Manager       // HTTP/2 session manager
+	callbacks          []uintptr           // prevent GC of purego callbacks
+	jsonStringifyFn    uintptr             // cached JSON.stringify JSObjectRef
+	jsonParseFn        uintptr             // cached JSON.parse JSObjectRef
+	goFuncs            []GoFunc            // registered Go functions (ID dispatch)
+	dispatcherReady    bool                // single dispatcher callback created
+	nativeMethodSeq    int                 // counter for unique native method callback names
+	nativeReg          *nativeTypeRegistry // per-type struct callback registry
+	fsMgr              *fsManager          // async filesystem manager
+	fswatchMgr         *fsWatchManager     // fs.watch() manager
+	vmMgr              *vmManager          // vm module context manager
+	procMgr            *processManager     // async subprocess manager
+	sockMgr            *socketManager      // async socket manager
+	tcpSrvMgr          *tcpServerManager   // TCP server manager
+	udpMgr             *udpManager         // UDP/dgram manager
+	webviewMgr         *webviewManager     // WebView manager
+	workerMgr          *workerManager      // worker threads manager
+	http2Mgr           *http2Manager       // HTTP/2 session manager
 	waitAsyncCount     atomic.Int32        // pending Atomics.waitAsync operations
 	nativePromiseCount atomic.Int32        // pending Go *promise.Promise[T] -> JS Promise bridges
 	sqliteMgr          *sqliteManager      // bun:sqlite database manager
-	streamMgr       *streamManager      // bidirectional stream bridge
-	fetchMgr        *fetchManager       // streaming fetch request manager
-	bunSrv          *bunServerState     // Bun.serve() state
-	customTickMgrs  []TickManager       // user-registered event loop managers
-	gcConfig        GCConfig            // GC configuration
-	perms           *Permissions        // permission policy
-	stdout          io.Writer           // console.log output
-	stderr          io.Writer           // console.error output
-	poolHandleFn    uintptr             // cached __poolHandleFast JSObjectRef (for RuntimePool)
+	streamMgr          *streamManager      // bidirectional stream bridge
+	fetchMgr           *fetchManager       // streaming fetch request manager
+	bunSrv             *bunServerState     // Bun.serve() state
+	customTickMgrs     []TickManager       // user-registered event loop managers
+	gcConfig           GCConfig            // GC configuration
+	perms              *Permissions        // permission policy
+	stdout             io.Writer           // console.log output
+	stderr             io.Writer           // console.error output
+	poolHandleFn       uintptr             // cached __poolHandleFast JSObjectRef (for RuntimePool)
 
 	// Protected value tracking: values are unprotected on Runtime.Close()
 	// if not explicitly closed. No Go finalizers are used to avoid SIGTRAP
