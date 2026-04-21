@@ -337,13 +337,7 @@ func checkExpr(node *ast.Node, ctx *bodyCtx) *Reason {
 		case ast.KindPlusToken, ast.KindMinusToken:
 			// Emitter drops unary +/- so a non-numeric operand would leak through
 			// (`return s` with a float64 return type). Require numeric operand.
-			if r := checkExpr(pu.Operand, ctx); r != nil {
-				return r
-			}
-			if ctx.ck != nil && !isNumberLikeNode(ctx.ck, pu.Operand) {
-				return &Reason{Code: reasonObjectType, Detail: "unary +/- requires numeric operand"}
-			}
-			return nil
+			return checkExprWithType(pu.Operand, ctx, isNumberLikeType, Reason{Code: reasonObjectType, Detail: "unary +/- requires numeric operand"})
 		case ast.KindPlusPlusToken, ast.KindMinusMinusToken:
 			if r := rejectParamMutation(pu.Operand, ctx); r != nil {
 				return r
@@ -545,12 +539,12 @@ func checkElementAccess(node *ast.Node, ctx *bodyCtx) *Reason {
 	return nil
 }
 
-// requireBoolExpr walks expr and asserts its checker type is boolean.
-// Without this, `if (n)` and `n && b` drive the emitter to wrap with
-// `jsrt.ToBool` (which drags ramune into otherwise-standalone Go output)
-// or to emit Go `&&`/`!` against a non-bool (which is a type error). JS
-// truthy coercion over arbitrary types is not preserved by extracted code.
-func requireBoolExpr(expr *ast.Node, ctx *bodyCtx, detail string) *Reason {
+// checkExprWithType is the shared core for "walk expr, then assert its
+// checker type satisfies pred". Returns reject when the predicate fails.
+// nil expr or nil ctx.ck both short-circuit to nil so callers can decide
+// whether those edge cases are acceptable (condition gates: yes; receiver
+// gates: no — they handle them before delegating here).
+func checkExprWithType(expr *ast.Node, ctx *bodyCtx, pred func(*checker.Type) bool, reject Reason) *Reason {
 	if expr == nil {
 		return nil
 	}
@@ -560,11 +554,17 @@ func requireBoolExpr(expr *ast.Node, ctx *bodyCtx, detail string) *Reason {
 	if ctx.ck == nil {
 		return nil
 	}
-	t := ctx.ck.GetTypeAtLocation(expr)
-	if t == nil || t.Flags()&checker.TypeFlagsBooleanLike == 0 {
-		return &Reason{Code: reasonObjectType, Detail: detail}
+	if !pred(ctx.ck.GetTypeAtLocation(expr)) {
+		return &reject
 	}
 	return nil
+}
+
+// requireBoolExpr is a thin wrapper enforcing boolean type. Without this,
+// `if (n)` and `n && b` drive the emitter to wrap with `jsrt.ToBool` or to
+// emit Go `&&`/`!` against a non-bool — both wrong.
+func requireBoolExpr(expr *ast.Node, ctx *bodyCtx, detail string) *Reason {
+	return checkExprWithType(expr, ctx, isBoolLikeType, Reason{Code: reasonObjectType, Detail: detail})
 }
 
 func requireBoolOperand(expr *ast.Node, ctx *bodyCtx, where string) *Reason {
@@ -575,37 +575,28 @@ func requireBoolCondition(expr *ast.Node, ctx *bodyCtx) *Reason {
 	return requireBoolExpr(expr, ctx, "condition must be boolean-typed (no JS truthy coercion in v1)")
 }
 
-// checkReceiverType walks expr (so closure capture, mutations, etc. are
-// caught) and asserts the checker's type for expr satisfies typePred. Used
-// for receivers of `.length`, `arr[i]`, string methods, and array methods -
-// all of which share the same shape after the bare-identifier constraint
-// was lifted to allow chained expressions.
+// checkReceiverType is the receiver-position counterpart to requireBoolExpr.
+// Both share the walker + type-query core via checkExprWithType but differ on
+// nil-edge semantics: receivers reject up front (a nil receiver is a malformed
+// call), while bool conditions accept (a missing condition is fine).
 func checkReceiverType(expr *ast.Node, ctx *bodyCtx, typePred func(*checker.Type) bool, desc string) *Reason {
 	if expr == nil {
 		return &Reason{Code: reasonUnhandledKind, Detail: "nil " + desc + " receiver"}
 	}
-	if r := checkExpr(expr, ctx); r != nil {
-		return r
-	}
 	if ctx.ck == nil {
 		return &Reason{Code: reasonUnhandledKind, Detail: "no checker for " + desc + " receiver"}
 	}
-	if !typePred(ctx.ck.GetTypeAtLocation(expr)) {
-		return &Reason{Code: reasonObjectType, Detail: "receiver is not " + desc}
-	}
-	return nil
+	return checkExprWithType(expr, ctx, typePred, Reason{Code: reasonObjectType, Detail: "receiver is not " + desc})
 }
 
 func rejectNonArrayReceiver(expr *ast.Node, ctx *bodyCtx) *Reason {
 	return checkReceiverType(expr, ctx, func(t *checker.Type) bool {
-		return t != nil && arrayElementType(ctx.ck, t) != nil
+		return arrayElementType(ctx.ck, t) != nil
 	}, "an array")
 }
 
 func rejectNonStringReceiver(expr *ast.Node, ctx *bodyCtx) *Reason {
-	return checkReceiverType(expr, ctx, func(t *checker.Type) bool {
-		return t != nil && t.Flags()&checker.TypeFlagsStringLike != 0
-	}, "a string")
+	return checkReceiverType(expr, ctx, isStringLikeType, "a string")
 }
 
 // checkForOfStatement accepts `for (const x of xs)` over a walker-safe
@@ -766,10 +757,7 @@ func checkTemplateExpression(node *ast.Node, ctx *bodyCtx) *Reason {
 
 func rejectNonLengthableReceiver(expr *ast.Node, ctx *bodyCtx) *Reason {
 	return checkReceiverType(expr, ctx, func(t *checker.Type) bool {
-		if t == nil {
-			return false
-		}
-		return t.Flags()&checker.TypeFlagsStringLike != 0 || arrayElementType(ctx.ck, t) != nil
+		return isStringLikeType(t) || arrayElementType(ctx.ck, t) != nil
 	}, "an array or string")
 }
 

@@ -103,6 +103,20 @@ func isPrimitiveOrVoid(flags checker.TypeFlags) bool {
 	return flags&(checker.TypeFlagsStringLike|checker.TypeFlagsNumberLike|checker.TypeFlagsBooleanLike|checker.TypeFlagsVoidLike) != 0
 }
 
+// isBoolLikeType / isNumberLikeType / isStringLikeType are *checker.Type
+// predicates suitable for passing to checkExprWithType. nil-safe.
+func isBoolLikeType(t *checker.Type) bool {
+	return t != nil && t.Flags()&checker.TypeFlagsBooleanLike != 0
+}
+
+func isNumberLikeType(t *checker.Type) bool {
+	return t != nil && t.Flags()&checker.TypeFlagsNumberLike != 0
+}
+
+func isStringLikeType(t *checker.Type) bool {
+	return t != nil && t.Flags()&checker.TypeFlagsStringLike != 0
+}
+
 // isNumberLikeNode returns true when ck reports a NumberLike type for n.
 // nil ck or nil type both yield false (cannot prove numeric -> reject).
 func isNumberLikeNode(ck *checker.Checker, n *ast.Node) bool {
