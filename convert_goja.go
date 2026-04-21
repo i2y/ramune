@@ -135,7 +135,11 @@ func (r *Runtime) promiseToJSGoja(rv reflect.Value) (goja.Value, error) {
 
 	awaitMethod := rv.MethodByName("Await")
 
+	// Mark this bridge as pending so RunEventLoopFor doesn't return before
+	// the resolver fires. Decrement after the dispatched resolve/reject runs.
+	r.nativePromiseCount.Add(1)
 	go func() {
+		defer r.nativePromiseCount.Add(-1)
 		results := awaitMethod.Call(nil)
 		r.dispatch(func() {
 			if len(results) >= 2 && !results[1].IsNil() {

@@ -49,8 +49,9 @@ type Runtime struct {
 	webviewMgr      *webviewManager
 	workerMgr       *workerManager
 	http2Mgr        *http2Manager
-	waitAsyncCount  atomic.Int32
-	sqliteMgr       *sqliteManager
+	waitAsyncCount     atomic.Int32
+	nativePromiseCount atomic.Int32 // pending Go *promise.Promise[T] -> JS Promise bridges
+	sqliteMgr          *sqliteManager
 	streamMgr       *streamManager
 	fetchMgr        *fetchManager
 	bunSrv          *bunServerState

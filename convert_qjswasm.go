@@ -184,7 +184,11 @@ func (r *Runtime) promiseToJSLocked(rv reflect.Value) (*qjs.Value, error) {
 
 	awaitMethod := rv.MethodByName("Await")
 
+	// Mark this bridge as pending so RunEventLoopFor doesn't return before
+	// the resolver fires. Decrement after the dispatched resolve/reject runs.
+	r.nativePromiseCount.Add(1)
 	go func() {
+		defer r.nativePromiseCount.Add(-1)
 		results := awaitMethod.Call(nil)
 		r.dispatch(func() {
 			global := r.qjsCtx.Global()

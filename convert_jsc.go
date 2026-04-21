@@ -139,7 +139,11 @@ func (r *Runtime) promiseToJS(rv reflect.Value) (uintptr, error) {
 	}
 
 	awaitMethod := rv.MethodByName("Await")
+	// Mark this bridge as pending so RunEventLoopFor doesn't return before
+	// the resolver fires. Decrement after the dispatched resolve/reject runs.
+	r.nativePromiseCount.Add(1)
 	go func() {
+		defer r.nativePromiseCount.Add(-1)
 		results := awaitMethod.Call(nil)
 		// results[0] = value, results[1] = error
 		r.dispatch(func() {

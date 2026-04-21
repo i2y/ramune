@@ -493,6 +493,13 @@ func (r *Runtime) hasPendingLocked() bool {
 	if r.waitAsyncCount.Load() > 0 {
 		return true
 	}
+	// Check for in-flight Go *promise.Promise[T] -> JS Promise bridges.
+	// Without this, RunEventLoopFor can return before the bridge goroutine
+	// dispatches its resolve/reject when the JS side has no other pending
+	// timers/managers.
+	if r.nativePromiseCount.Load() > 0 {
+		return true
+	}
 	// Check for pending async fs operations.
 	if r.fsMgr != nil && r.fsMgr.hasActive() {
 		return true
