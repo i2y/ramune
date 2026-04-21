@@ -950,8 +950,16 @@ func bunCompatJSSource() string {
 		verify: function(secret, token) { return __go_bun_csrf_verify(secret, token); }
 	};
 
-	// Bun compatibility alias — existing Bun.serve() code works as-is.
-	globalThis.Bun = globalThis.Ramune;
+	// Bun compatibility: Bun inherits from Ramune via prototype so existing
+	// Bun.serve() / Bun.file() calls still resolve (reads fall through to
+	// Ramune). Using Object.create instead of a direct-reference alias lets
+	// the two namespaces diverge on properties that are documented as
+	// different APIs: Ramune.WebView is the native glaze desktop view and
+	// Bun.WebView is the headless CDP browser. With the old same-object
+	// alias, the later CDP install clobbered the glaze one because both
+	// names pointed at the same slot. Own-property writes on Bun now stay
+	// local, so divergence works.
+	globalThis.Bun = Object.create(globalThis.Ramune);
 
 	// Shared body-reading helper for Request/Response.
 	function __readStreamAsText(stream) {
