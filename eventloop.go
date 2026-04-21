@@ -6,6 +6,13 @@ import (
 	"time"
 )
 
+// pendingPollDefault is the wakeCh poll interval used when hasPendingLocked
+// reports work in flight but no JS-side timer drives the next deadline.
+// Without it, the loop spins as fast as r.dispatch can complete (which is
+// JS-eval bounded). Wake() is called by every async manager and the native
+// Promise bridge, so this is mostly just a safety-net cap if Wake races.
+const pendingPollDefault = 10 * time.Millisecond
+
 // installEventLoop sets up the JavaScript event loop infrastructure.
 // Must be called on the dedicated JSC goroutine.
 func (r *Runtime) installEventLoop() error {
@@ -126,6 +133,9 @@ func (r *Runtime) RunEventLoopFor(timeout time.Duration) error {
 			pending = r.hasPendingLocked()
 			if pending {
 				delay = r.nextDelayLocked()
+				if delay <= 0 {
+					delay = pendingPollDefault
+				}
 			}
 		})
 
@@ -217,6 +227,9 @@ func (r *Runtime) awaitAsyncResult(timeout time.Duration) (*Value, error) {
 			pending = r.hasPendingLocked()
 			if pending {
 				delay = r.nextDelayLocked()
+				if delay <= 0 {
+					delay = pendingPollDefault
+				}
 			}
 		})
 
@@ -287,6 +300,9 @@ func (r *Runtime) RunEventLoopWithContext(ctx context.Context) error {
 			pending = r.hasPendingLocked()
 			if pending {
 				delay = r.nextDelayLocked()
+				if delay <= 0 {
+					delay = pendingPollDefault
+				}
 			}
 		})
 
@@ -405,6 +421,9 @@ func (r *Runtime) awaitAsyncResultWithContext(ctx context.Context, timeout time.
 			pending = r.hasPendingLocked()
 			if pending {
 				delay = r.nextDelayLocked()
+				if delay <= 0 {
+					delay = pendingPollDefault
+				}
 			}
 		})
 
