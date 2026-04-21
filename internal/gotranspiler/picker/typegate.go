@@ -87,17 +87,16 @@ func isExtractableType(ck *checker.Checker, t *checker.Type) *Reason {
 			}
 			return nil
 		}
-		if inner := ck.GetPromisedTypeOfPromise(t); inner != nil {
-			// Promise<T> bridges via *promise.Promise[T] on all backends.
-			// Restrict the resolved type to primitives so the bridge stays
-			// in the JSON-clean lane.
-			if !isPrimitiveType(inner.Flags()) {
-				return &Reason{Code: reasonObjectType, Detail: "Promise<T>: T must be primitive in v1"}
-			}
-			return nil
-		}
 		if isExtractableObjectType(ck, t) {
 			return nil
+		}
+		if ck.GetPromisedTypeOfPromise(t) != nil {
+			// Promise<T> is only acceptable in function-return position
+			// (handled by isExtractableReturnType). As a param/local/field
+			// type the JS->Go bridge has no way to materialise a Go
+			// *promise.Promise[T] from a JS Promise, so awaiting it yields
+			// the float64 zero value at runtime.
+			return &Reason{Code: reasonObjectType, Detail: "Promise<T> only allowed as function return type"}
 		}
 		return &Reason{Code: reasonObjectType, Detail: "object/reference type not supported in v1"}
 	}
@@ -133,6 +132,23 @@ func isNumberLikeNode(ck *checker.Checker, n *ast.Node) bool {
 		return false
 	}
 	return isNumberLikeType(ck.GetTypeAtLocation(n))
+}
+
+// isExtractableReturnType is a superset of isExtractableType that additionally
+// accepts `Promise<T>` (T extractable). Promise return values bridge to JS
+// Promise via *promise.Promise[T]; the reverse direction (JS Promise -> Go
+// *promise.Promise[T]) is not implemented in the runtime, so other positions
+// (param/local/field) reject Promise.
+func isExtractableReturnType(ck *checker.Checker, t *checker.Type) *Reason {
+	if t != nil && t.Flags()&checker.TypeFlagsObject != 0 {
+		if inner := ck.GetPromisedTypeOfPromise(t); inner != nil {
+			if !isPrimitiveType(inner.Flags()) {
+				return &Reason{Code: reasonObjectType, Detail: "Promise<T>: T must be primitive in v1"}
+			}
+			return nil
+		}
+	}
+	return isExtractableType(ck, t)
 }
 
 // isExtractableObjectType returns true when t is a named interface or type

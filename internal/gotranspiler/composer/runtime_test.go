@@ -562,6 +562,69 @@ export function area(r: Rect): number { return r.width * r.height; }
 	}
 }
 
+// inner / outerChain stand in for a same-file pair where outer await-chains
+// inner. The runtime's JS->Go bridge has no path to materialise a Go
+// *promise.Promise[T] from a JS Promise, so any awaitable must come from
+// another extracted async function in the same package - which is exactly
+// what the picker enforces.
+func innerAsync() *promise.Promise[float64] {
+	return promise.New[float64](func(resolve func(float64), _ func(error)) {
+		resolve(42)
+	})
+}
+
+func outerAsync() *promise.Promise[float64] {
+	return promise.New[float64](func(resolve func(float64), reject func(error)) {
+		v, err := innerAsync().Await()
+		if err != nil {
+			reject(err)
+			return
+		}
+		resolve(v + 1)
+	})
+}
+
+func TestHybrid_AsyncAwait_RoundTrip(t *testing.T) {
+	src := `
+export async function inner(): Promise<number> { return 42; }
+export async function outer(): Promise<number> {
+  const v = await inner();
+  return v + 1;
+}
+`
+	sf, program, _ := setupProgram(t, src)
+	ck, done := program.GetTypeCheckerForFile(context.Background(), sf)
+	defer done()
+	res, err := composer.Compose(sf, ck, composer.Options{NativeModuleName: "native:awaiter"})
+	if err != nil {
+		t.Fatalf("compose: %v", err)
+	}
+	if !strings.Contains(res.GoSource, "Await()") {
+		t.Fatalf("expected `.Await()` in emitted Go:\n%s", res.GoSource)
+	}
+	mod := ramune.NativeModuleFromFuncs("native:awaiter", map[string]any{
+		"inner": innerAsync,
+		"outer": outerAsync,
+	})
+	r := newRamune(t, ramune.NodeCompat(), ramune.WithModule(mod))
+	defer r.Close()
+	if err := r.Exec(res.ShimJS); err != nil {
+		t.Fatalf("shim: %v", err)
+	}
+	if err := r.Exec(`globalThis.__r = null; outer().then(v => globalThis.__r = v);`); err != nil {
+		t.Fatalf("eval: %v", err)
+	}
+	r.RunEventLoopFor(500 * time.Millisecond)
+	v, err := r.Eval(`__r`)
+	if err != nil {
+		t.Fatalf("eval result: %v", err)
+	}
+	got, _ := v.Float64()
+	if got != 43 {
+		t.Fatalf("outer() = %v, want 43", got)
+	}
+}
+
 func TestHybrid_AsyncPromise_RoundTrip(t *testing.T) {
 	src := `export async function pAdd(a: number, b: number): Promise<number> { return a + b; }`
 	sf, program, _ := setupProgram(t, src)

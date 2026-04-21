@@ -91,7 +91,7 @@ func IsFunctionExtractable(node *ast.Node, ck *checker.Checker, topLevelFuncs ma
 		}
 	}
 
-	if r := isExtractableType(ck, ck.GetReturnTypeOfSignature(sig)); r != nil {
+	if r := isExtractableReturnType(ck, ck.GetReturnTypeOfSignature(sig)); r != nil {
 		return false, Reason{Code: r.Code, Detail: "return: " + r.Detail}
 	}
 
@@ -100,6 +100,7 @@ func IsFunctionExtractable(node *ast.Node, ck *checker.Checker, topLevelFuncs ma
 		paramNames:    paramNames,
 		topLevelFuncs: topLevelFuncs,
 		localNames:    map[string]bool{},
+		inAsync:       ast.HasSyntacticModifier(node, ast.ModifierFlagsAsync),
 	}
 	if reason := checkBody(fd.Body, ctx); reason != nil {
 		return false, *reason
@@ -114,6 +115,7 @@ type bodyCtx struct {
 	paramNames    map[string]bool     // function parameters - readable, not writable
 	topLevelFuncs map[string]struct{} // same-file top-level functions - callable
 	localNames    map[string]bool     // locals declared in this body (let/const/var) - readable AND writable
+	inAsync       bool                // function is `async` - permits `await` on Promise<T>
 }
 
 // checkBody walks a block/statement subtree and returns a non-nil Reason if
@@ -378,7 +380,7 @@ func checkExpr(node *ast.Node, ctx *bodyCtx) *Reason {
 	case ast.KindYieldExpression:
 		return &Reason{Code: reasonYield, Detail: "yield"}
 	case ast.KindAwaitExpression:
-		return &Reason{Code: reasonAwait, Detail: "await"}
+		return checkAwaitExpr(node, ctx)
 	case ast.KindArrowFunction, ast.KindFunctionExpression, ast.KindClassExpression:
 		return &Reason{Code: reasonFuncLiteral, Detail: "inline function/class literal"}
 	case ast.KindRegularExpressionLiteral:
@@ -728,6 +730,35 @@ func checkSwitchStatement(node *ast.Node, ctx *bodyCtx) *Reason {
 				}
 			}
 		}
+	}
+	return nil
+}
+
+// checkAwaitExpr accepts `await <Promise<T>>` inside async functions where T
+// is a v1-extractable type. The emitter lowers this to an IIFE around
+// `.Await()` (with `jsrt.Throw` on error), which only compiles when the
+// awaited value is a *promise.Promise[T].
+func checkAwaitExpr(node *ast.Node, ctx *bodyCtx) *Reason {
+	if !ctx.inAsync {
+		return &Reason{Code: reasonAwait, Detail: "await outside async function"}
+	}
+	ae := node.AsAwaitExpression()
+	if ae == nil || ae.Expression == nil {
+		return &Reason{Code: reasonAwait, Detail: "await with no operand"}
+	}
+	if r := checkExpr(ae.Expression, ctx); r != nil {
+		return r
+	}
+	if ctx.ck == nil {
+		return &Reason{Code: reasonAwait, Detail: "no checker for await operand"}
+	}
+	t := ctx.ck.GetTypeAtLocation(ae.Expression)
+	inner := ctx.ck.GetPromisedTypeOfPromise(t)
+	if inner == nil {
+		return &Reason{Code: reasonAwait, Detail: "await operand must be a Promise<T>"}
+	}
+	if r := isExtractableType(ctx.ck, inner); r != nil {
+		return &Reason{Code: r.Code, Detail: "await result: " + r.Detail}
 	}
 	return nil
 }

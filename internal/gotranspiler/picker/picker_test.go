@@ -336,6 +336,88 @@ func TestPicker_Rejects_Generic(t *testing.T) {
 	}
 }
 
+func TestPicker_Accepts_AsyncAwaitChain(t *testing.T) {
+	// `await` is only useful on a Promise that's reachable from extractable
+	// code. The runtime's JS->Go bridge doesn't materialise a Go
+	// *promise.Promise[T] from a JS Promise, so Promise<T> is rejected as a
+	// param/local type. The only path that survives is awaiting a same-file
+	// async function whose return type is Promise<extractable>.
+	src := `
+export async function inner(): Promise<number> { return 42; }
+export async function outer(): Promise<number> {
+  const v = await inner();
+  return v + 1;
+}
+`
+	res := pickOne(t, src)
+	for _, name := range []string{"inner", "outer"} {
+		c, ok := byName(res, name)
+		if !ok || !c.Extracted {
+			t.Fatalf("expected `%s` extracted; got %+v", name, c.Reason)
+		}
+	}
+}
+
+func TestPicker_Rejects_PromiseAsParam(t *testing.T) {
+	src := `
+export async function bad(p: Promise<number>): Promise<number> {
+  return await p;
+}`
+	res := pickOne(t, src)
+	c, _ := byName(res, "bad")
+	if c.Extracted {
+		t.Fatalf("expected rejection: Promise<T> param has no JS->Go bridge")
+	}
+	if c.Reason.Code != "object-type" {
+		t.Fatalf("expected object-type, got %q", c.Reason.Code)
+	}
+}
+
+func TestPicker_Rejects_AwaitOutsideAsync(t *testing.T) {
+	// TS would flag this at compile, but the picker must defend against the
+	// case where the body walker sees await without the async modifier (e.g.,
+	// future support for top-level await or async arrow nesting).
+	src := `export function bad(p: Promise<number>): number { return await p; }`
+	res := pickOne(t, src)
+	c, _ := byName(res, "bad")
+	if c.Extracted {
+		t.Fatalf("expected rejection for await in non-async function")
+	}
+}
+
+func TestPicker_Rejects_AwaitNonPromise(t *testing.T) {
+	// Awaiting a non-Promise (number) - JS no-op, but emitter would call
+	// .Await() on float64 which won't compile.
+	src := `export async function bad(n: number): Promise<number> { return await (n as any); }`
+	res := pickOne(t, src)
+	c, _ := byName(res, "bad")
+	if c.Extracted {
+		t.Fatalf("expected rejection for await on non-Promise")
+	}
+}
+
+func TestPicker_Rejects_AwaitObjectPromise(t *testing.T) {
+	// Promise<{x: number}> - inner type is non-primitive object. Same-file
+	// async returning Promise<R> would be rejected at the inner function's
+	// own return-type check before we even reach the await call site, so
+	// shape this around a non-primitive Promise inner.
+	src := `
+interface R { x: number; }
+export async function inner(): Promise<R> { return { x: 1 }; }
+export async function outer(): Promise<number> {
+  const r = await inner();
+  return r.x;
+}`
+	res := pickOne(t, src)
+	c, _ := byName(res, "inner")
+	if c.Extracted {
+		t.Fatalf("expected rejection for Promise<R> return type")
+	}
+	if c.Reason.Code != "object-type" {
+		t.Fatalf("expected object-type, got %q", c.Reason.Code)
+	}
+}
+
 func TestPicker_Accepts_AsyncReturningPromise(t *testing.T) {
 	// Sync-resolving async functions extract via promise.New[T]; the body
 	// walker still rejects await/yield so this is a strict subset.
