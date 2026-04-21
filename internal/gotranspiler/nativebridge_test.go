@@ -95,9 +95,9 @@ func TestGoNameToJS(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		got := goNameToJS(tt.input)
+		got := GoNameToJS(tt.input)
 		if got != tt.want {
-			t.Errorf("goNameToJS(%q) = %q, want %q", tt.input, got, tt.want)
+			t.Errorf("GoNameToJS(%q) = %q, want %q", tt.input, got, tt.want)
 		}
 	}
 }

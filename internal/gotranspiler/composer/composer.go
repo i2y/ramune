@@ -39,9 +39,14 @@ type Result struct {
 	// ShimJS is the ES5 postlude to append to the JS bundle. Empty when no
 	// candidates were extracted.
 	ShimJS string
-	// ExportedJSNames are the JS-visible names (camelCase) that will be swapped
-	// at boot. Same set as ShimJS references, in source order.
+	// ExportedJSNames are the JS-visible function names (camelCase) that will
+	// be swapped at boot. Same set as ShimJS function references, in source
+	// order.
 	ExportedJSNames []string
+	// ExportedJSClasses are the JS-visible class names (PascalCase, as declared
+	// in TS) that the shim swaps. Each Counter binds to the factory registered
+	// under `mod.newCounter` so `new Counter(...)` returns the native instance.
+	ExportedJSClasses []string
 }
 
 // ComposeFile is a file-path wrapper around Compose that builds the tsgo
@@ -84,13 +89,26 @@ func Compose(sf *ast.SourceFile, ck *checker.Checker, opts Options) (*Result, er
 
 	// The JS-visible names match the set of extracted top-level TS functions.
 	res.ExportedJSNames = pick.ExtractedFunctions()
-	res.ShimJS = BuildShim(opts.NativeModuleName, res.ExportedJSNames)
+	res.ExportedJSClasses = pick.ExtractedClasses()
+	res.ShimJS = BuildShimWithClasses(opts.NativeModuleName, res.ExportedJSNames, res.ExportedJSClasses)
 
 	return res, nil
 }
 
+// classFactoryJSName is the JS module-export key for a class's Go factory.
+// The transpiler emits `func New<Class>(...)`; DiscoverExportedFuncs then
+// runs it through GoNameToJS.
+func classFactoryJSName(className string) string {
+	if className == "" {
+		return ""
+	}
+	return gotranspiler.GoNameToJS("New" + className)
+}
+
 // BuildShim returns the ES5 JS postlude that swaps module.exports entries for
 // the named functions with the implementations returned by the native module.
+// Classes are not installed by this overload — use BuildShimWithClasses when
+// the source file contains extracted classes.
 //
 // The shim is idempotent via the __ramuneNativeInstalled guard. It is safe to
 // embed repeatedly (second and subsequent evaluations are no-ops) and safe to
@@ -99,11 +117,19 @@ func Compose(sf *ast.SourceFile, ck *checker.Checker, opts Options) (*Result, er
 // Only ES5 syntax is used so the shim runs under goja (pre-ESNext) without
 // lowering and under QuickJS-NG without incident.
 func BuildShim(moduleName string, jsNames []string) string {
-	if len(jsNames) == 0 {
+	return BuildShimWithClasses(moduleName, jsNames, nil)
+}
+
+// BuildShimWithClasses is the class-aware variant. classNames are the TS class
+// names as declared (PascalCase); each one is installed as `globalThis.<Name>`
+// pointing at the Go factory registered under `mod.new<Name>`. Calling
+// `new Counter(...)` or `Counter(...)` both return the native instance object.
+func BuildShimWithClasses(moduleName string, jsNames []string, classNames []string) string {
+	if len(jsNames) == 0 && len(classNames) == 0 {
 		return ""
 	}
 	var b strings.Builder
-	b.Grow(280 + 180*len(jsNames))
+	b.Grow(280 + 180*(len(jsNames)+len(classNames)))
 	b.WriteString("\n;(function(){\n")
 	b.WriteString("  if (globalThis.__ramuneNativeInstalled) return;\n")
 	b.WriteString("  globalThis.__ramuneNativeInstalled = true;\n")
@@ -123,6 +149,16 @@ func BuildShim(moduleName string, jsNames []string) string {
 		fmt.Fprintf(&b, "  if (mod.%s) {\n", name)
 		fmt.Fprintf(&b, "    if (_me) _install(_me, %q, mod.%s);\n", name, name)
 		fmt.Fprintf(&b, "    _install(globalThis, %q, mod.%s);\n", name, name)
+		b.WriteString("  }\n")
+	}
+	for _, cname := range classNames {
+		factory := classFactoryJSName(cname)
+		// Wrap the factory so Counter !== mod.newCounter — prevents surprises
+		// if user code later reassigns one without affecting the other.
+		fmt.Fprintf(&b, "  if (mod.%s) {\n", factory)
+		fmt.Fprintf(&b, "    var _ctor_%s = (function(factory){ return function(){ return factory.apply(null, arguments); }; })(mod.%s);\n", factory, factory)
+		fmt.Fprintf(&b, "    if (_me) _install(_me, %q, _ctor_%s);\n", cname, factory)
+		fmt.Fprintf(&b, "    _install(globalThis, %q, _ctor_%s);\n", cname, factory)
 		b.WriteString("  }\n")
 	}
 	b.WriteString("})();\n")

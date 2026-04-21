@@ -38,6 +38,12 @@ const (
 	reasonYield          = "yield-expression"
 	reasonAwait          = "await-expression"
 	reasonFuncLiteral    = "inline-function-literal"
+	reasonClassHeritage  = "class-heritage"
+	reasonClassStatic    = "class-static"
+	reasonClassAccessor  = "class-accessor"
+	reasonClassPrivate   = "class-private"
+	reasonClassDecorator = "class-decorator"
+	reasonClassParamProp = "class-param-property"
 )
 
 // isExtractableType returns nil when t is a v1-extractable type, else a

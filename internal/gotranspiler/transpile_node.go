@@ -35,20 +35,34 @@ func TranspileNodes(ck *checker.Checker, nodes []*ast.Node, pkgName string) (str
 	t.tm = newTypeMapper(ck)
 
 	// Pre-scan: same-package exports let emitIdentifier route recursive and
-	// peer calls through the PascalCase Go name. Only register TS-exported
-	// functions — unexported helpers stay package-local in Go.
+	// peer calls through the PascalCase Go name. Register TS-exported
+	// functions and (v1.5) class names; unexported helpers stay package-local
+	// in Go.
 	for _, n := range nodes {
-		if n == nil || n.Kind != ast.KindFunctionDeclaration {
+		if n == nil {
 			continue
 		}
-		if !isExported(n) {
-			continue
+		switch n.Kind {
+		case ast.KindFunctionDeclaration:
+			if !isExported(n) {
+				continue
+			}
+			fd := n.AsFunctionDeclaration()
+			if fd == nil || fd.Name() == nil || fd.Name().Kind != ast.KindIdentifier {
+				continue
+			}
+			t.samePackageExports[fd.Name().AsIdentifier().Text] = true
+		case ast.KindClassDeclaration:
+			id := n.Name()
+			if id == nil || id.Kind != ast.KindIdentifier {
+				continue
+			}
+			cname := id.AsIdentifier().Text
+			// Register under both camelCase (export key) and PascalCase so
+			// emitIdentifier picks the exported Go name for intra-file refs.
+			t.samePackageExports[cname] = true
+			t.localTypeNames[goTypeName(cname)] = true
 		}
-		fd := n.AsFunctionDeclaration()
-		if fd == nil || fd.Name() == nil || fd.Name().Kind != ast.KindIdentifier {
-			continue
-		}
-		t.samePackageExports[fd.Name().AsIdentifier().Text] = true
 	}
 
 	for _, n := range nodes {
@@ -63,6 +77,8 @@ func TranspileNodes(ck *checker.Checker, nodes []*ast.Node, pkgName string) (str
 			// Go structs; the picker collects them so the param/return types
 			// resolve.
 			t.emitInterfaceDeclaration(n)
+		case ast.KindClassDeclaration:
+			t.emitClassDeclaration(n)
 		default:
 			return "", fmt.Errorf("unsupported node kind for TranspileNodes: %v", n.Kind)
 		}

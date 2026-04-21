@@ -106,6 +106,19 @@ func Pick(sf *ast.SourceFile, ck *checker.Checker, _ Options) Result {
 				Extracted: ok,
 				Reason:    reason,
 			})
+		case ast.KindClassDeclaration:
+			id := stmt.Name()
+			if id == nil || id.Kind != ast.KindIdentifier {
+				continue
+			}
+			ok, reason := IsClassExtractable(stmt, ck, topLevelFuncs)
+			r.Candidates = append(r.Candidates, Candidate{
+				Node:      stmt,
+				Name:      id.AsIdentifier().Text,
+				Kind:      KindClass,
+				Extracted: ok,
+				Reason:    reason,
+			})
 		case ast.KindInterfaceDeclaration:
 			// Interfaces that satisfy the extractable-object predicate are
 			// emitted as Go structs (with JSON tags). Always include them so
@@ -138,6 +151,18 @@ func (r Result) ExtractedFunctions() []string {
 	names := make([]string, 0, len(r.Candidates))
 	for _, c := range r.Candidates {
 		if c.Extracted && c.Kind == KindFunction {
+			names = append(names, c.Name)
+		}
+	}
+	return names
+}
+
+// ExtractedClasses returns the names of class candidates that were extracted,
+// in source order. The names are the JS class names (e.g. "Counter").
+func (r Result) ExtractedClasses() []string {
+	names := make([]string, 0, len(r.Candidates))
+	for _, c := range r.Candidates {
+		if c.Extracted && c.Kind == KindClass {
 			names = append(names, c.Name)
 		}
 	}

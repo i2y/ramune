@@ -852,6 +852,168 @@ export function sumArr(xs: number[]): number {
 	}
 }
 
+// Counter mirrors what the transpiler emits for the Counter class in
+// TestHybrid_Class_RoundTrip below.
+type Counter struct {
+	Value float64
+}
+
+func NewCounter(initial float64) *Counter {
+	c := &Counter{}
+	c.Value = initial
+	return c
+}
+
+func (c *Counter) Increment()              { c.Value = c.Value + 1 }
+func (c *Counter) Total(x float64) float64 { return c.Value + x }
+
+func TestHybrid_Class_ShimBuildAndArtifacts(t *testing.T) {
+	src := `
+export class Counter {
+  value: number;
+  constructor(initial: number) { this.value = initial; }
+  increment(): void { this.value = this.value + 1; }
+  total(x: number): number { return this.value + x; }
+}`
+	sf, program, _ := setupProgram(t, src)
+	ck, done := program.GetTypeCheckerForFile(context.Background(), sf)
+	defer done()
+
+	res, err := composer.Compose(sf, ck, composer.Options{
+		PkgName:          "native_class",
+		NativeModuleName: "native:class_smoke",
+	})
+	if err != nil {
+		t.Fatalf("compose: %v", err)
+	}
+	if res.GoSource == "" {
+		t.Fatalf("expected non-empty Go source")
+	}
+	for _, want := range []string{
+		"type Counter struct",
+		"Value float64",
+		"func NewCounter(initial float64) *Counter",
+		"func (c *Counter) Increment()",
+		"func (c *Counter) Total(x float64) float64",
+	} {
+		if !strings.Contains(res.GoSource, want) {
+			t.Fatalf("emitted Go missing %q:\n%s", want, res.GoSource)
+		}
+	}
+	if len(res.ExportedJSClasses) != 1 || res.ExportedJSClasses[0] != "Counter" {
+		t.Fatalf("expected ExportedJSClasses=[Counter], got %v", res.ExportedJSClasses)
+	}
+	if !strings.Contains(res.ShimJS, "mod.newCounter") {
+		t.Fatalf("shim missing mod.newCounter ref:\n%s", res.ShimJS)
+	}
+	if !strings.Contains(res.ShimJS, `"Counter"`) {
+		t.Fatalf("shim missing Counter install ref:\n%s", res.ShimJS)
+	}
+}
+
+func TestHybrid_Class_EmittedGoCompiles(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skipf("go toolchain not available: %v", err)
+	}
+	src := `
+export class Counter {
+  value: number;
+  constructor(initial: number) { this.value = initial; }
+  increment(): void { this.value = this.value + 1; }
+  total(x: number): number { return this.value + x; }
+}
+export class Box {
+  w: number;
+  h: number;
+  area(): number { return this.w * this.h; }
+  scale(k: number): void { this.w = this.w * k; this.h = this.h * k; }
+}`
+	sf, program, _ := setupProgram(t, src)
+	ck, done := program.GetTypeCheckerForFile(context.Background(), sf)
+	defer done()
+	res, err := composer.Compose(sf, ck, composer.Options{PkgName: "classsmoke"})
+	if err != nil {
+		t.Fatalf("compose: %v", err)
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module classsmoke\n\ngo 1.21\n"), 0o644); err != nil {
+		t.Fatalf("go.mod: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "c.go"), []byte(res.GoSource), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	cmd := exec.Command("go", "build", "./...")
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("go build failed for class smoke:\n%s\nsource:\n%s", out, res.GoSource)
+	}
+}
+
+func TestHybrid_Class_RoundTrip(t *testing.T) {
+	src := `
+export class Counter {
+  value: number;
+  constructor(initial: number) { this.value = initial; }
+  increment(): void { this.value = this.value + 1; }
+  total(x: number): number { return this.value + x; }
+}`
+	sf, program, _ := setupProgram(t, src)
+	ck, done := program.GetTypeCheckerForFile(context.Background(), sf)
+	defer done()
+
+	const modName = "native:counter_rt"
+	res, err := composer.Compose(sf, ck, composer.Options{
+		PkgName:          "native_class_rt",
+		NativeModuleName: modName,
+	})
+	if err != nil {
+		t.Fatalf("compose: %v", err)
+	}
+
+	mod := ramune.NativeModuleFromFuncs(modName, map[string]any{
+		"newCounter": NewCounter,
+	})
+	r := newRamune(t, ramune.NodeCompat(), ramune.WithModule(mod))
+	defer r.Close()
+
+	if err := r.Exec(res.ShimJS); err != nil {
+		t.Fatalf("shim exec: %v", err)
+	}
+
+	// Cases:
+	//  1. `new Counter(...)` — primary path
+	//  2. `Counter(...)`     — call without `new`, should also return instance
+	//  3. field read          — c.value
+	//  4. field write         — c.value = N
+	//  5. method call         — c.increment() (void)
+	//  6. method with args    — c.total(x)
+	script := `
+(function() {
+  var c = new Counter(5);
+  c.increment();
+  var t1 = c.total(10);      // (5+1)+10 = 16
+  var t2 = c.value;          // 6
+  c.value = 100;
+  var t3 = c.total(0);       // 100
+
+  var c2 = Counter(2);       // without new keyword
+  c2.increment();
+  c2.increment();
+  var t4 = c2.value;         // 4
+
+  return [t1, t2, t3, t4].join(",");
+})();
+`
+	v, err := r.Eval(script)
+	if err != nil {
+		t.Fatalf("eval: %v", err)
+	}
+	got := v.String()
+	if got != "16,6,100,4" {
+		t.Fatalf("round trip mismatch: got %q, want %q", got, "16,6,100,4")
+	}
+}
+
 func TestHybrid_MixedExtractAndSkip_SkippedStaysInJS(t *testing.T) {
 	// parseUser has `any` param — picker skips. The shim must not swap it.
 	// The JS-only fallback behavior is simulated here by the test: we never

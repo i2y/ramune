@@ -45,7 +45,7 @@ func DiscoverExportedFuncs(goSource string) ([]ExportedFunc, error) {
 
 		funcs = append(funcs, ExportedFunc{
 			GoName:  fn.Name.Name,
-			JSName:  goNameToJS(fn.Name.Name),
+			JSName:  GoNameToJS(fn.Name.Name),
 			Generic: isGeneric,
 		})
 	}
@@ -88,8 +88,8 @@ func GenerateNativeImport(pkgImport, pkgAlias string) string {
 	return fmt.Sprintf("\t%s %q\n", pkgAlias, pkgImport)
 }
 
-// goNameToJS converts a PascalCase Go name to camelCase JS name.
-func goNameToJS(name string) string {
+// GoNameToJS converts a PascalCase Go name to camelCase JS name.
+func GoNameToJS(name string) string {
 	if name == "" {
 		return name
 	}

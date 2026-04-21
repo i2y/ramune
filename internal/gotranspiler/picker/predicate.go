@@ -47,52 +47,9 @@ func IsFunctionExtractable(node *ast.Node, ck *checker.Checker, topLevelFuncs ma
 		return false, Reason{Code: reasonMissingBody, Detail: "ambient/overload declaration"}
 	}
 
-	fnType := ck.GetTypeAtLocation(node)
-	if fnType == nil {
-		return false, Reason{Code: reasonEmptyReturn, Detail: "type checker returned nil for function"}
-	}
-	sigs := ck.GetSignaturesOfType(fnType, checker.SignatureKindCall)
-	if len(sigs) == 0 {
-		return false, Reason{Code: reasonEmptyReturn, Detail: "no call signature"}
-	}
-	sig := sigs[0]
-
-	if ck.HasEffectiveRestParameter(sig) {
-		return false, Reason{Code: reasonRestParam, Detail: "rest parameter not supported in v1"}
-	}
-
-	// Default-value and optional parameters silently widen the JS-callable arity
-	// without the emitter generating any compensating Go logic. JS callers
-	// invoking f() against an extracted func F(x float64) get a missing-arg
-	// error from the bridge. Reject up front rather than ship a latent bug.
-	if fd.Parameters != nil {
-		for _, p := range fd.Parameters.Nodes {
-			pd := p.AsParameterDeclaration()
-			if pd == nil {
-				continue
-			}
-			if pd.Initializer != nil {
-				return false, Reason{Code: reasonUnhandledKind, Detail: "default parameter value not supported in v1"}
-			}
-			if pd.QuestionToken != nil {
-				return false, Reason{Code: reasonUnhandledKind, Detail: "optional parameter not supported in v1"}
-			}
-		}
-	}
-
-	paramNames := map[string]bool{}
-	for i, paramSym := range sig.Parameters() {
-		if paramSym == nil {
-			continue
-		}
-		paramNames[paramSym.Name] = true
-		if r := isExtractableType(ck, ck.GetTypeOfSymbol(paramSym)); r != nil {
-			return false, Reason{Code: r.Code, Detail: fmt.Sprintf("param %d (%s): %s", i, paramSym.Name, r.Detail)}
-		}
-	}
-
-	if r := isExtractableReturnType(ck, ck.GetReturnTypeOfSignature(sig)); r != nil {
-		return false, Reason{Code: r.Code, Detail: "return: " + r.Detail}
+	paramNames, reason := checkCallableSignature(ck, node, fd.Parameters, "")
+	if reason != nil {
+		return false, *reason
 	}
 
 	ctx := &bodyCtx{
@@ -102,11 +59,67 @@ func IsFunctionExtractable(node *ast.Node, ck *checker.Checker, topLevelFuncs ma
 		localNames:    map[string]bool{},
 		inAsync:       ast.HasSyntacticModifier(node, ast.ModifierFlagsAsync),
 	}
-	if reason := checkBody(fd.Body, ctx); reason != nil {
-		return false, *reason
+	if r := checkBody(fd.Body, ctx); r != nil {
+		return false, *r
 	}
 
 	return true, Reason{}
+}
+
+// checkCallableSignature validates a FunctionDeclaration / MethodDeclaration /
+// ConstructorDeclaration's call signature: no rest, no default/optional
+// parameters, every parameter type and the return type must be extractable.
+// Returns the param name set (used to seed bodyCtx.paramNames) on success.
+//
+// label is prefixed to error details so callers can distinguish a free
+// function ("") from a method ("method `foo` ").
+//
+// Rationale for the per-parameter Initializer/QuestionToken guard: default
+// and optional parameters silently widen the JS-callable arity without the
+// emitter generating any compensating Go logic. JS callers invoking f()
+// against an extracted `func F(x float64)` get a missing-arg error from the
+// bridge. Reject up front rather than ship a latent bug.
+func checkCallableSignature(ck *checker.Checker, node *ast.Node, params *ast.ParameterList, label string) (map[string]bool, *Reason) {
+	fnType := ck.GetTypeAtLocation(node)
+	if fnType == nil {
+		return nil, &Reason{Code: reasonEmptyReturn, Detail: label + "type checker returned nil"}
+	}
+	sigs := ck.GetSignaturesOfType(fnType, checker.SignatureKindCall)
+	if len(sigs) == 0 {
+		return nil, &Reason{Code: reasonEmptyReturn, Detail: label + "no call signature"}
+	}
+	sig := sigs[0]
+	if ck.HasEffectiveRestParameter(sig) {
+		return nil, &Reason{Code: reasonRestParam, Detail: label + "rest parameter not supported"}
+	}
+	if params != nil {
+		for _, p := range params.Nodes {
+			pd := p.AsParameterDeclaration()
+			if pd == nil {
+				continue
+			}
+			if pd.Initializer != nil {
+				return nil, &Reason{Code: reasonUnhandledKind, Detail: label + "default parameter value not supported"}
+			}
+			if pd.QuestionToken != nil {
+				return nil, &Reason{Code: reasonUnhandledKind, Detail: label + "optional parameter not supported"}
+			}
+		}
+	}
+	paramNames := map[string]bool{}
+	for i, paramSym := range sig.Parameters() {
+		if paramSym == nil {
+			continue
+		}
+		paramNames[paramSym.Name] = true
+		if r := isExtractableType(ck, ck.GetTypeOfSymbol(paramSym)); r != nil {
+			return nil, &Reason{Code: r.Code, Detail: fmt.Sprintf("%sparam %d (%s): %s", label, i, paramSym.Name, r.Detail)}
+		}
+	}
+	if r := isExtractableReturnType(ck, ck.GetReturnTypeOfSignature(sig)); r != nil {
+		return nil, &Reason{Code: r.Code, Detail: label + "return: " + r.Detail}
+	}
+	return paramNames, nil
 }
 
 // bodyCtx carries state threaded through the body walker.
@@ -116,6 +129,13 @@ type bodyCtx struct {
 	topLevelFuncs map[string]struct{} // same-file top-level functions - callable
 	localNames    map[string]bool     // locals declared in this body (let/const/var) - readable AND writable
 	inAsync       bool                // function is `async` - permits `await` on Promise<T>
+	// Class-method / constructor context. When inMethod is true, `this` is
+	// permitted and `this.<field>` / `this.<method>` resolve against these
+	// maps. Constructor bodies enforce the `this.<field> = <expr>` shape
+	// syntactically (checkConstructorStatement), so no separate flag needed.
+	inMethod    bool
+	thisFields  map[string]bool
+	thisMethods map[string]bool
 }
 
 // checkBody walks a block/statement subtree and returns a non-nil Reason if
@@ -303,6 +323,9 @@ func checkExpr(node *ast.Node, ctx *bodyCtx) *Reason {
 		return checkIdentifierRef(node, ctx)
 
 	case ast.KindThisKeyword:
+		if ctx.inMethod {
+			return nil
+		}
 		return &Reason{Code: reasonThis, Detail: "`this` not allowed outside methods (v1)"}
 
 	case ast.KindParenthesizedExpression:
@@ -525,6 +548,20 @@ func checkPropertyAccess(node *ast.Node, ctx *bodyCtx) *Reason {
 		return &Reason{Code: reasonUnhandledKind, Detail: "property access not supported in v1"}
 	}
 	propName := pa.Name().AsIdentifier().Text
+
+	// `this.<field>` or `this.<method>` reference inside a class method.
+	// Field is readable AND writable (constructor / method); method refs must
+	// sit in call head position — that's enforced by checkCallExpr, which
+	// short-circuits before reaching here.
+	if ctx.inMethod && pa.Expression != nil && pa.Expression.Kind == ast.KindThisKeyword {
+		if ctx.thisFields[propName] {
+			return nil
+		}
+		if ctx.thisMethods[propName] {
+			return nil
+		}
+		return &Reason{Code: reasonUnhandledKind, Detail: "`this." + propName + "` references unknown field/method"}
+	}
 
 	if pa.Expression.Kind == ast.KindIdentifier {
 		recv := pa.Expression.AsIdentifier().Text
@@ -853,8 +890,12 @@ func checkCallExpr(node *ast.Node, ctx *bodyCtx) *Reason {
 			return r
 		}
 	case ast.KindPropertyAccessExpression:
-		if r := checkBuiltinCallee(callee, ctx); r != nil {
-			return r
+		if r := checkThisMethodCall(callee, ctx); r != nil {
+			// Not a `this.<method>` call; fall through to namespace/instance
+			// builtin handling which has its own error codes.
+			if r2 := checkBuiltinCallee(callee, ctx); r2 != nil {
+				return r2
+			}
 		}
 	default:
 		return &Reason{Code: reasonDynamicCallee, Detail: "callee is not a bare identifier"}
@@ -935,6 +976,28 @@ var stringSafeMethods = map[string]bool{
 var arraySafeMethods = map[string]bool{
 	"includes": true, "indexOf": true, "lastIndexOf": true,
 	"join": true, "slice": true, "concat": true, "reverse": true,
+}
+
+// checkThisMethodCall accepts `this.<method>(...)` when <method> is declared
+// in the same class. Returns nil on accept; a Reason when the callee isn't a
+// `this.<ident>` form or the method name isn't registered. Callers that get a
+// non-nil result fall back to the namespaced/instance builtin handlers.
+func checkThisMethodCall(callee *ast.Node, ctx *bodyCtx) *Reason {
+	if !ctx.inMethod {
+		return &Reason{Code: reasonDynamicCallee, Detail: "this-method call outside method"}
+	}
+	pa := callee.AsPropertyAccessExpression()
+	if pa == nil || pa.Expression == nil || pa.Expression.Kind != ast.KindThisKeyword {
+		return &Reason{Code: reasonDynamicCallee, Detail: "not a this.method call"}
+	}
+	if pa.Name() == nil || pa.Name().Kind != ast.KindIdentifier {
+		return &Reason{Code: reasonDynamicCallee, Detail: "this.method must be identifier"}
+	}
+	name := pa.Name().AsIdentifier().Text
+	if ctx.thisMethods[name] {
+		return nil
+	}
+	return &Reason{Code: reasonDynamicCallee, Detail: "`this." + name + "` is not a same-class method"}
 }
 
 func checkBuiltinCallee(callee *ast.Node, ctx *bodyCtx) *Reason {
