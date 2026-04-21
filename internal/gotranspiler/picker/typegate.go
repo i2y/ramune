@@ -118,13 +118,12 @@ func isStringLikeType(t *checker.Type) bool {
 }
 
 // isNumberLikeNode returns true when ck reports a NumberLike type for n.
-// nil ck or nil type both yield false (cannot prove numeric -> reject).
+// nil ck or nil n both yield false (cannot prove numeric -> reject).
 func isNumberLikeNode(ck *checker.Checker, n *ast.Node) bool {
 	if ck == nil || n == nil {
 		return false
 	}
-	t := ck.GetTypeAtLocation(n)
-	return t != nil && t.Flags()&checker.TypeFlagsNumberLike != 0
+	return isNumberLikeType(ck.GetTypeAtLocation(n))
 }
 
 // arrayElementType returns T when t is `Array<T>` / `ReadonlyArray<T>` /

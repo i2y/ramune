@@ -180,20 +180,22 @@ func (r *Runtime) promiseToJSLocked(rv reflect.Value) (*qjs.Value, error) {
 	// Clear the slot once we have a handle so it doesn't leak across calls.
 	// JS_GetProperty bumps the refcount, so the Promise stays alive on the
 	// C side via our handle even after the global property is deleted.
-	if err := r.execLocked(fmt.Sprintf("delete globalThis.%s;", slotName)); err != nil {
-		return nil, fmt.Errorf("promiseToJSQJSWasm slot cleanup: %w", err)
-	}
+	global.DeleteProperty(slotName)
 
 	awaitMethod := rv.MethodByName("Await")
 
 	go func() {
 		results := awaitMethod.Call(nil)
 		r.dispatch(func() {
+			global := r.qjsCtx.Global()
+			defer func() {
+				global.DeleteProperty(resolveName)
+				global.DeleteProperty(rejectName)
+			}()
 			if len(results) >= 2 && !results[1].IsNil() {
 				errMsg := results[1].Interface().(error).Error()
 				msgLit, _ := json.Marshal(errMsg)
-				r.execLocked(fmt.Sprintf("globalThis.%s(new Error(%s));delete globalThis.%s;delete globalThis.%s;",
-					rejectName, string(msgLit), resolveName, rejectName))
+				r.execLocked(fmt.Sprintf("globalThis.%s(new Error(%s));", rejectName, string(msgLit)))
 				return
 			}
 			if len(results) >= 1 {
@@ -201,15 +203,13 @@ func (r *Runtime) promiseToJSLocked(rv reflect.Value) (*qjs.Value, error) {
 				jsVal, convErr := r.goToJSLocked(val)
 				if convErr != nil {
 					msgLit, _ := json.Marshal(convErr.Error())
-					r.execLocked(fmt.Sprintf("globalThis.%s(new Error(%s));delete globalThis.%s;delete globalThis.%s;",
-						rejectName, string(msgLit), resolveName, rejectName))
+					r.execLocked(fmt.Sprintf("globalThis.%s(new Error(%s));", rejectName, string(msgLit)))
 					return
 				}
 				tmp := fmt.Sprintf("__pval_%d", seq)
-				global := r.qjsCtx.Global()
 				global.SetPropertyStr(tmp, jsVal)
-				r.execLocked(fmt.Sprintf("globalThis.%s(globalThis.%s);delete globalThis.%s;delete globalThis.%s;delete globalThis.%s;",
-					resolveName, tmp, resolveName, rejectName, tmp))
+				r.execLocked(fmt.Sprintf("globalThis.%s(globalThis.%s);", resolveName, tmp))
+				global.DeleteProperty(tmp)
 			}
 		})
 		r.Wake()
