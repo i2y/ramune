@@ -527,17 +527,11 @@ func checkPropertyAccess(node *ast.Node, ctx *bodyCtx) *Reason {
 	if pa.Expression.Kind == ast.KindIdentifier {
 		recv := pa.Expression.AsIdentifier().Text
 		if !ctx.paramNames[recv] && !ctx.localNames[recv] {
-			if recv == "Math" {
-				if mathSafeConstants[propName] {
-					return nil
-				}
-				return &Reason{Code: reasonBuiltinCall, Detail: "Math." + propName + " not in constant safelist"}
+			if r, handled := checkNamespacedConstant(recv, propName, "Math", mathSafeConstants); handled {
+				return r
 			}
-			if recv == "Number" {
-				if numberSafeConstants[propName] {
-					return nil
-				}
-				return &Reason{Code: reasonBuiltinCall, Detail: "Number." + propName + " not in constant safelist"}
+			if r, handled := checkNamespacedConstant(recv, propName, "Number", numberSafeConstants); handled {
+				return r
 			}
 		}
 	}
@@ -935,38 +929,44 @@ func checkBuiltinCallee(callee *ast.Node, ctx *bodyCtx) *Reason {
 	return &Reason{Code: reasonBuiltinCall, Detail: "builtin call not in safelist"}
 }
 
-// checkMathCall returns nil iff callee is `Math.<method>` where Math is the
-// global (not shadowed) and method is in the safelist.
-func checkMathCall(pa *ast.PropertyAccessExpression, ctx *bodyCtx) *Reason {
+// checkNamespacedConstant returns (nil, true) when recv matches namespace
+// and propName is in the safelist; (reject Reason, true) when recv matches
+// but propName is not safelisted; (nil, false) when recv doesn't match
+// (caller should fall through to the next handler).
+func checkNamespacedConstant(recv, propName, namespace string, constants map[string]bool) (*Reason, bool) {
+	if recv != namespace {
+		return nil, false
+	}
+	if constants[propName] {
+		return nil, true
+	}
+	return &Reason{Code: reasonBuiltinCall, Detail: namespace + "." + propName + " not in constant safelist"}, true
+}
+
+// checkNamespacedCall returns nil iff callee is `<namespace>.<method>` where
+// namespace is the global identifier (not locally shadowed) and method is in
+// the safelist. Used for `Math.*` and `Number.*` style calls.
+func checkNamespacedCall(pa *ast.PropertyAccessExpression, ctx *bodyCtx, namespace string, methods map[string]bool) *Reason {
 	if pa.Expression.Kind != ast.KindIdentifier {
-		return &Reason{Code: reasonBuiltinCall, Detail: "not a Math call"}
+		return &Reason{Code: reasonBuiltinCall, Detail: "not a " + namespace + " call"}
 	}
 	recv := pa.Expression.AsIdentifier().Text
-	if recv != "Math" || ctx.paramNames[recv] || ctx.localNames[recv] {
-		return &Reason{Code: reasonBuiltinCall, Detail: "not the global Math"}
+	if recv != namespace || ctx.paramNames[recv] || ctx.localNames[recv] {
+		return &Reason{Code: reasonBuiltinCall, Detail: "not the global " + namespace}
 	}
 	method := pa.Name().AsIdentifier().Text
-	if !mathSafeMethods[method] {
-		return &Reason{Code: reasonBuiltinCall, Detail: "Math." + method + " not in safelist"}
+	if !methods[method] {
+		return &Reason{Code: reasonBuiltinCall, Detail: namespace + "." + method + " not in safelist"}
 	}
 	return nil
 }
 
-// checkNumberCall returns nil iff callee is `Number.<method>` where Number
-// is the global (not shadowed) and method is in the safelist.
+func checkMathCall(pa *ast.PropertyAccessExpression, ctx *bodyCtx) *Reason {
+	return checkNamespacedCall(pa, ctx, "Math", mathSafeMethods)
+}
+
 func checkNumberCall(pa *ast.PropertyAccessExpression, ctx *bodyCtx) *Reason {
-	if pa.Expression.Kind != ast.KindIdentifier {
-		return &Reason{Code: reasonBuiltinCall, Detail: "not a Number call"}
-	}
-	recv := pa.Expression.AsIdentifier().Text
-	if recv != "Number" || ctx.paramNames[recv] || ctx.localNames[recv] {
-		return &Reason{Code: reasonBuiltinCall, Detail: "not the global Number"}
-	}
-	method := pa.Name().AsIdentifier().Text
-	if !numberSafeMethods[method] {
-		return &Reason{Code: reasonBuiltinCall, Detail: "Number." + method + " not in safelist"}
-	}
-	return nil
+	return checkNamespacedCall(pa, ctx, "Number", numberSafeMethods)
 }
 
 // checkStringMethodCall returns nil iff method is in the string safelist and

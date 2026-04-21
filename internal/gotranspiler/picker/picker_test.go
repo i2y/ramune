@@ -605,12 +605,21 @@ export function parseF(s: string): number { return Number.parseFloat(s); }
 }
 
 func TestPicker_Rejects_NumberUnknownConstant(t *testing.T) {
-	// Number.NEGATIVE_ZERO is not in the constants safelist.
-	src := `export function nz(): number { return (Number as any).NEGATIVE_ZERO; }`
+	// Use a constant that exists in lib.d.ts but isn't in our safelist.
+	// `Number.NaN` is in safelist; `Number.MIN_NORMAL` would not exist.
+	// Pick something tsgo recognizes: extend the namespace via declaration
+	// merging so the type-check passes, then verify the picker rejects.
+	src := `
+declare global { interface NumberConstructor { CUSTOM: number; } }
+export function nz(): number { return Number.CUSTOM; }
+`
 	res := pickOne(t, src)
 	c, _ := byName(res, "nz")
 	if c.Extracted {
 		t.Fatalf("expected rejection for unknown Number constant")
+	}
+	if c.Reason.Code != "builtin-call" {
+		t.Fatalf("expected builtin-call, got %q (detail=%q)", c.Reason.Code, c.Reason.Detail)
 	}
 }
 
