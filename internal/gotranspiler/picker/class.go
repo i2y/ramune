@@ -293,20 +293,21 @@ func checkClassMethod(m *ast.Node, ck *checker.Checker, topLevelFuncs map[string
 		return &Reason{Code: reasonUnhandledKind, Detail: "optional method `" + name + "`"}
 	}
 
-	paramNames, reason := checkCallableSignature(ck, m, md.Parameters, "method `"+name+"` ")
+	paramNames, jsFuncParams, reason := checkCallableSignature(ck, m, md.Parameters, "method `"+name+"` ")
 	if reason != nil {
 		return reason
 	}
 
 	ctx := &bodyCtx{
-		ck:            ck,
-		paramNames:    paramNames,
-		topLevelFuncs: topLevelFuncs,
-		localNames:    map[string]bool{},
-		inAsync:       ast.HasSyntacticModifier(m, ast.ModifierFlagsAsync),
-		inMethod:      true,
-		thisFields:    thisFields,
-		thisMethods:   thisMethods,
+		ck:               ck,
+		paramNames:       paramNames,
+		jsFuncParamNames: jsFuncParams,
+		topLevelFuncs:    topLevelFuncs,
+		localNames:       map[string]bool{},
+		inAsync:          ast.HasSyntacticModifier(m, ast.ModifierFlagsAsync),
+		inMethod:         true,
+		thisFields:       thisFields,
+		thisMethods:      thisMethods,
 	}
 	return checkBody(md.Body, ctx)
 }

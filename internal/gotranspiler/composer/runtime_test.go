@@ -1066,3 +1066,396 @@ export function parseUser(x: any): any { return x; }
 		t.Fatalf("add(1,2) = %v, want 3", got)
 	}
 }
+
+// applyCb mirrors what the transpiler emits for
+//
+//	export function applyCb(cb: (n: number) => number, x: number): number { return cb(x); }
+//
+// The real emitter lowers the body into an IIFE that surfaces callback
+// errors as JS throws; the stand-in keeps that behavior identical so the
+// runtime round trip exercises the same cb.Call(x) path the emitted code
+// would take.
+func applyCb(cb *ramune.JSFunc, x float64) float64 {
+	v, err := cb.Call(x)
+	if err != nil {
+		panic(err)
+	}
+	return v.(float64)
+}
+
+// wrapCb mirrors `export function wrapCb(cb: (s: string) => string, s: string): string { return cb(s); }`.
+func wrapCb(cb *ramune.JSFunc, s string) string {
+	v, err := cb.Call(s)
+	if err != nil {
+		panic(err)
+	}
+	return v.(string)
+}
+
+// countCalls uses the callback purely for its side effects. Mirrors
+// `export function countCalls(cb: (n: number) => void): number { cb(1); cb(2); cb(3); return 3; }`
+// — three invocations, discarded result, statement-position IIFE with the
+// void-return lowering.
+func countCalls(cb *ramune.JSFunc) float64 {
+	_, err := cb.Call(float64(1))
+	if err != nil {
+		panic(err)
+	}
+	_, err = cb.Call(float64(2))
+	if err != nil {
+		panic(err)
+	}
+	_, err = cb.Call(float64(3))
+	if err != nil {
+		panic(err)
+	}
+	return 3
+}
+
+// TestHybrid_JSFuncCallback_EmittedGoCompiles is the compile drift guard for
+// v2(a). The emitted Go depends on the host `github.com/i2y/ramune` package
+// (for *ramune.JSFunc) and `github.com/i2y/ramune/jsrt` (for jsrt.Throw), so
+// unlike the v1 standalone compile smokes we need a `replace` directive
+// pointing at the live repo.
+func TestHybrid_JSFuncCallback_EmittedGoCompiles(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skipf("go toolchain not available: %v", err)
+	}
+	repoRoot := ramuneRepoRoot(t)
+	src := `
+export function applyCb(cb: (n: number) => number, x: number): number { return cb(x); }
+export function wrapCb(cb: (s: string) => string, s: string): string { return cb(s); }
+export function countCalls(cb: (n: number) => void): number { cb(1); cb(2); cb(3); return 3; }
+`
+	sf, program, _ := setupProgram(t, src)
+	ck, done := program.GetTypeCheckerForFile(context.Background(), sf)
+	defer done()
+	res, err := composer.Compose(sf, ck, composer.Options{PkgName: "jsfuncsmoke"})
+	if err != nil {
+		t.Fatalf("compose: %v", err)
+	}
+	if !strings.Contains(res.GoSource, "*ramune.JSFunc") {
+		t.Fatalf("expected *ramune.JSFunc in emitted Go:\n%s", res.GoSource)
+	}
+	if !strings.Contains(res.GoSource, ".Call(") {
+		t.Fatalf("expected .Call( in emitted Go:\n%s", res.GoSource)
+	}
+	if !strings.Contains(res.GoSource, "jsrt.Throw") {
+		t.Fatalf("expected jsrt.Throw wrapper in emitted Go:\n%s", res.GoSource)
+	}
+	dir := t.TempDir()
+	goMod := "module jsfuncsmoke\n\ngo 1.21\n\nrequire github.com/i2y/ramune v0.0.0\n\nreplace github.com/i2y/ramune => " + repoRoot + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(goMod), 0o644); err != nil {
+		t.Fatalf("go.mod: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "n.go"), []byte(res.GoSource), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	// go.sum derives from the replaced-local module — build with -mod=mod to
+	// tolerate the absent sum file on first run.
+	cmd := exec.Command("go", "build", "-mod=mod", "./...")
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("go build failed:\n%s\nsource:\n%s", out, res.GoSource)
+	}
+}
+
+// ramuneRepoRoot resolves the absolute path of the ramune Go module root
+// from the test binary's current working directory. Tests run inside
+// internal/gotranspiler/composer so the repo lives three levels up.
+func ramuneRepoRoot(t *testing.T) string {
+	t.Helper()
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	abs, err := filepath.Abs(filepath.Join(wd, "..", "..", ".."))
+	if err != nil {
+		t.Fatalf("abs: %v", err)
+	}
+	return abs
+}
+
+// doubleAll / keepPositive / traverse / anyTrue / allTrue mirror what the
+// transpiler emits for v2(a.1) array-callback lowerings, so the runtime
+// round trip exercises the same .Call loop shape the emitter would produce.
+
+func doubleAll(cb *ramune.JSFunc, xs []float64) []float64 {
+	out := make([]float64, 0, len(xs))
+	for _, x := range xs {
+		v, err := cb.Call(x)
+		if err != nil {
+			panic(err)
+		}
+		out = append(out, v.(float64))
+	}
+	return out
+}
+
+func keepPositive(cb *ramune.JSFunc, xs []float64) []float64 {
+	var out []float64
+	for _, x := range xs {
+		v, err := cb.Call(x)
+		if err != nil {
+			panic(err)
+		}
+		if v.(bool) {
+			out = append(out, x)
+		}
+	}
+	return out
+}
+
+func traverse(cb *ramune.JSFunc, xs []float64) {
+	for _, x := range xs {
+		_, err := cb.Call(x)
+		if err != nil {
+			panic(err)
+		}
+	}
+}
+
+func anyTrue(cb *ramune.JSFunc, xs []float64) bool {
+	for _, x := range xs {
+		v, err := cb.Call(x)
+		if err != nil {
+			panic(err)
+		}
+		if v.(bool) {
+			return true
+		}
+	}
+	return false
+}
+
+func allTrue(cb *ramune.JSFunc, xs []float64) bool {
+	for _, x := range xs {
+		v, err := cb.Call(x)
+		if err != nil {
+			panic(err)
+		}
+		if !v.(bool) {
+			return false
+		}
+	}
+	return true
+}
+
+// TestHybrid_JSFuncArrayCallbacks_EmittedGoCompiles verifies the array-
+// callback IIFE lowerings compile standalone (against the replace-linked
+// ramune module). Picker drift guard: any future change to the picker that
+// lets through a method the emitter can't lower would light this up.
+func TestHybrid_JSFuncArrayCallbacks_EmittedGoCompiles(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skipf("go toolchain not available: %v", err)
+	}
+	repoRoot := ramuneRepoRoot(t)
+	src := `
+export function doubleAll(cb: (n: number) => number, xs: number[]): number[] { return xs.map(cb); }
+export function keepPositive(cb: (n: number) => boolean, xs: number[]): number[] { return xs.filter(cb); }
+export function traverse(cb: (n: number) => void, xs: number[]): void { xs.forEach(cb); }
+export function anyTrue(cb: (n: number) => boolean, xs: number[]): boolean { return xs.some(cb); }
+export function allTrue(cb: (n: number) => boolean, xs: number[]): boolean { return xs.every(cb); }
+`
+	sf, program, _ := setupProgram(t, src)
+	ck, done := program.GetTypeCheckerForFile(context.Background(), sf)
+	defer done()
+	res, err := composer.Compose(sf, ck, composer.Options{PkgName: "jsfuncarrsmoke"})
+	if err != nil {
+		t.Fatalf("compose: %v", err)
+	}
+	for _, want := range []string{
+		"range xs",
+		".Call(__x)",
+		"jsrt.Throw",
+		"__v.(float64)", // from map
+		"__v.(bool)",    // from filter/some/every
+	} {
+		if !strings.Contains(res.GoSource, want) {
+			t.Fatalf("emitted Go missing %q:\n%s", want, res.GoSource)
+		}
+	}
+	dir := t.TempDir()
+	goMod := "module jsfuncarrsmoke\n\ngo 1.21\n\nrequire github.com/i2y/ramune v0.0.0\n\nreplace github.com/i2y/ramune => " + repoRoot + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(goMod), 0o644); err != nil {
+		t.Fatalf("go.mod: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "n.go"), []byte(res.GoSource), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	cmd := exec.Command("go", "build", "-mod=mod", "./...")
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("go build failed:\n%s\nsource:\n%s", out, res.GoSource)
+	}
+}
+
+// TestHybrid_JSFuncArrayCallbacks_RoundTrip exercises each lowered method
+// end-to-end: JS passes an arrow callback → extracted Go iterates the
+// slice → results flow back to JS. Runs on whichever backend is compiled
+// in via newRamune.
+func TestHybrid_JSFuncArrayCallbacks_RoundTrip(t *testing.T) {
+	src := `
+export function doubleAll(cb: (n: number) => number, xs: number[]): number[] { return xs.map(cb); }
+export function keepPositive(cb: (n: number) => boolean, xs: number[]): number[] { return xs.filter(cb); }
+export function traverse(cb: (n: number) => void, xs: number[]): void { xs.forEach(cb); }
+export function anyTrue(cb: (n: number) => boolean, xs: number[]): boolean { return xs.some(cb); }
+export function allTrue(cb: (n: number) => boolean, xs: number[]): boolean { return xs.every(cb); }
+`
+	sf, program, _ := setupProgram(t, src)
+	ck, done := program.GetTypeCheckerForFile(context.Background(), sf)
+	defer done()
+	const modName = "native:jsfunc_arr_rt"
+	res, err := composer.Compose(sf, ck, composer.Options{
+		PkgName:          "native_jsfunc_arr_rt",
+		NativeModuleName: modName,
+	})
+	if err != nil {
+		t.Fatalf("compose: %v", err)
+	}
+	mod := ramune.NativeModuleFromFuncs(modName, map[string]any{
+		"doubleAll":    doubleAll,
+		"keepPositive": keepPositive,
+		"traverse":     traverse,
+		"anyTrue":      anyTrue,
+		"allTrue":      allTrue,
+	})
+	r := newRamune(t, ramune.NodeCompat(), ramune.WithModule(mod))
+	defer r.Close()
+	if err := r.Exec(res.ShimJS); err != nil {
+		t.Fatalf("shim: %v", err)
+	}
+
+	v, err := r.Eval(`doubleAll(function(n){ return n*2; }, [1,2,3]).join(",")`)
+	if err != nil {
+		t.Fatalf("eval doubleAll: %v", err)
+	}
+	if s := v.String(); s != "2,4,6" {
+		t.Fatalf("doubleAll = %q, want 2,4,6", s)
+	}
+
+	v, err = r.Eval(`keepPositive(function(n){ return n > 0; }, [-1,2,-3,4]).join(",")`)
+	if err != nil {
+		t.Fatalf("eval keepPositive: %v", err)
+	}
+	if s := v.String(); s != "2,4" {
+		t.Fatalf("keepPositive = %q, want 2,4", s)
+	}
+
+	// forEach — verify all three calls landed.
+	if err := r.Exec(`globalThis.__seen = []; traverse(function(n){ globalThis.__seen.push(n); }, [10,20,30]);`); err != nil {
+		t.Fatalf("traverse exec: %v", err)
+	}
+	v, err = r.Eval(`__seen.join(",")`)
+	if err != nil {
+		t.Fatalf("eval __seen: %v", err)
+	}
+	if s := v.String(); s != "10,20,30" {
+		t.Fatalf("traverse sequence = %q, want 10,20,30", s)
+	}
+
+	// some: true branch.
+	v, err = r.Eval(`anyTrue(function(n){ return n === 3; }, [1,2,3,4])`)
+	if err != nil {
+		t.Fatalf("eval anyTrue: %v", err)
+	}
+	if got, _ := v.Bool(); !got {
+		t.Fatalf("anyTrue 3 in [1..4] = false, want true")
+	}
+	// some: false branch.
+	v, err = r.Eval(`anyTrue(function(n){ return n === 99; }, [1,2,3])`)
+	if err != nil {
+		t.Fatalf("eval anyTrue (false): %v", err)
+	}
+	if got, _ := v.Bool(); got {
+		t.Fatalf("anyTrue 99 in [1..3] = true, want false")
+	}
+
+	// every: true branch.
+	v, err = r.Eval(`allTrue(function(n){ return n > 0; }, [1,2,3])`)
+	if err != nil {
+		t.Fatalf("eval allTrue: %v", err)
+	}
+	if got, _ := v.Bool(); !got {
+		t.Fatalf("allTrue positives = false, want true")
+	}
+	// every: false branch — short-circuit path.
+	v, err = r.Eval(`allTrue(function(n){ return n > 0; }, [1,-2,3])`)
+	if err != nil {
+		t.Fatalf("eval allTrue (false): %v", err)
+	}
+	if got, _ := v.Bool(); got {
+		t.Fatalf("allTrue with -2 = true, want false")
+	}
+}
+
+// TestHybrid_JSFuncCallback_RoundTrip exercises the end-to-end callback
+// bridge: an extracted Go function invokes a JS arrow callback via
+// *ramune.JSFunc.Call, and the result flows back through the emitted IIFE.
+// Runs on whichever backend is compiled in (JSC / qjswasm / goja) via the
+// newRamune helper.
+func TestHybrid_JSFuncCallback_RoundTrip(t *testing.T) {
+	src := `
+export function applyCb(cb: (n: number) => number, x: number): number { return cb(x); }
+export function wrapCb(cb: (s: string) => string, s: string): string { return cb(s); }
+export function countCalls(cb: (n: number) => void): number { cb(1); cb(2); cb(3); return 3; }
+`
+	sf, program, _ := setupProgram(t, src)
+	ck, done := program.GetTypeCheckerForFile(context.Background(), sf)
+	defer done()
+
+	const modName = "native:jsfunc_rt"
+	res, err := composer.Compose(sf, ck, composer.Options{
+		PkgName:          "native_jsfunc_rt",
+		NativeModuleName: modName,
+	})
+	if err != nil {
+		t.Fatalf("compose: %v", err)
+	}
+
+	mod := ramune.NativeModuleFromFuncs(modName, map[string]any{
+		"applyCb":    applyCb,
+		"wrapCb":     wrapCb,
+		"countCalls": countCalls,
+	})
+	r := newRamune(t, ramune.NodeCompat(), ramune.WithModule(mod))
+	defer r.Close()
+	if err := r.Exec(res.ShimJS); err != nil {
+		t.Fatalf("shim: %v", err)
+	}
+	v, err := r.Eval(`applyCb(function(n){ return n*n; }, 6)`)
+	if err != nil {
+		t.Fatalf("eval applyCb: %v", err)
+	}
+	got, _ := v.Float64()
+	if got != 36 {
+		t.Fatalf("applyCb(n*n, 6) = %v, want 36", got)
+	}
+	v, err = r.Eval(`wrapCb(function(s){ return "<" + s + ">"; }, "ok")`)
+	if err != nil {
+		t.Fatalf("eval wrapCb: %v", err)
+	}
+	if s := v.String(); s != "<ok>" {
+		t.Fatalf(`wrapCb("<"+s+">", "ok") = %q, want "<ok>"`, s)
+	}
+
+	// Side-effect callback: the callback pushes to a JS array so we can
+	// verify three invocations in order.
+	if err := r.Exec(`globalThis.__cb_seen = []; globalThis.__cb_n = countCalls(function(n){ globalThis.__cb_seen.push(n); });`); err != nil {
+		t.Fatalf("countCalls exec: %v", err)
+	}
+	v, err = r.Eval(`__cb_n`)
+	if err != nil {
+		t.Fatalf("eval __cb_n: %v", err)
+	}
+	if n, _ := v.Float64(); n != 3 {
+		t.Fatalf("countCalls return = %v, want 3", n)
+	}
+	v, err = r.Eval(`__cb_seen.join(",")`)
+	if err != nil {
+		t.Fatalf("eval __cb_seen: %v", err)
+	}
+	if s := v.String(); s != "1,2,3" {
+		t.Fatalf("countCalls invocation order = %q, want 1,2,3", s)
+	}
+}

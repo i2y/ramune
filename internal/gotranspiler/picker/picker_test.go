@@ -945,15 +945,19 @@ export function lastIdx(xs: number[], v: number): number { return xs.lastIndexOf
 	}
 }
 
+// TestPicker_Rejects_ArrayMapCallback: inline arrow callbacks to callback-
+// taking array methods are rejected because the hybrid picker has no way to
+// extract a free-floating closure. A bare *JSFunc parameter would be
+// accepted (see TestPicker_JSFunc_Accept_ArrayMapWithParam in jsfunc_test.go).
 func TestPicker_Rejects_ArrayMapCallback(t *testing.T) {
 	src := `export function doubled(xs: number[]): number[] { return xs.map(x => x * 2); }`
 	res := pickOne(t, src)
 	c, _ := byName(res, "doubled")
 	if c.Extracted {
-		t.Fatalf("expected rejection for .map (callback not in v1 array safelist)")
+		t.Fatalf("expected rejection for .map with inline arrow")
 	}
-	if c.Reason.Code != "builtin-call" {
-		t.Fatalf("expected builtin-call, got %q", c.Reason.Code)
+	if c.Reason.Code != "inline-function-literal" {
+		t.Fatalf("expected inline-function-literal, got %q", c.Reason.Code)
 	}
 }
 

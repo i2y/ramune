@@ -225,6 +225,15 @@ func (m *typeMapper) goType(t *checker.Type) string {
 
 	// Object types (arrays, classes, interfaces, etc.)
 	if flags&checker.TypeFlagsObject != 0 {
+		// Plain callables (function types without own properties beyond the
+		// call signature) lower to *ramune.JSFunc for the hybrid transpiler's
+		// callback-parameter path. Rejected by the picker for any position
+		// outside a parameter (local/field/return), so the typemapper does
+		// not need to gate on context. Class / interface types with call
+		// signatures (hybrid target) are never admitted by the picker.
+		if m.isPlainCallable(t) {
+			return "*ramune.JSFunc"
+		}
 		return m.goObjectType(t)
 	}
 
@@ -733,6 +742,51 @@ func (m *typeMapper) mapWellKnownType(name string) string {
 		return goType
 	}
 	return ""
+}
+
+// isPlainCallable returns true when t is a function type — anonymous or named
+// type alias like `(n: number) => number` — without construct signatures,
+// index signatures, or named properties beyond the call signature itself. In
+// the hybrid transpiler this is the only type category that lowers to
+// *ramune.JSFunc (the callback bridge), and the picker's isJSFuncParamType
+// guards its admission in the first place.
+//
+// Classes / interfaces that happen to carry a call signature are excluded so
+// named structs (Web API types etc.) stay on their existing lowering path.
+func (m *typeMapper) isPlainCallable(t *checker.Type) bool {
+	if m == nil || m.checker == nil || t == nil {
+		return false
+	}
+	if t.Flags()&checker.TypeFlagsObject == 0 {
+		return false
+	}
+	// Array / Promise / Map / Set are object-flagged references — never
+	// callable in the plain sense we care about.
+	if t.ObjectFlags()&checker.ObjectFlagsReference != 0 {
+		return false
+	}
+	calls := m.checker.GetSignaturesOfType(t, checker.SignatureKindCall)
+	if len(calls) == 0 {
+		return false
+	}
+	if len(m.checker.GetSignaturesOfType(t, checker.SignatureKindConstruct)) > 0 {
+		return false
+	}
+	if len(m.checker.GetIndexInfosOfType(t)) > 0 {
+		return false
+	}
+	// Excludes named types that define properties alongside the call
+	// signature (e.g., `interface Handler { (x): y; tag: string }`). Go has
+	// no natural lowering for those and the picker already rejects them.
+	for _, p := range m.checker.GetPropertiesOfType(t) {
+		if p == nil {
+			continue
+		}
+		if p.Name != "" && p.Name != "prototype" {
+			return false
+		}
+	}
+	return true
 }
 
 // isSafeType returns true if the Go type string is guaranteed to compile correctly.

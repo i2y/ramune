@@ -44,6 +44,8 @@ const (
 	reasonClassPrivate   = "class-private"
 	reasonClassDecorator = "class-decorator"
 	reasonClassParamProp = "class-param-property"
+	reasonJSFuncNested   = "jsfunc-nested-callable"
+	reasonJSFuncSig      = "jsfunc-signature"
 )
 
 // isExtractableType returns nil when t is a v1-extractable type, else a
@@ -215,4 +217,68 @@ func arrayElementType(ck *checker.Checker, t *checker.Type) *checker.Type {
 		return nil
 	}
 	return ck.GetElementTypeOfArrayType(t)
+}
+
+// isJSFuncParamType returns nil when t is a "plain" callable type suitable
+// to be received as a *ramune.JSFunc callback: exactly one call signature,
+// no rest/default/optional parameters, and every param + return type is
+// itself v1-extractable (primitive / T[] / named interface). Used only in
+// parameter position — JSFunc cannot round-trip as a local/field/return,
+// because the JS<-Go side of the bridge has no way to materialise a
+// *ramune.JSFunc out of a returned Go value.
+//
+// This is intentionally stricter than "anything callable": nesting a JSFunc
+// inside another JSFunc's signature would require the emitter to generate
+// double-indirected Call wrapping, and TS Function (no call sig) / tuples
+// with callable elements have no sound lowering either.
+func isJSFuncParamType(ck *checker.Checker, t *checker.Type) *Reason {
+	if ck == nil || t == nil {
+		return &Reason{Code: reasonJSFuncSig, Detail: "nil type"}
+	}
+	if t.Flags()&checker.TypeFlagsObject == 0 {
+		return &Reason{Code: reasonJSFuncSig, Detail: "not an object type"}
+	}
+	sigs := ck.GetSignaturesOfType(t, checker.SignatureKindCall)
+	if len(sigs) == 0 {
+		return &Reason{Code: reasonJSFuncSig, Detail: "no call signature"}
+	}
+	if len(sigs) > 1 {
+		return &Reason{Code: reasonJSFuncSig, Detail: "overloaded callable not supported"}
+	}
+	if len(ck.GetSignaturesOfType(t, checker.SignatureKindConstruct)) > 0 {
+		return &Reason{Code: reasonJSFuncSig, Detail: "constructor signature not supported"}
+	}
+	sig := sigs[0]
+	if ck.HasEffectiveRestParameter(sig) {
+		return &Reason{Code: reasonRestParam, Detail: "callback rest parameter not supported"}
+	}
+	for i, paramSym := range sig.Parameters() {
+		if paramSym == nil {
+			continue
+		}
+		pt := ck.GetTypeOfSymbol(paramSym)
+		// A nested callable param (callback-of-callback) is rejected — keeps
+		// the emitter's `.Call(arg.(T))` lowering single-level.
+		if pt != nil && pt.Flags()&checker.TypeFlagsObject != 0 {
+			if len(ck.GetSignaturesOfType(pt, checker.SignatureKindCall)) > 0 {
+				return &Reason{Code: reasonJSFuncNested, Detail: "callback parameter itself is callable"}
+			}
+		}
+		if r := isExtractableType(ck, pt); r != nil {
+			return &Reason{Code: r.Code, Detail: "callback param " + paramSym.Name + ": " + r.Detail}
+		}
+		_ = i
+	}
+	ret := ck.GetReturnTypeOfSignature(sig)
+	// Callback return is extractable OR void. Promise<T> as a callback return
+	// is not wired — the IIFE lowering can't await a JS Promise synchronously.
+	if ret != nil && ret.Flags()&checker.TypeFlagsObject != 0 {
+		if len(ck.GetSignaturesOfType(ret, checker.SignatureKindCall)) > 0 {
+			return &Reason{Code: reasonJSFuncNested, Detail: "callback return is callable"}
+		}
+	}
+	if r := isExtractableType(ck, ret); r != nil {
+		return &Reason{Code: r.Code, Detail: "callback return: " + r.Detail}
+	}
+	return nil
 }

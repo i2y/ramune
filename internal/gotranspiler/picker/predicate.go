@@ -47,17 +47,18 @@ func IsFunctionExtractable(node *ast.Node, ck *checker.Checker, topLevelFuncs ma
 		return false, Reason{Code: reasonMissingBody, Detail: "ambient/overload declaration"}
 	}
 
-	paramNames, reason := checkCallableSignature(ck, node, fd.Parameters, "")
+	paramNames, jsFuncParams, reason := checkCallableSignature(ck, node, fd.Parameters, "")
 	if reason != nil {
 		return false, *reason
 	}
 
 	ctx := &bodyCtx{
-		ck:            ck,
-		paramNames:    paramNames,
-		topLevelFuncs: topLevelFuncs,
-		localNames:    map[string]bool{},
-		inAsync:       ast.HasSyntacticModifier(node, ast.ModifierFlagsAsync),
+		ck:               ck,
+		paramNames:       paramNames,
+		jsFuncParamNames: jsFuncParams,
+		topLevelFuncs:    topLevelFuncs,
+		localNames:       map[string]bool{},
+		inAsync:          ast.HasSyntacticModifier(node, ast.ModifierFlagsAsync),
 	}
 	if r := checkBody(fd.Body, ctx); r != nil {
 		return false, *r
@@ -69,7 +70,8 @@ func IsFunctionExtractable(node *ast.Node, ck *checker.Checker, topLevelFuncs ma
 // checkCallableSignature validates a FunctionDeclaration / MethodDeclaration /
 // ConstructorDeclaration's call signature: no rest, no default/optional
 // parameters, every parameter type and the return type must be extractable.
-// Returns the param name set (used to seed bodyCtx.paramNames) on success.
+// Returns (paramNames, jsFuncParamNames) — the latter is the subset of
+// paramNames whose TS type is a callable accepted by isJSFuncParamType.
 //
 // label is prefixed to error details so callers can distinguish a free
 // function ("") from a method ("method `foo` ").
@@ -79,18 +81,18 @@ func IsFunctionExtractable(node *ast.Node, ck *checker.Checker, topLevelFuncs ma
 // emitter generating any compensating Go logic. JS callers invoking f()
 // against an extracted `func F(x float64)` get a missing-arg error from the
 // bridge. Reject up front rather than ship a latent bug.
-func checkCallableSignature(ck *checker.Checker, node *ast.Node, params *ast.ParameterList, label string) (map[string]bool, *Reason) {
+func checkCallableSignature(ck *checker.Checker, node *ast.Node, params *ast.ParameterList, label string) (map[string]bool, map[string]bool, *Reason) {
 	fnType := ck.GetTypeAtLocation(node)
 	if fnType == nil {
-		return nil, &Reason{Code: reasonEmptyReturn, Detail: label + "type checker returned nil"}
+		return nil, nil, &Reason{Code: reasonEmptyReturn, Detail: label + "type checker returned nil"}
 	}
 	sigs := ck.GetSignaturesOfType(fnType, checker.SignatureKindCall)
 	if len(sigs) == 0 {
-		return nil, &Reason{Code: reasonEmptyReturn, Detail: label + "no call signature"}
+		return nil, nil, &Reason{Code: reasonEmptyReturn, Detail: label + "no call signature"}
 	}
 	sig := sigs[0]
 	if ck.HasEffectiveRestParameter(sig) {
-		return nil, &Reason{Code: reasonRestParam, Detail: label + "rest parameter not supported"}
+		return nil, nil, &Reason{Code: reasonRestParam, Detail: label + "rest parameter not supported"}
 	}
 	if params != nil {
 		for _, p := range params.Nodes {
@@ -99,27 +101,36 @@ func checkCallableSignature(ck *checker.Checker, node *ast.Node, params *ast.Par
 				continue
 			}
 			if pd.Initializer != nil {
-				return nil, &Reason{Code: reasonUnhandledKind, Detail: label + "default parameter value not supported"}
+				return nil, nil, &Reason{Code: reasonUnhandledKind, Detail: label + "default parameter value not supported"}
 			}
 			if pd.QuestionToken != nil {
-				return nil, &Reason{Code: reasonUnhandledKind, Detail: label + "optional parameter not supported"}
+				return nil, nil, &Reason{Code: reasonUnhandledKind, Detail: label + "optional parameter not supported"}
 			}
 		}
 	}
 	paramNames := map[string]bool{}
+	jsFuncParams := map[string]bool{}
 	for i, paramSym := range sig.Parameters() {
 		if paramSym == nil {
 			continue
 		}
 		paramNames[paramSym.Name] = true
-		if r := isExtractableType(ck, ck.GetTypeOfSymbol(paramSym)); r != nil {
-			return nil, &Reason{Code: r.Code, Detail: fmt.Sprintf("%sparam %d (%s): %s", label, i, paramSym.Name, r.Detail)}
+		pt := ck.GetTypeOfSymbol(paramSym)
+		if r := isExtractableType(ck, pt); r != nil {
+			// Fallback: a callable param (e.g. `cb: (n: number) => number`)
+			// is admitted via the *ramune.JSFunc bridge. Tracked separately
+			// so the body walker can enforce "call-head position only".
+			if jr := isJSFuncParamType(ck, pt); jr == nil {
+				jsFuncParams[paramSym.Name] = true
+				continue
+			}
+			return nil, nil, &Reason{Code: r.Code, Detail: fmt.Sprintf("%sparam %d (%s): %s", label, i, paramSym.Name, r.Detail)}
 		}
 	}
 	if r := isExtractableReturnType(ck, ck.GetReturnTypeOfSignature(sig)); r != nil {
-		return nil, &Reason{Code: r.Code, Detail: label + "return: " + r.Detail}
+		return nil, nil, &Reason{Code: r.Code, Detail: label + "return: " + r.Detail}
 	}
-	return paramNames, nil
+	return paramNames, jsFuncParams, nil
 }
 
 // bodyCtx carries state threaded through the body walker.
@@ -129,6 +140,13 @@ type bodyCtx struct {
 	topLevelFuncs map[string]struct{} // same-file top-level functions - callable
 	localNames    map[string]bool     // locals declared in this body (let/const/var) - readable AND writable
 	inAsync       bool                // function is `async` - permits `await` on Promise<T>
+	// jsFuncParamNames is the subset of paramNames whose declared TS type is
+	// a callable accepted by isJSFuncParamType. The emitter lowers these to
+	// `*ramune.JSFunc`. The walker allows a reference only in call-head
+	// position (checkBareCallee); other uses (value operand, assignment RHS,
+	// argument to another call) would require materialising a JS function
+	// back into a new *JSFunc, which the bridge doesn't support.
+	jsFuncParamNames map[string]bool
 	// Class-method / constructor context. When inMethod is true, `this` is
 	// permitted and `this.<field>` / `this.<method>` resolve against these
 	// maps. Constructor bodies enforce the `this.<field> = <expr>` shape
@@ -434,11 +452,18 @@ func checkExpr(node *ast.Node, ctx *bodyCtx) *Reason {
 }
 
 // checkIdentifierRef rejects free identifiers: anything not a parameter, a
-// local, or another extractable top-level function in the same file.
+// local, or another extractable top-level function in the same file. A
+// JSFunc-param identifier reached here is always a value-use (call-head
+// position is routed through checkBareCallee, which short-circuits before
+// this walker sees the identifier) — reject so the emitter doesn't have to
+// synthesize a callable value out of a *ramune.JSFunc.
 func checkIdentifierRef(node *ast.Node, ctx *bodyCtx) *Reason {
 	name := node.AsIdentifier().Text
 	if name == "" || name == "undefined" {
 		return nil
+	}
+	if ctx.jsFuncParamNames[name] {
+		return &Reason{Code: reasonDynamicCallee, Detail: "callback param `" + name + "` may only appear in call-head position"}
 	}
 	if ctx.paramNames[name] || ctx.localNames[name] {
 		return nil
@@ -900,6 +925,19 @@ func checkCallExpr(node *ast.Node, ctx *bodyCtx) *Reason {
 	default:
 		return &Reason{Code: reasonDynamicCallee, Detail: "callee is not a bare identifier"}
 	}
+	// Callback-taking array methods (map/filter/forEach/some/every) take a
+	// bare *JSFunc parameter as their callback — the identifier reaches the
+	// arg walker below where checkIdentifierRef would otherwise reject it
+	// as a value-use. Validate the shape here and skip generic arg walking
+	// for these specific calls.
+	if callee.Kind == ast.KindPropertyAccessExpression {
+		pa := callee.AsPropertyAccessExpression()
+		if pa != nil && pa.Name() != nil && pa.Name().Kind == ast.KindIdentifier {
+			if _, isCb := arrayCallbackSafeMethods[pa.Name().AsIdentifier().Text]; isCb {
+				return checkArrayCallbackMethodCall(ce, pa, ctx)
+			}
+		}
+	}
 	if ce.Arguments != nil {
 		for _, arg := range ce.Arguments.Nodes {
 			if r := checkExpr(arg, ctx); r != nil {
@@ -922,6 +960,9 @@ var safeGlobalCallees = map[string]bool{
 }
 
 func checkBareCallee(name string, ctx *bodyCtx) *Reason {
+	if ctx.jsFuncParamNames[name] {
+		return nil
+	}
 	if ctx.paramNames[name] || ctx.localNames[name] {
 		return &Reason{Code: reasonDynamicCallee, Detail: "callee `" + name + "` is a local/param (function-typed value)"}
 	}
@@ -972,10 +1013,42 @@ var stringSafeMethods = map[string]bool{
 // emit into `jsarray.*` calls (the ramune runtime helper package), so
 // extracted code carries a ramune dependency - that is the norm for the
 // generated native module but means standalone compile-only smokes cannot
-// cover them. Callback-taking methods (map/filter/reduce/etc.) are excluded.
+// cover them. Callback-taking methods are gated separately in
+// arrayCallbackSafeMethods so the walker can enforce per-method callback
+// shape (return must be boolean for filter/some/every; return must be
+// extractable for map; callback form must be a bare *JSFunc param — inline
+// arrows are already rejected by the generic expr walker).
 var arraySafeMethods = map[string]bool{
 	"includes": true, "indexOf": true, "lastIndexOf": true,
 	"join": true, "slice": true, "concat": true, "reverse": true,
+}
+
+// arrayCallbackSafeMethods lists the admitted subset of callback-taking
+// array instance methods. Each entry pairs the method name with the
+// required callback return-type predicate:
+//   - "map":     callback return must be extractable (primitive / T[] / named)
+//   - "filter":  callback return must be boolean
+//   - "forEach": callback return is discarded; any extractable OR void accepted
+//   - "some":    callback return must be boolean
+//   - "every":   callback return must be boolean
+//
+// Deferred: `reduce` (accumulator type inference), `find` (T | undefined
+// shape), `findIndex` (callback identical to find but result is number —
+// ambivalent when the array is empty). v2(a.1) ships the high-ROI subset.
+var arrayCallbackSafeMethods = map[string]struct {
+	requireBoolReturn bool
+	// allowVoidReturn keeps forEach admissible even when the TS signature is
+	// `(x: T) => void` (TS sets the return type to void — isExtractableType
+	// accepts void too but isJSFuncParamType rejects callbacks that return
+	// void in positions where the result is read; forEach discards, so we
+	// explicitly allow void here).
+	allowVoidReturn bool
+}{
+	"map":     {requireBoolReturn: false, allowVoidReturn: false},
+	"filter":  {requireBoolReturn: true, allowVoidReturn: false},
+	"forEach": {requireBoolReturn: false, allowVoidReturn: true},
+	"some":    {requireBoolReturn: true, allowVoidReturn: false},
+	"every":   {requireBoolReturn: true, allowVoidReturn: false},
 }
 
 // checkThisMethodCall accepts `this.<method>(...)` when <method> is declared
@@ -1077,9 +1150,23 @@ func checkStringMethodCall(pa *ast.PropertyAccessExpression, ctx *bodyCtx) *Reas
 // the receiver is a walker-safe primitive-array-typed expression.
 func checkArrayMethodCall(pa *ast.PropertyAccessExpression, ctx *bodyCtx) *Reason {
 	method := pa.Name().AsIdentifier().Text
+	if _, isCallbackMethod := arrayCallbackSafeMethods[method]; isCallbackMethod {
+		// Callback methods have their own argument-shape validation handled
+		// by checkArrayCallbackMethodCall (invoked from the parent call
+		// walker); the parent call walker can't fold method-name-specific
+		// rules through the generic builtin path, so route here.
+		return checkArrayMethodReceiver(pa, ctx)
+	}
 	if !arraySafeMethods[method] {
 		return &Reason{Code: reasonBuiltinCall, Detail: "." + method + " not in array safelist"}
 	}
+	return checkArrayMethodReceiver(pa, ctx)
+}
+
+// checkArrayMethodReceiver walks the receiver expression and confirms its
+// type is a primitive-element array. Shared between the no-callback and
+// callback dispatch gates.
+func checkArrayMethodReceiver(pa *ast.PropertyAccessExpression, ctx *bodyCtx) *Reason {
 	expr := pa.Expression
 	if r := checkExpr(expr, ctx); r != nil {
 		return r
@@ -1090,6 +1177,81 @@ func checkArrayMethodCall(pa *ast.PropertyAccessExpression, ctx *bodyCtx) *Reaso
 	t := ctx.ck.GetTypeAtLocation(expr)
 	if t == nil || arrayElementType(ctx.ck, t) == nil {
 		return &Reason{Code: reasonObjectType, Detail: "receiver is not an array"}
+	}
+	return nil
+}
+
+// checkArrayCallbackMethodCall validates the argument shape of a callback-
+// taking array method call like `xs.map(cb)`. It runs alongside (not instead
+// of) checkArrayMethodCall — the former vets the receiver type, this one
+// vets the callback argument per-method:
+//
+//   - Exactly one argument.
+//   - Argument is a bare identifier referring to a *JSFunc parameter of the
+//     enclosing extracted function. Inline arrows are already rejected by
+//     checkExpr (reasonFuncLiteral), but we fail fast here with a clearer
+//     reason.
+//   - Callback signature matches the method:
+//   - filter / some / every: callback return must be boolean.
+//   - map / forEach: any extractable return (forEach additionally
+//     accepts void, which isExtractableType already admits).
+//
+// Returns nil on accept, a Reason on reject. Callers must still run
+// checkArrayMethodCall so the receiver is validated.
+func checkArrayCallbackMethodCall(ce *ast.CallExpression, pa *ast.PropertyAccessExpression, ctx *bodyCtx) *Reason {
+	method := pa.Name().AsIdentifier().Text
+	rule, ok := arrayCallbackSafeMethods[method]
+	if !ok {
+		return nil // not a callback-taking method; nothing method-specific to enforce
+	}
+	if ce.Arguments == nil || len(ce.Arguments.Nodes) != 1 {
+		return &Reason{Code: reasonBuiltinCall, Detail: "." + method + " requires exactly one callback argument"}
+	}
+	arg := ce.Arguments.Nodes[0]
+	if arg.Kind != ast.KindIdentifier {
+		return &Reason{Code: reasonFuncLiteral, Detail: "." + method + " callback must be a bare parameter identifier (inline functions not supported)"}
+	}
+	name := arg.AsIdentifier().Text
+	if !ctx.jsFuncParamNames[name] {
+		return &Reason{Code: reasonDynamicCallee, Detail: "." + method + " callback `" + name + "` is not a *JSFunc parameter of the enclosing function"}
+	}
+	// Interrogate the callback's call signature to enforce per-method return.
+	if ctx.ck == nil {
+		return nil
+	}
+	cbType := ctx.ck.GetTypeAtLocation(arg)
+	if cbType == nil {
+		return &Reason{Code: reasonBuiltinCall, Detail: "." + method + " callback has no checker type"}
+	}
+	sigs := ctx.ck.GetSignaturesOfType(cbType, checker.SignatureKindCall)
+	if len(sigs) == 0 {
+		return &Reason{Code: reasonBuiltinCall, Detail: "." + method + " callback has no call signature"}
+	}
+	ret := ctx.ck.GetReturnTypeOfSignature(sigs[0])
+	if rule.requireBoolReturn {
+		if ret == nil || !isBoolLikeType(ret) {
+			return &Reason{Code: reasonObjectType, Detail: "." + method + " callback must return boolean"}
+		}
+	} else if ret != nil && ret.Flags()&checker.TypeFlagsVoidLike != 0 {
+		if !rule.allowVoidReturn {
+			return &Reason{Code: reasonObjectType, Detail: "." + method + " callback must return a value"}
+		}
+	}
+	// Also validate the callback's single parameter is element-assignable to
+	// the receiver's element type. Caller already checked receiver is an
+	// array, but we need the element type back to compare.
+	// Receiver is pa.Expression; arrayElementType returns its element type.
+	arrT := ctx.ck.GetTypeAtLocation(pa.Expression)
+	if arrT == nil || arrayElementType(ctx.ck, arrT) == nil {
+		return nil // receiver gate will fail separately
+	}
+	// Callback parameter count check: exactly one, matching the element.
+	// Reason: the emitter lowers `.map(cb)` as `cb.Call(x)` where x is the
+	// element — any additional declared params (index, source) would
+	// receive `undefined` at runtime, changing observable semantics. Reject
+	// rather than silently mismatch.
+	if len(sigs[0].Parameters()) != 1 {
+		return &Reason{Code: reasonBuiltinCall, Detail: "." + method + " callback must declare exactly one parameter"}
 	}
 	return nil
 }
