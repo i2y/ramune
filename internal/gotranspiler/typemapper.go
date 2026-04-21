@@ -225,12 +225,6 @@ func (m *typeMapper) goType(t *checker.Type) string {
 
 	// Object types (arrays, classes, interfaces, etc.)
 	if flags&checker.TypeFlagsObject != 0 {
-		// Plain callables (function types without own properties beyond the
-		// call signature) lower to *ramune.JSFunc for the hybrid transpiler's
-		// callback-parameter path. Rejected by the picker for any position
-		// outside a parameter (local/field/return), so the typemapper does
-		// not need to gate on context. Class / interface types with call
-		// signatures (hybrid target) are never admitted by the picker.
 		if m.isPlainCallable(t) {
 			return "*ramune.JSFunc"
 		}
@@ -744,15 +738,10 @@ func (m *typeMapper) mapWellKnownType(name string) string {
 	return ""
 }
 
-// isPlainCallable returns true when t is a function type — anonymous or named
-// type alias like `(n: number) => number` — without construct signatures,
-// index signatures, or named properties beyond the call signature itself. In
-// the hybrid transpiler this is the only type category that lowers to
-// *ramune.JSFunc (the callback bridge), and the picker's isJSFuncParamType
-// guards its admission in the first place.
-//
-// Classes / interfaces that happen to carry a call signature are excluded so
-// named structs (Web API types etc.) stay on their existing lowering path.
+// isPlainCallable reports whether t is a bare function type (anonymous or
+// aliased `(args) => R`) — one call signature, no ctor/index/properties.
+// Only these lower to *ramune.JSFunc; named types that happen to carry a
+// call signature stay on their existing lowering path.
 func (m *typeMapper) isPlainCallable(t *checker.Type) bool {
 	if m == nil || m.checker == nil || t == nil {
 		return false

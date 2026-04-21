@@ -117,9 +117,8 @@ func checkCallableSignature(ck *checker.Checker, node *ast.Node, params *ast.Par
 		paramNames[paramSym.Name] = true
 		pt := ck.GetTypeOfSymbol(paramSym)
 		if r := isExtractableType(ck, pt); r != nil {
-			// Fallback: a callable param (e.g. `cb: (n: number) => number`)
-			// is admitted via the *ramune.JSFunc bridge. Tracked separately
-			// so the body walker can enforce "call-head position only".
+			// Callable params fall back to the *ramune.JSFunc bridge; the
+			// walker enforces call-head-only use via jsFuncParamNames.
 			if jr := isJSFuncParamType(ck, pt); jr == nil {
 				jsFuncParams[paramSym.Name] = true
 				continue
@@ -1023,32 +1022,18 @@ var arraySafeMethods = map[string]bool{
 	"join": true, "slice": true, "concat": true, "reverse": true,
 }
 
-// arrayCallbackSafeMethods lists the admitted subset of callback-taking
-// array instance methods. Each entry pairs the method name with the
-// required callback return-type predicate:
-//   - "map":     callback return must be extractable (primitive / T[] / named)
-//   - "filter":  callback return must be boolean
-//   - "forEach": callback return is discarded; any extractable OR void accepted
-//   - "some":    callback return must be boolean
-//   - "every":   callback return must be boolean
+// arrayCallbackSafeMethods is the admitted subset of callback-taking array
+// instance methods. Membership check only; per-method return-type policy
+// lives in callbackReturnPolicy so additions stay mechanical.
 //
-// Deferred: `reduce` (accumulator type inference), `find` (T | undefined
-// shape), `findIndex` (callback identical to find but result is number —
-// ambivalent when the array is empty). v2(a.1) ships the high-ROI subset.
-var arrayCallbackSafeMethods = map[string]struct {
-	requireBoolReturn bool
-	// allowVoidReturn keeps forEach admissible even when the TS signature is
-	// `(x: T) => void` (TS sets the return type to void — isExtractableType
-	// accepts void too but isJSFuncParamType rejects callbacks that return
-	// void in positions where the result is read; forEach discards, so we
-	// explicitly allow void here).
-	allowVoidReturn bool
-}{
-	"map":     {requireBoolReturn: false, allowVoidReturn: false},
-	"filter":  {requireBoolReturn: true, allowVoidReturn: false},
-	"forEach": {requireBoolReturn: false, allowVoidReturn: true},
-	"some":    {requireBoolReturn: true, allowVoidReturn: false},
-	"every":   {requireBoolReturn: true, allowVoidReturn: false},
+// Deferred: `reduce` (accumulator type inference), `find` / `findIndex`
+// (T | undefined shape).
+var arrayCallbackSafeMethods = map[string]bool{
+	"map":     true,
+	"filter":  true,
+	"forEach": true,
+	"some":    true,
+	"every":   true,
 }
 
 // checkThisMethodCall accepts `this.<method>(...)` when <method> is declared
@@ -1182,27 +1167,13 @@ func checkArrayMethodReceiver(pa *ast.PropertyAccessExpression, ctx *bodyCtx) *R
 }
 
 // checkArrayCallbackMethodCall validates the argument shape of a callback-
-// taking array method call like `xs.map(cb)`. It runs alongside (not instead
-// of) checkArrayMethodCall — the former vets the receiver type, this one
-// vets the callback argument per-method:
-//
-//   - Exactly one argument.
-//   - Argument is a bare identifier referring to a *JSFunc parameter of the
-//     enclosing extracted function. Inline arrows are already rejected by
-//     checkExpr (reasonFuncLiteral), but we fail fast here with a clearer
-//     reason.
-//   - Callback signature matches the method:
-//   - filter / some / every: callback return must be boolean.
-//   - map / forEach: any extractable return (forEach additionally
-//     accepts void, which isExtractableType already admits).
-//
-// Returns nil on accept, a Reason on reject. Callers must still run
-// checkArrayMethodCall so the receiver is validated.
+// taking array method: single bare *JSFunc parameter, one-param callback,
+// per-method return-type policy. Assumes the receiver has already been
+// vetted by checkArrayMethodCall.
 func checkArrayCallbackMethodCall(ce *ast.CallExpression, pa *ast.PropertyAccessExpression, ctx *bodyCtx) *Reason {
 	method := pa.Name().AsIdentifier().Text
-	rule, ok := arrayCallbackSafeMethods[method]
-	if !ok {
-		return nil // not a callback-taking method; nothing method-specific to enforce
+	if !arrayCallbackSafeMethods[method] {
+		return nil
 	}
 	if ce.Arguments == nil || len(ce.Arguments.Nodes) != 1 {
 		return &Reason{Code: reasonBuiltinCall, Detail: "." + method + " requires exactly one callback argument"}
@@ -1215,7 +1186,6 @@ func checkArrayCallbackMethodCall(ce *ast.CallExpression, pa *ast.PropertyAccess
 	if !ctx.jsFuncParamNames[name] {
 		return &Reason{Code: reasonDynamicCallee, Detail: "." + method + " callback `" + name + "` is not a *JSFunc parameter of the enclosing function"}
 	}
-	// Interrogate the callback's call signature to enforce per-method return.
 	if ctx.ck == nil {
 		return nil
 	}
@@ -1228,28 +1198,26 @@ func checkArrayCallbackMethodCall(ce *ast.CallExpression, pa *ast.PropertyAccess
 		return &Reason{Code: reasonBuiltinCall, Detail: "." + method + " callback has no call signature"}
 	}
 	ret := ctx.ck.GetReturnTypeOfSignature(sigs[0])
-	if rule.requireBoolReturn {
+	// Per-method return-type policy. filter/some/every need a boolean to
+	// decide inclusion or short-circuit. forEach tolerates void because
+	// the emitter discards the result. map rejects void (the output slice
+	// would be `[]void` — malformed).
+	switch method {
+	case "filter", "some", "every":
 		if ret == nil || !isBoolLikeType(ret) {
 			return &Reason{Code: reasonObjectType, Detail: "." + method + " callback must return boolean"}
 		}
-	} else if ret != nil && ret.Flags()&checker.TypeFlagsVoidLike != 0 {
-		if !rule.allowVoidReturn {
-			return &Reason{Code: reasonObjectType, Detail: "." + method + " callback must return a value"}
+	case "map":
+		if ret != nil && ret.Flags()&checker.TypeFlagsVoidLike != 0 {
+			return &Reason{Code: reasonObjectType, Detail: ".map callback must return a value"}
 		}
 	}
-	// Also validate the callback's single parameter is element-assignable to
-	// the receiver's element type. Caller already checked receiver is an
-	// array, but we need the element type back to compare.
-	// Receiver is pa.Expression; arrayElementType returns its element type.
 	arrT := ctx.ck.GetTypeAtLocation(pa.Expression)
 	if arrT == nil || arrayElementType(ctx.ck, arrT) == nil {
 		return nil // receiver gate will fail separately
 	}
-	// Callback parameter count check: exactly one, matching the element.
-	// Reason: the emitter lowers `.map(cb)` as `cb.Call(x)` where x is the
-	// element — any additional declared params (index, source) would
-	// receive `undefined` at runtime, changing observable semantics. Reject
-	// rather than silently mismatch.
+	// The emitter lowers `.map(cb)` as `cb.Call(x)` with only the element;
+	// a 2+-param callback would see `undefined` for index/source at runtime.
 	if len(sigs[0].Parameters()) != 1 {
 		return &Reason{Code: reasonBuiltinCall, Detail: "." + method + " callback must declare exactly one parameter"}
 	}

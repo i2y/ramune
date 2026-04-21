@@ -103,13 +103,12 @@ type Transpiler struct {
 	currentFuncName string
 	// currentFuncParamTypes stores the Go parameter types of the current function.
 	currentFuncParamTypes []string
-	// jsFuncParams tracks parameter identifiers (Go names) whose emitted Go
-	// type is *ramune.JSFunc. Hybrid v2(a): when emitCallExpr sees a bare
-	// identifier callee in this set, it lowers to `.Call(...)` inside the
-	// jsrt.Throw IIFE pattern. Populated by emitParameterList when the
-	// typemapper returns "*ramune.JSFunc"; not used outside hybrid-extracted
-	// functions (other paths never have this type in a param position).
-	jsFuncParams map[string]bool
+}
+
+// isJSFuncParam reports whether pn is a parameter whose emitted Go type
+// is *ramune.JSFunc.
+func (t *Transpiler) isJSFuncParam(pn string) bool {
+	return t.goVarTypes != nil && t.goVarTypes[pn] == "*ramune.JSFunc"
 }
 
 // projectSharedState holds cross-file state collected in a first pass over all source files.

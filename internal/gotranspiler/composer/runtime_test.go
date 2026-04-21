@@ -1067,14 +1067,9 @@ export function parseUser(x: any): any { return x; }
 	}
 }
 
-// applyCb mirrors what the transpiler emits for
-//
-//	export function applyCb(cb: (n: number) => number, x: number): number { return cb(x); }
-//
-// The real emitter lowers the body into an IIFE that surfaces callback
-// errors as JS throws; the stand-in keeps that behavior identical so the
-// runtime round trip exercises the same cb.Call(x) path the emitted code
-// would take.
+// applyCb / wrapCb / countCalls stand in for what the transpiler emits for
+// the TS sources in TestHybrid_JSFuncCallback_RoundTrip — the hand-written
+// Go exercises the same cb.Call path the emitted IIFE would.
 func applyCb(cb *ramune.JSFunc, x float64) float64 {
 	v, err := cb.Call(x)
 	if err != nil {
@@ -1083,7 +1078,6 @@ func applyCb(cb *ramune.JSFunc, x float64) float64 {
 	return v.(float64)
 }
 
-// wrapCb mirrors `export function wrapCb(cb: (s: string) => string, s: string): string { return cb(s); }`.
 func wrapCb(cb *ramune.JSFunc, s string) string {
 	v, err := cb.Call(s)
 	if err != nil {
@@ -1092,10 +1086,6 @@ func wrapCb(cb *ramune.JSFunc, s string) string {
 	return v.(string)
 }
 
-// countCalls uses the callback purely for its side effects. Mirrors
-// `export function countCalls(cb: (n: number) => void): number { cb(1); cb(2); cb(3); return 3; }`
-// — three invocations, discarded result, statement-position IIFE with the
-// void-return lowering.
 func countCalls(cb *ramune.JSFunc) float64 {
 	_, err := cb.Call(float64(1))
 	if err != nil {
@@ -1176,9 +1166,8 @@ func ramuneRepoRoot(t *testing.T) string {
 	return abs
 }
 
-// doubleAll / keepPositive / traverse / anyTrue / allTrue mirror what the
-// transpiler emits for v2(a.1) array-callback lowerings, so the runtime
-// round trip exercises the same .Call loop shape the emitter would produce.
+// doubleAll / keepPositive / traverse / anyTrue / allTrue stand in for the
+// array-callback lowerings in TestHybrid_JSFuncArrayCallbacks_RoundTrip.
 
 func doubleAll(cb *ramune.JSFunc, xs []float64) []float64 {
 	out := make([]float64, 0, len(xs))

@@ -44,7 +44,6 @@ const (
 	reasonClassPrivate   = "class-private"
 	reasonClassDecorator = "class-decorator"
 	reasonClassParamProp = "class-param-property"
-	reasonJSFuncNested   = "jsfunc-nested-callable"
 	reasonJSFuncSig      = "jsfunc-signature"
 )
 
@@ -252,29 +251,26 @@ func isJSFuncParamType(ck *checker.Checker, t *checker.Type) *Reason {
 	if ck.HasEffectiveRestParameter(sig) {
 		return &Reason{Code: reasonRestParam, Detail: "callback rest parameter not supported"}
 	}
-	for i, paramSym := range sig.Parameters() {
+	for _, paramSym := range sig.Parameters() {
 		if paramSym == nil {
 			continue
 		}
 		pt := ck.GetTypeOfSymbol(paramSym)
-		// A nested callable param (callback-of-callback) is rejected — keeps
-		// the emitter's `.Call(arg.(T))` lowering single-level.
+		// Nested callable params (callback-of-callback) would require a
+		// double-indirected Call wrapping the emitter doesn't generate.
 		if pt != nil && pt.Flags()&checker.TypeFlagsObject != 0 {
 			if len(ck.GetSignaturesOfType(pt, checker.SignatureKindCall)) > 0 {
-				return &Reason{Code: reasonJSFuncNested, Detail: "callback parameter itself is callable"}
+				return &Reason{Code: reasonObjectType, Detail: "callback parameter `" + paramSym.Name + "` itself is callable"}
 			}
 		}
 		if r := isExtractableType(ck, pt); r != nil {
 			return &Reason{Code: r.Code, Detail: "callback param " + paramSym.Name + ": " + r.Detail}
 		}
-		_ = i
 	}
 	ret := ck.GetReturnTypeOfSignature(sig)
-	// Callback return is extractable OR void. Promise<T> as a callback return
-	// is not wired — the IIFE lowering can't await a JS Promise synchronously.
 	if ret != nil && ret.Flags()&checker.TypeFlagsObject != 0 {
 		if len(ck.GetSignaturesOfType(ret, checker.SignatureKindCall)) > 0 {
-			return &Reason{Code: reasonJSFuncNested, Detail: "callback return is callable"}
+			return &Reason{Code: reasonObjectType, Detail: "callback return is callable"}
 		}
 	}
 	if r := isExtractableType(ck, ret); r != nil {

@@ -1030,12 +1030,9 @@ func (t *Transpiler) emitCallExpr(node *ast.Node) {
 		return
 	}
 
-	// Hybrid v2(a): bare identifier callee bound to a *ramune.JSFunc
-	// parameter. Lower `cb(args...)` to an IIFE mirroring emitAwaitExpr's
-	// jsrt.Throw pattern: run the call, surface any error as a JS throw,
-	// then type-assert the `any` result to the callback's TS-declared
-	// return type. Must run before the generic "callee is any → cast to
-	// func(any...) any" path below, which would produce a type error.
+	// Bare identifier callee bound to a *ramune.JSFunc parameter must
+	// intercept before the generic "callee is any → func(any...) any"
+	// cast path below, which would produce a Go type error.
 	if t.emitJSFuncCallIfApplicable(call) {
 		return
 	}
@@ -2972,15 +2969,6 @@ func (t *Transpiler) emitParameterList(node *ast.Node) {
 			pn := goVarName(name.AsIdentifier().Text)
 			if pn != "_" {
 				t.trackGoVarType(pn, goType)
-				// Hybrid v2(a): remember JSFunc-typed parameters by their Go
-				// identifier so emitCallExpr can lower `cb(x)` to
-				// `cb.Call(x)` inside the jsrt.Throw IIFE.
-				if goType == "*ramune.JSFunc" {
-					if t.jsFuncParams == nil {
-						t.jsFuncParams = map[string]bool{}
-					}
-					t.jsFuncParams[pn] = true
-				}
 			}
 		}
 		// Legacy: Track *string parameters
@@ -4502,20 +4490,11 @@ func (t *Transpiler) emitRegExpLiteral(node *ast.Node) {
 }
 
 // emitArrayJSFuncCallbackMethod lowers an array callback-method call whose
-// callback argument is a bare *ramune.JSFunc parameter, e.g.
-//
-//	xs.map(cb)  →  func() []R { var __out []R; for _, __x := range xs {
-//	                  __v, __err := cb.Call(__x)
-//	                  if __err != nil { jsrt.Throw(__err) }
-//	                  __out = append(__out, __v.(R))
-//	               }; return __out }()
-//
-// Returns true and emits when it handles the call; returns false when the
-// shape isn't a *JSFunc-param callback so the caller falls back to the
+// callback argument is a bare *ramune.JSFunc parameter — `xs.map(cb)` into
+// an inline range+Call loop with jsrt.Throw error propagation. Returns
+// true when it handled the call, false for the caller to fall back to the
 // jsarray.* helper path. The picker's checkArrayCallbackMethodCall gate
-// guarantees arg[0] is a JSFunc param with the correct return shape for
-// each method, so the emitter can lean on the method name alone to pick
-// its IIFE template.
+// guarantees arg[0] is a JSFunc param with a per-method-valid return shape.
 func (t *Transpiler) emitArrayJSFuncCallbackMethod(call *ast.CallExpression, prop *ast.PropertyAccessExpression, method, elemGoType string) bool {
 	if call.Arguments == nil || len(call.Arguments.Nodes) != 1 {
 		return false
@@ -4525,23 +4504,8 @@ func (t *Transpiler) emitArrayJSFuncCallbackMethod(call *ast.CallExpression, pro
 		return false
 	}
 	pn := goVarName(cb.AsIdentifier().Text)
-	if t.jsFuncParams == nil || !t.jsFuncParams[pn] {
+	if !t.isJSFuncParam(pn) {
 		return false
-	}
-
-	// Resolve callback return type for map's result slice and fallback type
-	// assertions. For filter/some/every the emitter asserts `__v.(bool)`
-	// regardless; forEach discards the return entirely.
-	retType := "any"
-	if t.ck != nil {
-		cbType := t.ck.GetTypeAtLocation(cb)
-		if cbType != nil {
-			if sigs := t.ck.GetSignaturesOfType(cbType, checker.SignatureKindCall); len(sigs) > 0 {
-				if rt := t.tm.goReturnType(t.ck.GetReturnTypeOfSignature(sigs[0])); rt != "" {
-					retType = rt
-				}
-			}
-		}
 	}
 	if elemGoType == "" {
 		elemGoType = "any"
@@ -4554,6 +4518,13 @@ func (t *Transpiler) emitArrayJSFuncCallbackMethod(call *ast.CallExpression, pro
 	case "forEach":
 		t.w.writef("func() { for _, __x := range %s { __v, __err := %s.Call(__x); _ = __v; if __err != nil { jsrt.Throw(__err) } } }()", arrCode, pn)
 	case "map":
+		// Picker rejects void-returning map callbacks, so an empty retType
+		// here would be a gate regression — fall back to "any" rather than
+		// emitting `[]`.
+		retType := t.jsFuncCallbackReturnType(cb)
+		if retType == "" {
+			retType = "any"
+		}
 		t.w.writef("func() []%s { var __out []%s; for _, __x := range %s { __v, __err := %s.Call(__x); if __err != nil { jsrt.Throw(__err) }; __out = append(__out, __v.(%s)) }; return __out }()", retType, retType, arrCode, pn, retType)
 	case "filter":
 		t.w.writef("func() []%s { var __out []%s; for _, __x := range %s { __v, __err := %s.Call(__x); if __err != nil { jsrt.Throw(__err) }; if __v.(bool) { __out = append(__out, __x) } }; return __out }()", elemGoType, elemGoType, arrCode, pn)
@@ -4567,53 +4538,47 @@ func (t *Transpiler) emitArrayJSFuncCallbackMethod(call *ast.CallExpression, pro
 	return true
 }
 
+// jsFuncCallbackReturnType queries the checker for the Go type of a *JSFunc
+// callback's return. Empty means void. "any" passes the value through
+// without assertion. Concrete Go types get `__v.(T)` in the caller.
+func (t *Transpiler) jsFuncCallbackReturnType(cb *ast.Node) string {
+	if t.ck == nil {
+		return ""
+	}
+	cbType := t.ck.GetTypeAtLocation(cb)
+	if cbType == nil {
+		return ""
+	}
+	sigs := t.ck.GetSignaturesOfType(cbType, checker.SignatureKindCall)
+	if len(sigs) == 0 {
+		return ""
+	}
+	return t.tm.goReturnType(t.ck.GetReturnTypeOfSignature(sigs[0]))
+}
+
 // emitJSFuncCallIfApplicable lowers `cb(args...)` where `cb` is a parameter
-// whose emitted Go type is *ramune.JSFunc. Returns true when it handled the
-// call. The lowering mirrors emitAwaitExpr's IIFE shape so callback errors
-// propagate the same way as Promise rejections in extracted code:
-//
-//	func() T { __v, __err := cb.Call(a0, a1); if __err != nil { jsrt.Throw(__err) }; return __v.(T) }()
-//
-// When the callback's declared return type is void, the result and assert
-// are dropped and we emit a statement-position helper that still surfaces
-// errors via jsrt.Throw.
+// whose emitted Go type is *ramune.JSFunc. Mirrors emitAwaitExpr's IIFE
+// shape — callback errors propagate via jsrt.Throw the same way Promise
+// rejections do. Void-returning callbacks emit `func() any { ... return
+// nil }` so the call works in both expression and statement positions.
 func (t *Transpiler) emitJSFuncCallIfApplicable(call *ast.CallExpression) bool {
 	if call == nil || call.Expression == nil || call.Expression.Kind != ast.KindIdentifier {
 		return false
 	}
-	name := call.Expression.AsIdentifier().Text
-	pn := goVarName(name)
-	if t.jsFuncParams == nil || !t.jsFuncParams[pn] {
+	pn := goVarName(call.Expression.AsIdentifier().Text)
+	if !t.isJSFuncParam(pn) {
 		return false
 	}
-
-	// Discover the callback's declared return type so the IIFE result
-	// type-asserts back to the Go type the rest of the expression expects.
-	var retType string
-	if t.ck != nil {
-		fnType := t.ck.GetTypeAtLocation(call.Expression)
-		if fnType != nil {
-			sigs := t.ck.GetSignaturesOfType(fnType, checker.SignatureKindCall)
-			if len(sigs) > 0 {
-				retType = t.tm.goReturnType(t.ck.GetReturnTypeOfSignature(sigs[0]))
-			}
-		}
-	}
-
 	t.w.addImport("github.com/i2y/ramune/jsrt", "")
+	retType := t.jsFuncCallbackReturnType(call.Expression)
 	if retType == "" {
-		// Void callback — drop the result. Wrap in IIFE returning `any(nil)`
-		// so the call-site works identically in expression position; the
-		// picker's walker ensures the value is discarded.
-		t.w.write("func() any { __v, __err := ")
-		t.w.writef("%s.Call(", pn)
-		t.emitJSFuncCallArgs(call.Arguments)
+		t.w.writef("func() any { __v, __err := %s.Call(", pn)
+		t.emitCallArgs(call.Arguments)
 		t.w.write("); _ = __v; if __err != nil { jsrt.Throw(__err) }; return nil }()")
 		return true
 	}
-	t.w.writef("func() %s { __v, __err := ", retType)
-	t.w.writef("%s.Call(", pn)
-	t.emitJSFuncCallArgs(call.Arguments)
+	t.w.writef("func() %s { __v, __err := %s.Call(", retType, pn)
+	t.emitCallArgs(call.Arguments)
 	t.w.write("); if __err != nil { jsrt.Throw(__err) }; ")
 	if retType == "any" {
 		t.w.write("return __v }()")
@@ -4621,21 +4586,6 @@ func (t *Transpiler) emitJSFuncCallIfApplicable(call *ast.CallExpression) bool {
 		t.w.writef("return __v.(%s) }()", retType)
 	}
 	return true
-}
-
-// emitJSFuncCallArgs renders call arguments for a *JSFunc.Call invocation.
-// .Call has signature `(args ...any)`, so every argument is converted to
-// `any` implicitly at the Go variadic boundary — no explicit cast needed.
-func (t *Transpiler) emitJSFuncCallArgs(args *ast.NodeList) {
-	if args == nil {
-		return
-	}
-	for i, a := range args.Nodes {
-		if i > 0 {
-			t.w.write(", ")
-		}
-		t.emitExpr(a)
-	}
 }
 
 // emitAwaitExpr handles await expressions: await p → p.Await() value extraction.

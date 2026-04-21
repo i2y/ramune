@@ -160,9 +160,11 @@ func (w *goWriter) renderFile(pkgName string) (string, error) {
 	if strings.Contains(body, "console.") {
 		w.addImport("github.com/i2y/ramune/jsrt/console", "")
 	}
-	// Hybrid v2(a): *ramune.JSFunc is used as the Go type of a TS function-
-	// typed parameter. The default import registers `ramune` as the alias.
-	if strings.Contains(body, "ramune.") {
+	// *ramune.JSFunc is the Go type emitted for TS function-typed
+	// parameters in hybrid extraction. Narrower than the other
+	// auto-imports because the bare `ramune` alias could false-trigger
+	// on user identifiers; keyed on the exact emitted spelling.
+	if strings.Contains(body, "*ramune.JSFunc") {
 		w.addImport("github.com/i2y/ramune", "")
 	}
 
