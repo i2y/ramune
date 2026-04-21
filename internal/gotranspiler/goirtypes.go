@@ -1,3 +1,5 @@
+//go:build legacy_goir
+
 package gotranspiler
 
 // GOTIR (Go-Oriented Typed Intermediate Representation)
