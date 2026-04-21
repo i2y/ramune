@@ -773,7 +773,6 @@ func rejectNonLengthableReceiver(expr *ast.Node, ctx *bodyCtx) *Reason {
 	}, "an array or string")
 }
 
-
 // rejectParamMutation returns a Reason when target is an Identifier that
 // refers to a function parameter. Mutations of locals are fine.
 func rejectParamMutation(target *ast.Node, ctx *bodyCtx) *Reason {
