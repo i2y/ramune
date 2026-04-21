@@ -75,7 +75,7 @@ export function countdown(n: number): number {
   return total;
 }`
 	res := pickOne(t, src)
-	// `n` is a parameter that gets mutated. v1 rejects that.
+	// `n` is a parameter that gets mutated. The picker rejects that.
 	c, ok := byName(res, "countdown")
 	if !ok {
 		t.Fatalf("candidate not found")
@@ -784,7 +784,7 @@ func TestPicker_Rejects_NonMathBuiltinCall(t *testing.T) {
 	res := pickOne(t, src)
 	c, _ := byName(res, "s")
 	if c.Extracted {
-		t.Fatalf("expected rejection for String() (only Math is safelisted in v1.3)")
+		t.Fatalf("expected rejection for String() (only Math/Number/string/array are safelisted)")
 	}
 }
 

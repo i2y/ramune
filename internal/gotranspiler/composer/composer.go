@@ -18,6 +18,7 @@ import (
 	"github.com/i2y/ramune/internal/gotranspiler/picker"
 	"github.com/i2y/ramune/internal/tsgo/ast"
 	"github.com/i2y/ramune/internal/tsgo/checker"
+	"github.com/i2y/ramune/internal/tsgo/compiler"
 )
 
 // Options controls composer behavior.
@@ -49,10 +50,17 @@ type Result struct {
 	ExportedJSClasses []string
 }
 
-// ComposeFile is a file-path wrapper around Compose that builds the tsgo
-// Program, locates the source file, and threads the checker through.
-// Callers that already hold a *ast.SourceFile + *checker.Checker should call
-// Compose directly and avoid the extra Program construction.
+// ComposeFile is a file-path wrapper that builds the tsgo Program, enumerates
+// every user TypeScript source file reachable from filename's import graph
+// (excluding .d.ts and node_modules), picks extractable declarations across
+// all of them, and merges the output into a single Go source + shim.
+//
+// Functions declared in imported files are now eligible for extraction — the
+// picker walks each user SourceFile with a shared top-level function name
+// set, so `entry.ts`'s call to `fib()` from `kernel.ts` is accepted.
+//
+// Callers that already hold a single-file *ast.SourceFile + *checker.Checker
+// and want single-file behaviour can call Compose directly.
 func ComposeFile(filename string, opts Options) (*Result, error) {
 	program, sf, err := gotranspiler.BuildProgramForFile(filename)
 	if err != nil {
@@ -60,7 +68,91 @@ func ComposeFile(filename string, opts Options) (*Result, error) {
 	}
 	ck, done := program.GetTypeCheckerForFile(context.Background(), sf)
 	defer done()
-	return Compose(sf, ck, opts)
+
+	userFiles := userSourceFiles(program)
+	if len(userFiles) <= 1 {
+		return Compose(sf, ck, opts)
+	}
+	return composeAll(userFiles, ck, opts)
+}
+
+// userSourceFiles returns the SourceFiles in program that represent user
+// code: not .d.ts declaration files, not under a node_modules path. Lib
+// files bundled with tsgo are all .d.ts so they drop out via the first
+// predicate.
+func userSourceFiles(program *compiler.Program) []*ast.SourceFile {
+	var out []*ast.SourceFile
+	for _, f := range program.SourceFiles() {
+		if f == nil || f.IsDeclarationFile {
+			continue
+		}
+		if strings.Contains(f.FileName(), "/node_modules/") {
+			continue
+		}
+		out = append(out, f)
+	}
+	return out
+}
+
+// composeAll runs the picker across all supplied user SourceFiles with a
+// shared top-level function name set, transpiles the merged extracted nodes
+// into one Go package, and builds one shim for all of them.
+func composeAll(files []*ast.SourceFile, ck *checker.Checker, opts Options) (*Result, error) {
+	if opts.PkgName == "" {
+		opts.PkgName = "native_app"
+	}
+	if opts.NativeModuleName == "" {
+		opts.NativeModuleName = "native:__transpiled_app__"
+	}
+
+	// Union of every top-level function name across the user files. Fed
+	// back into the picker so a call to fib() in app.ts resolves to
+	// kernel.ts's extractable fib instead of tripping the
+	// "callee is not a same-file function" rejection.
+	globalFuncs := map[string]struct{}{}
+	for _, sf := range files {
+		if sf.Statements == nil {
+			continue
+		}
+		for _, stmt := range sf.Statements.Nodes {
+			if stmt.Kind != ast.KindFunctionDeclaration {
+				continue
+			}
+			fd := stmt.AsFunctionDeclaration()
+			if fd == nil || fd.Name() == nil {
+				continue
+			}
+			globalFuncs[fd.Name().AsIdentifier().Text] = struct{}{}
+		}
+	}
+
+	pickerOpts := picker.Options{TopLevelFuncs: globalFuncs}
+	merged := &picker.Result{File: files[0].FileName()}
+	var allNodes []*ast.Node
+	var allFuncNames []string
+	var allClassNames []string
+	for _, sf := range files {
+		pick := picker.Pick(sf, ck, pickerOpts)
+		merged.Candidates = append(merged.Candidates, pick.Candidates...)
+		allNodes = append(allNodes, pick.ExtractedNodes()...)
+		allFuncNames = append(allFuncNames, pick.ExtractedFunctions()...)
+		allClassNames = append(allClassNames, pick.ExtractedClasses()...)
+	}
+
+	res := &Result{PickerResult: *merged}
+	if len(allNodes) == 0 {
+		return res, nil
+	}
+
+	goSrc, err := gotranspiler.TranspileNodes(ck, allNodes, opts.PkgName)
+	if err != nil {
+		return nil, fmt.Errorf("transpile nodes: %w", err)
+	}
+	res.GoSource = goSrc
+	res.ExportedJSNames = allFuncNames
+	res.ExportedJSClasses = allClassNames
+	res.ShimJS = BuildShimWithClasses(opts.NativeModuleName, allFuncNames, allClassNames)
+	return res, nil
 }
 
 // Compose runs the picker, transpiles approved candidates, and builds the shim

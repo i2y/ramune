@@ -821,41 +821,25 @@ func (t *Transpiler) emitBinaryExpr(node *ast.Node) {
 			t.w.writef(" %s nil", goOp)
 		}
 	} else if leftIsInt && rightIsFloat && isComparison {
-		// Comparison: convert float to int (e.g., i < n → i < int(n))
-		t.emitExprDeref(bin.Left)
-		t.w.writef(" %s int(", goOp)
-		t.emitExprDeref(bin.Right)
-		t.w.write(")")
+		// JS compares numerically as float; widen int to float64 instead of
+		// truncating float to int (which diverges for fractional values —
+		// `int(-0.5) < 0` is false in Go but `-0.5 < 0` is true in JS).
+		t.emitFloatOperand(bin.Left, true)
+		t.w.writef(" %s ", goOp)
+		t.emitFloatOperand(bin.Right, false)
 	} else if leftIsFloat && rightIsInt && isComparison {
-		leftDeclType := t.getDeclaredGoType(bin.Left)
-		if leftDeclType.IsAny() {
-			t.w.write("int(")
-			t.emitExprDeref(bin.Left)
-			t.w.write(".(float64))")
-		} else {
-			t.w.write("int(")
-			t.emitExprDeref(bin.Left)
-			t.w.write(")")
-		}
+		t.emitFloatOperand(bin.Left, false)
 		t.w.writef(" %s ", goOp)
-		t.emitExprDeref(bin.Right)
+		t.emitFloatOperand(bin.Right, true)
 	} else if (leftIsInt && rightIsFloat || leftIsFloat && rightIsInt) && op == ast.KindPercentToken {
-		// Modulo requires both sides to be int in Go
-		if !leftIsInt {
-			t.w.write("int(")
-			t.emitExprDeref(bin.Left)
-			t.w.write(")")
-		} else {
-			t.emitExprDeref(bin.Left)
-		}
-		t.w.writef(" %s ", goOp)
-		if !rightIsInt {
-			t.w.write("int(")
-			t.emitExprDeref(bin.Right)
-			t.w.write(")")
-		} else {
-			t.emitExprDeref(bin.Right)
-		}
+		// JS `%` is IEEE 754 remainder on floats (5.5 % 2 = 1.5); Go's `%`
+		// is int-only, so use math.Mod for float-correct semantics.
+		t.w.addImport("math", "")
+		t.w.write("math.Mod(")
+		t.emitFloatOperand(bin.Left, leftIsInt)
+		t.w.write(", ")
+		t.emitFloatOperand(bin.Right, rightIsInt)
+		t.w.write(")")
 	} else if leftIsInt && rightIsFloat {
 		// Arithmetic: convert int to float64 (e.g., 2 + x → float64(2) + x)
 		t.w.write("float64(")
@@ -4375,6 +4359,27 @@ func (t *Transpiler) emitExprDerefPtrString(node *ast.Node) {
 		}
 	}
 	t.emitExpr(node)
+}
+
+// emitFloatOperand emits a numeric operand in a context that requires Go
+// float64 — comparisons and math.Mod over mixed int/float. When isInt, wraps
+// with float64(...). Otherwise, if the operand is a Go-any value (declared
+// any or JSObject-chain anytype), appends .(float64) to satisfy the consuming
+// position. Mirrors the any-unwrap predicate used by the arithmetic branch so
+// comparisons and math.Mod are not narrower than `+` / `-` / `*` / `/`.
+func (t *Transpiler) emitFloatOperand(node *ast.Node, isInt bool) {
+	if isInt {
+		t.w.write("float64(")
+		t.emitExprDeref(node)
+		t.w.write(")")
+		return
+	}
+	if t.rightSideProducesGoAny(node) || t.getDeclaredGoType(node).IsAny() {
+		t.emitExprDeref(node)
+		t.w.write(".(float64)")
+		return
+	}
+	t.emitExprDeref(node)
 }
 
 // isOptionalChainExpr checks if an expression uses optional chaining (?.).

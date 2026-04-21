@@ -47,7 +47,7 @@ const (
 	reasonJSFuncSig      = "jsfunc-signature"
 )
 
-// isExtractableType returns nil when t is a v1-extractable type, else a
+// isExtractableType returns nil when t is an extractable type, else a
 // Reason describing the rejection. Accepts:
 //   - primitives (number, string, boolean) and void
 //   - Array<T> / ReadonlyArray<T> / T[] where T is itself extractable
@@ -70,10 +70,10 @@ func isExtractableType(ck *checker.Checker, t *checker.Type) *Reason {
 		return &Reason{Code: reasonGenericType, Detail: "type is a generic parameter"}
 	}
 	if flags&checker.TypeFlagsBigIntLike != 0 {
-		return &Reason{Code: reasonBigInt, Detail: "bigint not supported in v1"}
+		return &Reason{Code: reasonBigInt, Detail: "bigint not supported"}
 	}
 	if flags&checker.TypeFlagsESSymbolLike != 0 {
-		return &Reason{Code: reasonSymbol, Detail: "symbol not supported in v1"}
+		return &Reason{Code: reasonSymbol, Detail: "symbol not supported"}
 	}
 	if flags&checker.TypeFlagsIntersection != 0 {
 		return &Reason{Code: reasonIntersection, Detail: "intersection type"}
@@ -82,7 +82,7 @@ func isExtractableType(ck *checker.Checker, t *checker.Type) *Reason {
 		return nil
 	}
 	if flags&checker.TypeFlagsUnion != 0 {
-		return &Reason{Code: reasonUnionType, Detail: "union type not supported in v1"}
+		return &Reason{Code: reasonUnionType, Detail: "union type not supported"}
 	}
 	if flags&checker.TypeFlagsObject != 0 {
 		if elem := arrayElementType(ck, t); elem != nil {
@@ -90,7 +90,7 @@ func isExtractableType(ck *checker.Checker, t *checker.Type) *Reason {
 			// single-level `arr[i]` pattern sound; nested arrays would need
 			// access-pattern support the walker does not yet have.
 			if !isPrimitiveType(elem.Flags()) {
-				return &Reason{Code: reasonObjectType, Detail: "array element must be primitive in v1"}
+				return &Reason{Code: reasonObjectType, Detail: "array element must be primitive"}
 			}
 			return nil
 		}
@@ -105,7 +105,7 @@ func isExtractableType(ck *checker.Checker, t *checker.Type) *Reason {
 			// the float64 zero value at runtime.
 			return &Reason{Code: reasonObjectType, Detail: "Promise<T> only allowed as function return type"}
 		}
-		return &Reason{Code: reasonObjectType, Detail: "object/reference type not supported in v1"}
+		return &Reason{Code: reasonObjectType, Detail: "object/reference type not supported"}
 	}
 	return &Reason{Code: reasonUnhandledKind, Detail: "unclassified type"}
 }
@@ -150,7 +150,7 @@ func isExtractableReturnType(ck *checker.Checker, t *checker.Type) *Reason {
 	if t != nil && t.Flags()&checker.TypeFlagsObject != 0 {
 		if inner := ck.GetPromisedTypeOfPromise(t); inner != nil {
 			if !isPrimitiveType(inner.Flags()) {
-				return &Reason{Code: reasonObjectType, Detail: "Promise<T>: T must be primitive in v1"}
+				return &Reason{Code: reasonObjectType, Detail: "Promise<T>: T must be primitive"}
 			}
 			return nil
 		}
@@ -221,7 +221,7 @@ func arrayElementType(ck *checker.Checker, t *checker.Type) *checker.Type {
 // isJSFuncParamType returns nil when t is a "plain" callable type suitable
 // to be received as a *ramune.JSFunc callback: exactly one call signature,
 // no rest/default/optional parameters, and every param + return type is
-// itself v1-extractable (primitive / T[] / named interface). Used only in
+// itself extractable (primitive / T[] / named interface). Used only in
 // parameter position — JSFunc cannot round-trip as a local/field/return,
 // because the JS<-Go side of the bridge has no way to materialise a
 // *ramune.JSFunc out of a returned Go value.

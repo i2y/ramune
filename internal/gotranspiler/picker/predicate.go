@@ -13,14 +13,17 @@ import (
 // letting the body walker recognize self- and peer-calls instead of flagging
 // them as free identifiers.
 //
-// Only the v1 predicate is implemented:
-//   - non-generic, non-generator, non-async
-//   - every parameter is number/string/boolean
-//   - return type is primitive or void
-//   - body uses only the v1 AST allowlist
+// Accepts:
+//   - non-generic, non-generator (async is fine if the body stays within the
+//     allowlist — sync-resolving Promise<T> returns are handled by the
+//     emitter)
+//   - every parameter is primitive / T[] / named interface / JSFunc callback
+//   - return type is primitive, T[], void, or Promise<primitive>
+//   - body uses only the allowlisted AST nodes (walked below)
 //   - no closure capture beyond params/locals and same-file functions
 //   - no parameter mutation
-//   - no built-in calls (Math.*, String(), etc.)
+//   - calls only the built-in safelist (Math.*, Number.*, string/array
+//     methods, same-file extractable functions, JSFunc params at call head)
 func IsFunctionExtractable(node *ast.Node, ck *checker.Checker, topLevelFuncs map[string]struct{}) (bool, Reason) {
 	if node == nil || node.Kind != ast.KindFunctionDeclaration {
 		return false, Reason{Code: reasonUnhandledKind, Detail: "not a function declaration"}
@@ -156,7 +159,7 @@ type bodyCtx struct {
 }
 
 // checkBody walks a block/statement subtree and returns a non-nil Reason if
-// any node violates the v1 allowlist. It mutates ctx.localNames as it
+// any node violates the allowlist. It mutates ctx.localNames as it
 // encounters VariableDeclarations.
 func checkBody(node *ast.Node, ctx *bodyCtx) *Reason {
 	if node == nil {
@@ -284,16 +287,16 @@ func checkBody(node *ast.Node, ctx *bodyCtx) *Reason {
 	case ast.KindLabeledStatement:
 		return &Reason{Code: reasonLabeledStmt, Detail: "labeled statement"}
 	case ast.KindTryStatement:
-		return &Reason{Code: reasonTry, Detail: "try/catch not supported in v1"}
+		return &Reason{Code: reasonTry, Detail: "try/catch not supported"}
 	case ast.KindThrowStatement:
-		return &Reason{Code: reasonThrow, Detail: "throw not supported in v1"}
+		return &Reason{Code: reasonThrow, Detail: "throw not supported"}
 	case ast.KindSwitchStatement:
 		return checkSwitchStatement(node, ctx)
 	case ast.KindForOfStatement:
 		return checkForOfStatement(node, ctx)
 	case ast.KindForInStatement,
 		ast.KindWithStatement, ast.KindDebuggerStatement:
-		return &Reason{Code: reasonUnhandledKind, Detail: fmt.Sprintf("statement kind %v not supported in v1", node.Kind)}
+		return &Reason{Code: reasonUnhandledKind, Detail: fmt.Sprintf("statement kind %v not supported", node.Kind)}
 	}
 	return checkExpr(node, ctx)
 }
@@ -304,7 +307,7 @@ func checkVarDecl(node *ast.Node, ctx *bodyCtx) *Reason {
 		return nil
 	}
 	if vd.Name().Kind != ast.KindIdentifier {
-		return &Reason{Code: reasonUnhandledKind, Detail: "destructuring binding not supported in v1"}
+		return &Reason{Code: reasonUnhandledKind, Detail: "destructuring binding not supported"}
 	}
 	name := vd.Name().AsIdentifier().Text
 	// Register as local even if the initializer fails - the whole function is
@@ -343,7 +346,7 @@ func checkExpr(node *ast.Node, ctx *bodyCtx) *Reason {
 		if ctx.inMethod {
 			return nil
 		}
-		return &Reason{Code: reasonThis, Detail: "`this` not allowed outside methods (v1)"}
+		return &Reason{Code: reasonThis, Detail: "`this` not allowed outside methods"}
 
 	case ast.KindParenthesizedExpression:
 		return checkExpr(node.AsParenthesizedExpression().Expression, ctx)
@@ -430,24 +433,24 @@ func checkExpr(node *ast.Node, ctx *bodyCtx) *Reason {
 	case ast.KindTemplateExpression:
 		return checkTemplateExpression(node, ctx)
 	case ast.KindTaggedTemplateExpression:
-		return &Reason{Code: reasonUnhandledKind, Detail: "tagged template not supported in v1"}
+		return &Reason{Code: reasonUnhandledKind, Detail: "tagged template not supported"}
 	case ast.KindPropertyAccessExpression:
 		return checkPropertyAccess(node, ctx)
 	case ast.KindElementAccessExpression:
 		return checkElementAccess(node, ctx)
 	case ast.KindNewExpression:
-		return &Reason{Code: reasonUnhandledKind, Detail: "new expression not supported in v1"}
+		return &Reason{Code: reasonUnhandledKind, Detail: "new expression not supported"}
 	case ast.KindArrayLiteralExpression:
 		return checkArrayLiteral(node, ctx)
 	case ast.KindObjectLiteralExpression:
-		return &Reason{Code: reasonUnhandledKind, Detail: "object literal not supported in v1"}
+		return &Reason{Code: reasonUnhandledKind, Detail: "object literal not supported"}
 	case ast.KindTypeOfExpression:
-		return &Reason{Code: reasonUnhandledKind, Detail: "typeof not supported in v1"}
+		return &Reason{Code: reasonUnhandledKind, Detail: "typeof not supported"}
 	case ast.KindDeleteExpression, ast.KindVoidExpression:
 		return &Reason{Code: reasonUnhandledKind, Detail: "delete/void expression"}
 	}
 
-	return &Reason{Code: reasonUnhandledKind, Detail: fmt.Sprintf("expression kind %v not supported in v1", node.Kind)}
+	return &Reason{Code: reasonUnhandledKind, Detail: fmt.Sprintf("expression kind %v not supported", node.Kind)}
 }
 
 // checkIdentifierRef rejects free identifiers: anything not a parameter, a
@@ -569,7 +572,7 @@ var numberSafeMethods = map[string]bool{
 func checkPropertyAccess(node *ast.Node, ctx *bodyCtx) *Reason {
 	pa := node.AsPropertyAccessExpression()
 	if pa == nil || pa.Name() == nil || pa.Name().Kind != ast.KindIdentifier {
-		return &Reason{Code: reasonUnhandledKind, Detail: "property access not supported in v1"}
+		return &Reason{Code: reasonUnhandledKind, Detail: "property access not supported"}
 	}
 	propName := pa.Name().AsIdentifier().Text
 
@@ -665,7 +668,7 @@ func requireBoolOperand(expr *ast.Node, ctx *bodyCtx, where string) *Reason {
 }
 
 func requireBoolCondition(expr *ast.Node, ctx *bodyCtx) *Reason {
-	return requireBoolExpr(expr, ctx, "condition must be boolean-typed (no JS truthy coercion in v1)")
+	return requireBoolExpr(expr, ctx, "condition must be boolean-typed (no JS truthy coercion)")
 }
 
 // checkReceiverType is the receiver-position counterpart to requireBoolExpr.
@@ -796,7 +799,7 @@ func checkSwitchStatement(node *ast.Node, ctx *bodyCtx) *Reason {
 }
 
 // checkAwaitExpr accepts `await <Promise<T>>` inside async functions where T
-// is a v1-extractable type. The emitter lowers this to an IIFE around
+// is an extractable type. The emitter lowers this to an IIFE around
 // `.Await()` (with `jsrt.Throw` on error), which only compiles when the
 // awaited value is a *promise.Promise[T].
 func checkAwaitExpr(node *ast.Node, ctx *bodyCtx) *Reason {
@@ -897,8 +900,9 @@ func rejectParamMutation(target *ast.Node, ctx *bodyCtx) *Reason {
 }
 
 // checkCallExpr allows calls to same-file extractable functions and to a
-// small safelist of built-in namespaces (`Math.<method>` in v1.3). All other
-// property-access callees (arr.map, user.toString, etc.) are dynamic.
+// small safelist of built-in namespaces (`Math.<method>`, `Number.<method>`,
+// string/array methods). All other property-access callees (arr.map via a
+// non-callback path, user.toString, etc.) are dynamic and get rejected.
 func checkCallExpr(node *ast.Node, ctx *bodyCtx) *Reason {
 	ce := node.AsCallExpression()
 	if ce.TypeArguments != nil && len(ce.TypeArguments.Nodes) > 0 {
@@ -995,7 +999,7 @@ var mathSafeMethods = map[string]bool{
 // emitter's emitStringMethodCall handles and that take + return either
 // primitives or `string[]` (no callbacks, no regex). `replace` is excluded
 // because its function-arg form produces JS callbacks the walker cannot
-// clear in v1.
+// clear soundly.
 var stringSafeMethods = map[string]bool{
 	"toUpperCase": true, "toLowerCase": true,
 	"trim": true, "trimStart": true, "trimEnd": true,

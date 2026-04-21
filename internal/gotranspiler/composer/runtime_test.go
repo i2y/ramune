@@ -27,7 +27,7 @@ import (
 // Runtime evaluation path end-to-end. A follow-up smoke that subprocess-
 // compiles the emitted Go would close the last gap.
 func fib(n float64) float64 {
-	if int(n) < 2 {
+	if n < float64(2) {
 		return n
 	}
 	return fib(n-1) + fib(n-2)
@@ -189,9 +189,9 @@ func TestHybrid_ShimIsIdempotent(t *testing.T) {
 // TestHybrid_EmittedGoCompiles invokes `go build` on the emitter's output,
 // closing the last verification gap: parseability (go/parser) does not imply
 // buildability — a reference to an undeclared identifier or a wrong type
-// slips past parsing. The v1 scope emits dependency-free standalone Go (no
-// ramune imports inside the native package), so the temp module needs no
-// replace directive.
+// slips past parsing. Primitive-only extractions emit dependency-free
+// standalone Go (no ramune imports inside the native package), so the temp
+// module needs no replace directive.
 func TestHybrid_EmittedGoCompiles(t *testing.T) {
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skipf("go toolchain not available: %v", err)
@@ -525,6 +525,262 @@ export function maxSafe(): number { return Number.MAX_SAFE_INTEGER; }
 	gotN, _ := v.Float64()
 	if gotN != 9007199254740991 {
 		t.Fatalf("maxSafe() = %v, want 9007199254740991", gotN)
+	}
+}
+
+// TestHybrid_MixedIntFloat_EmittedGoCompiles guards the invariant that the
+// emitter never produces an int-typed `%` in a float64-returning context, and
+// never truncates a float comparand with `int(...)` — both would yield Go
+// that fails to build or diverges from JS numeric semantics.
+func TestHybrid_MixedIntFloat_EmittedGoCompiles(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skipf("go toolchain not available: %v", err)
+	}
+	src := `
+export function isNeg(n: number): boolean { return n < 0; }
+export function isZero(n: number): boolean { return n === 0; }
+export function modFive(n: number): number { return n % 5; }
+export function cmpLen(arr: number[], n: number): boolean { return arr.length > n; }
+`
+	sf, program, _ := setupProgram(t, src)
+	ck, done := program.GetTypeCheckerForFile(context.Background(), sf)
+	defer done()
+	res, err := composer.Compose(sf, ck, composer.Options{PkgName: "soundsmoke"})
+	if err != nil {
+		t.Fatalf("compose: %v", err)
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module soundsmoke\n\ngo 1.21\n"), 0o644); err != nil {
+		t.Fatalf("go.mod: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "s.go"), []byte(res.GoSource), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	cmd := exec.Command("go", "build", "./...")
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("go build failed for soundness smoke:\n%s\nsource:\n%s", out, res.GoSource)
+	}
+}
+
+// TestHybrid_MixedIntFloat_RoundTrip exercises the runtime semantics of the
+// mixed int/float fix. Each case is picked so the pre-fix truncating emitter
+// would give the WRONG answer (noted in comments) and the new float-widened
+// emitter matches JS.
+func TestHybrid_MixedIntFloat_RoundTrip(t *testing.T) {
+	src := `
+export function isNeg(n: number): boolean { return n < 0; }
+export function isZero(n: number): boolean { return n === 0; }
+export function modFive(n: number): number { return n % 5; }
+`
+	sf, program, _ := setupProgram(t, src)
+	ck, done := program.GetTypeCheckerForFile(context.Background(), sf)
+	defer done()
+	res, err := composer.Compose(sf, ck, composer.Options{NativeModuleName: "native:sound"})
+	if err != nil {
+		t.Fatalf("compose: %v", err)
+	}
+	// Shape asserts. The pre-fix emitter wrapped a float comparand with
+	// `int(n) <` / `int(n) ==` and lowered mixed `%` to `int(n) % 5`; guard
+	// against regression with operator-specific patterns rather than the
+	// bare `int(n)` substring (which could false-positive on e.g. `int(n+1)`
+	// used elsewhere, or future bitwise emissions).
+	for _, bad := range []string{"int(n) <", "int(n) ==", "int(n) %"} {
+		if strings.Contains(res.GoSource, bad) {
+			t.Fatalf("emitted Go contains %q (float→int truncation):\n%s", bad, res.GoSource)
+		}
+	}
+	if !strings.Contains(res.GoSource, "math.Mod(") {
+		t.Fatalf("emitted Go missing math.Mod for mixed int/float %%:\n%s", res.GoSource)
+	}
+
+	isNeg := func(n float64) bool { return n < 0 }
+	isZero := func(n float64) bool { return n == 0 }
+	modFive := func(n float64) float64 { return gomath.Mod(n, 5) }
+
+	mod := ramune.NativeModuleFromFuncs("native:sound", map[string]any{
+		"isNeg":   isNeg,
+		"isZero":  isZero,
+		"modFive": modFive,
+	})
+	r := newRamune(t, ramune.NodeCompat(), ramune.WithModule(mod))
+	defer r.Close()
+	if err := r.Exec(res.ShimJS); err != nil {
+		t.Fatalf("shim: %v", err)
+	}
+
+	for _, c := range []struct {
+		expr string
+		want bool
+	}{
+		{`isNeg(-0.5)`, true}, // pre-fix: int(-0.5)=0 → 0<0=false
+		{`isNeg(0)`, false},
+		{`isNeg(1)`, false},
+		{`isZero(0.5)`, false},  // pre-fix: int(0.5)=0 → true
+		{`isZero(-0.5)`, false}, // pre-fix: int(-0.5)=0 → true
+		{`isZero(0)`, true},
+	} {
+		v, err := r.Eval(c.expr)
+		if err != nil {
+			t.Fatalf("eval %q: %v", c.expr, err)
+		}
+		got, _ := v.Bool()
+		if got != c.want {
+			t.Errorf("%s = %v, want %v", c.expr, got, c.want)
+		}
+	}
+
+	// eps tolerates the IEEE-754 rounding of math.Mod on non-exact floats
+	// (e.g. 7.3 % 5 is not exactly representable); 1e-9 is well below any
+	// observed residual from the cases below.
+	const eps = 1e-9
+	for _, c := range []struct {
+		expr string
+		want float64
+	}{
+		{`modFive(5.5)`, 0.5}, // pre-fix: int(5.5)%5 = 0
+		{`modFive(7.3)`, 2.3},
+		{`modFive(-1.5)`, -1.5},
+	} {
+		v, err := r.Eval(c.expr)
+		if err != nil {
+			t.Fatalf("eval %q: %v", c.expr, err)
+		}
+		got, _ := v.Float64()
+		if gomath.Abs(got-c.want) > eps {
+			t.Errorf("%s = %v, want %v", c.expr, got, c.want)
+		}
+	}
+}
+
+// TestHybrid_NestedBlockNoSpuriousReturn guards a regression where the
+// function-body default-return logic fired for every nested block, injecting
+// a `return 0` / `return false` at the end of for-loop and if-branch bodies
+// and causing e.g. `countPrimes(10000)` to return 0 instead of 1229.
+func TestHybrid_NestedBlockNoSpuriousReturn(t *testing.T) {
+	src := `
+export function isPrime(n: number): boolean {
+  if (n < 2) return false;
+  if (n === 2) return true;
+  if (n % 2 === 0) return false;
+  for (let i = 3; i * i <= n; i = i + 2) {
+    if (n % i === 0) return false;
+  }
+  return true;
+}
+export function countPrimes(limit: number): number {
+  let count = 0;
+  for (let i = 2; i < limit; i = i + 1) {
+    if (isPrime(i)) count = count + 1;
+  }
+  return count;
+}
+`
+	sf, program, _ := setupProgram(t, src)
+	ck, done := program.GetTypeCheckerForFile(context.Background(), sf)
+	defer done()
+	res, err := composer.Compose(sf, ck, composer.Options{NativeModuleName: "native:primes"})
+	if err != nil {
+		t.Fatalf("compose: %v", err)
+	}
+
+	// Shape guard: the bug injected a bare `return 0` between the last
+	// inner statement of the for-loop body and the loop's closing brace.
+	// A correct emit has the loop body end with the inner statement (or
+	// its closing brace) followed directly by the loop's close. Matching
+	// the specific leading-whitespace pattern from countPrimes keeps this
+	// targeted — legitimate `return N` inside if-branches use different
+	// indentation.
+	if strings.Contains(res.GoSource, "count = count + 1\n\t\t}\n\t\treturn 0") {
+		t.Fatalf("emitted Go injects a `return 0` at the tail of the for-loop body:\n%s", res.GoSource)
+	}
+
+	// Runtime behaviour is the real guard: countPrimes must return the
+	// actual count, not zero.
+	isPrime := func(n float64) bool {
+		if n < 2 {
+			return false
+		}
+		if n == 2 {
+			return true
+		}
+		if gomath.Mod(n, 2) == 0 {
+			return false
+		}
+		for i := 3.0; i*i <= n; i += 2 {
+			if gomath.Mod(n, i) == 0 {
+				return false
+			}
+		}
+		return true
+	}
+	countPrimes := func(limit float64) float64 {
+		count := 0.0
+		for i := 2.0; i < limit; i++ {
+			if isPrime(i) {
+				count++
+			}
+		}
+		return count
+	}
+	mod := ramune.NativeModuleFromFuncs("native:primes", map[string]any{
+		"isPrime":     isPrime,
+		"countPrimes": countPrimes,
+	})
+	r := newRamune(t, ramune.NodeCompat(), ramune.WithModule(mod))
+	defer r.Close()
+	if err := r.Exec(res.ShimJS); err != nil {
+		t.Fatalf("shim: %v", err)
+	}
+	v, err := r.Eval(`countPrimes(100)`)
+	if err != nil {
+		t.Fatalf("eval: %v", err)
+	}
+	got, _ := v.Float64()
+	if got != 25 {
+		t.Fatalf("countPrimes(100) = %v, want 25", got)
+	}
+}
+
+// TestHybrid_MultiFile_ComposeFile confirms that when `ComposeFile` is given
+// an entry whose import graph reaches sibling TS files, it walks the picker
+// across every user file and treats cross-file calls between extractable
+// functions as valid. Previously only the entry file was picked and any
+// call into an imported kernel hit `callee is not a same-file function`.
+func TestHybrid_MultiFile_ComposeFile(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "kernel.ts"), []byte(`
+export function fib(n: number): number {
+  if (n < 2) return n;
+  return fib(n - 1) + fib(n - 2);
+}
+`), 0o644); err != nil {
+		t.Fatalf("kernel: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "app.ts"), []byte(`
+import { fib } from "./kernel";
+export function describe(n: number): number { return fib(n) * 2; }
+`), 0o644); err != nil {
+		t.Fatalf("app: %v", err)
+	}
+
+	res, err := composer.ComposeFile(filepath.Join(dir, "app.ts"), composer.Options{})
+	if err != nil {
+		t.Fatalf("compose: %v", err)
+	}
+	extracted := map[string]bool{}
+	for _, c := range res.PickerResult.Candidates {
+		if c.Extracted {
+			extracted[c.Name] = true
+		}
+	}
+	for _, want := range []string{"fib", "describe"} {
+		if !extracted[want] {
+			t.Fatalf("expected %q extracted across multi-file compose, got %+v", want, res.PickerResult.Candidates)
+		}
+	}
+	if !strings.Contains(res.GoSource, "func Fib(") || !strings.Contains(res.GoSource, "func Describe(") {
+		t.Fatalf("expected emitted Go to contain Fib and Describe:\n%s", res.GoSource)
 	}
 }
 
@@ -1103,10 +1359,11 @@ func countCalls(cb *ramune.JSFunc) float64 {
 }
 
 // TestHybrid_JSFuncCallback_EmittedGoCompiles is the compile drift guard for
-// v2(a). The emitted Go depends on the host `github.com/i2y/ramune` package
-// (for *ramune.JSFunc) and `github.com/i2y/ramune/jsrt` (for jsrt.Throw), so
-// unlike the v1 standalone compile smokes we need a `replace` directive
-// pointing at the live repo.
+// the JSFunc-callback path. The emitted Go depends on the host
+// `github.com/i2y/ramune` package (for *ramune.JSFunc) and
+// `github.com/i2y/ramune/jsrt` (for jsrt.Throw), so unlike the primitive-only
+// standalone compile smokes we need a `replace` directive pointing at the
+// live repo.
 func TestHybrid_JSFuncCallback_EmittedGoCompiles(t *testing.T) {
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skipf("go toolchain not available: %v", err)

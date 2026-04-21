@@ -5,8 +5,8 @@ import (
 	"testing"
 )
 
-// TestPicker_JSFunc_Accept_PrimitiveCallback covers the simplest v2(a) shape:
-// a callback from number to number, called once, with primitive args.
+// TestPicker_JSFunc_Accept_PrimitiveCallback covers the simplest callback
+// shape: a function from number to number, called once, with primitive args.
 func TestPicker_JSFunc_Accept_PrimitiveCallback(t *testing.T) {
 	src := `export function apply(cb: (n: number) => number, x: number): number { return cb(x); }`
 	res := pickOne(t, src)
@@ -120,7 +120,7 @@ func TestPicker_JSFunc_Reject_RestParamInCallback(t *testing.T) {
 	}
 }
 
-// v2(a.1) — callback-taking array methods.
+// Callback-taking array methods (map / filter / forEach / some / every).
 
 func TestPicker_JSFunc_Accept_ArrayMapWithParam(t *testing.T) {
 	src := `export function doubled(cb: (n: number) => number, xs: number[]): number[] { return xs.map(cb); }`

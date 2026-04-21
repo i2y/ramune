@@ -36,7 +36,7 @@ func TranspileNodes(ck *checker.Checker, nodes []*ast.Node, pkgName string) (str
 
 	// Pre-scan: same-package exports let emitIdentifier route recursive and
 	// peer calls through the PascalCase Go name. Register TS-exported
-	// functions and (v1.5) class names; unexported helpers stay package-local
+	// functions and class names; unexported helpers stay package-local
 	// in Go.
 	for _, n := range nodes {
 		if n == nil {

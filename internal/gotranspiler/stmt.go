@@ -336,6 +336,12 @@ func (t *Transpiler) emitStatement(node *ast.Node) {
 func (t *Transpiler) emitBlock(node *ast.Node) {
 	block := node.AsBlock()
 	t.w.openBlock()
+	// Snapshot at entry so inner blocks (for / if / while bodies) don't
+	// each try to append the function-level default return. Only the
+	// outermost emitBlock call for a given function body observes
+	// needsDefaultReturn=true; nested calls see false.
+	shouldAddDefault := t.needsDefaultReturn && t.currentRetType != "" && !t.inAsyncBody
+	t.needsDefaultReturn = false
 	if block.Statements != nil {
 		// Emit forward declarations for hoisted functions
 		for _, stmt := range block.Statements.Nodes {
@@ -359,8 +365,7 @@ func (t *Transpiler) emitBlock(node *ast.Node) {
 				t.emitStatement(stmt)
 			}
 		}
-		// Add default return for function body blocks (top-level only, not inner blocks)
-		if t.needsDefaultReturn && t.currentRetType != "" && !t.inAsyncBody {
+		if shouldAddDefault {
 			lastIsReturn := false
 			if len(block.Statements.Nodes) > 0 {
 				last := block.Statements.Nodes[len(block.Statements.Nodes)-1]
@@ -369,7 +374,6 @@ func (t *Transpiler) emitBlock(node *ast.Node) {
 			if !lastIsReturn {
 				t.w.writeln(t.defaultReturn())
 			}
-			t.needsDefaultReturn = false
 		}
 	}
 	t.w.closeBlock()

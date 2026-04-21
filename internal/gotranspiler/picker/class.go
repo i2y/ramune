@@ -7,21 +7,21 @@ import (
 	"github.com/i2y/ramune/internal/tsgo/checker"
 )
 
-// IsClassExtractable classifies a ClassDeclaration node for v1.5 extraction.
+// IsClassExtractable classifies a ClassDeclaration node for extraction.
 //
-// v1.5 scope (reject when any fails):
+// Scope (reject when any fails):
 //   - no type parameters (generic classes)
 //   - no heritage clauses (extends / implements)
 //   - no decorators
 //   - no static members (fields, methods, or static blocks)
 //   - no accessors (get/set) and no `#`-private identifiers
 //   - every property declaration is typed and extractable, no optional (`?`)
-//     fields, no initializers (v1.5 baseline — constructor-initialised only)
+//     fields, no initializers (constructor-initialised only)
 //   - constructor body is only `this.<field> = <expr>` statements; <expr> is
 //     body-extractable
 //   - every method has an extractable signature (params + return) and a
-//     body using the same allowlist as v1 functions, plus `this`, `this.<field>`
-//     (read/write), and `this.<method>(...)` calls to same-class methods
+//     body using the same allowlist as free functions, plus `this`,
+//     `this.<field>` (read/write), and `this.<method>(...)` self-calls
 //
 // Accepts both `export class C { ... }` and bare `class C { ... }`.
 func IsClassExtractable(node *ast.Node, ck *checker.Checker, topLevelFuncs map[string]struct{}) (bool, Reason) {
@@ -42,7 +42,7 @@ func IsClassExtractable(node *ast.Node, ck *checker.Checker, topLevelFuncs map[s
 		return false, Reason{Code: reasonGenericFunc, Detail: "class has type parameters"}
 	}
 	if cd.HeritageClauses != nil && len(cd.HeritageClauses.Nodes) > 0 {
-		return false, Reason{Code: reasonClassHeritage, Detail: "extends/implements not supported in v1.5"}
+		return false, Reason{Code: reasonClassHeritage, Detail: "extends/implements not supported"}
 	}
 	if mods := node.Modifiers(); mods != nil {
 		for _, m := range mods.Nodes {
@@ -66,7 +66,7 @@ func IsClassExtractable(node *ast.Node, ck *checker.Checker, topLevelFuncs map[s
 	if cd.Members != nil {
 		for _, member := range cd.Members.Nodes {
 			if ast.HasSyntacticModifier(member, ast.ModifierFlagsStatic) {
-				return false, Reason{Code: reasonClassStatic, Detail: "static member not supported in v1.5"}
+				return false, Reason{Code: reasonClassStatic, Detail: "static member not supported"}
 			}
 			if ast.HasSyntacticModifier(member, ast.ModifierFlagsAbstract) {
 				return false, Reason{Code: reasonClassHeritage, Detail: "abstract member"}
@@ -112,14 +112,14 @@ func IsClassExtractable(node *ast.Node, ck *checker.Checker, topLevelFuncs map[s
 				}
 				constructor = member
 			case ast.KindGetAccessor, ast.KindSetAccessor:
-				return false, Reason{Code: reasonClassAccessor, Detail: "getter/setter not supported in v1.5"}
+				return false, Reason{Code: reasonClassAccessor, Detail: "getter/setter not supported"}
 			case ast.KindClassStaticBlockDeclaration:
 				return false, Reason{Code: reasonClassStatic, Detail: "static initialization block"}
 			case ast.KindSemicolonClassElement:
 				// stray `;` between members — harmless, skip
 				continue
 			default:
-				return false, Reason{Code: reasonUnhandledKind, Detail: fmt.Sprintf("class member kind %v not supported in v1.5", member.Kind)}
+				return false, Reason{Code: reasonUnhandledKind, Detail: fmt.Sprintf("class member kind %v not supported", member.Kind)}
 			}
 		}
 	}
@@ -164,7 +164,7 @@ func IsClassExtractable(node *ast.Node, ck *checker.Checker, topLevelFuncs map[s
 
 // checkConstructor validates a constructor's parameters and body. The body is
 // restricted to `this.<field> = <expr>` statements — all field initialisation
-// happens here in v1.5 (field initializers are rejected up in the field loop).
+// happens here (field initializers are rejected up in the field loop).
 func checkConstructor(ctor *ast.Node, ck *checker.Checker, topLevelFuncs map[string]struct{}, thisFields, thisMethods map[string]bool) *Reason {
 	cd := ctor.AsConstructorDeclaration()
 	if cd == nil {
@@ -240,7 +240,7 @@ func checkConstructor(ctor *ast.Node, ck *checker.Checker, topLevelFuncs map[str
 
 // checkConstructorStatement accepts only `this.<field> = <expr>;` where
 // `<expr>` is body-extractable. Everything else (local vars, conditionals,
-// method calls, super calls) is rejected in v1.5 — the emitter's constructor
+// method calls, super calls) is rejected — the emitter's constructor
 // path was written for a richer set but the picker contract stays narrow to
 // keep the generated Go predictable.
 func checkConstructorStatement(stmt *ast.Node, ctx *bodyCtx) *Reason {
@@ -273,7 +273,7 @@ func checkConstructorStatement(stmt *ast.Node, ctx *bodyCtx) *Reason {
 }
 
 // checkClassMethod validates a MethodDeclaration's signature and body.
-// Same rules as v1 function, plus `this` / `this.<field>` / `this.<method>`.
+// Same rules as a free function, plus `this` / `this.<field>` / `this.<method>`.
 func checkClassMethod(m *ast.Node, ck *checker.Checker, topLevelFuncs map[string]struct{}, thisFields, thisMethods map[string]bool) *Reason {
 	md := m.AsMethodDeclaration()
 	if md == nil {

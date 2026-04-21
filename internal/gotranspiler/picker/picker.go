@@ -62,32 +62,41 @@ type Result struct {
 	Candidates []Candidate
 }
 
-// Options holds tuning knobs. v1 has none; kept here as a forward-compatibility
-// seam so callers don't need to change signatures when v1.1+ adds options.
-type Options struct{}
+// Options holds tuning knobs for Pick.
+type Options struct {
+	// TopLevelFuncs, if non-nil, is used instead of scanning sf for peer
+	// function names. Multi-file callers pass a union across all user
+	// source files so cross-file calls to other extractable functions are
+	// accepted. When nil (single-file default), Pick collects the set from
+	// sf's own top-level.
+	TopLevelFuncs map[string]struct{}
+}
 
 // Pick walks the top-level statements of sf and classifies each
-// FunctionDeclaration (v1 scope) as extractable or not.
+// FunctionDeclaration / ClassDeclaration as extractable or not.
 //
-// Classes, interfaces, enums, module declarations, and everything else is
-// ignored in v1 — those land in JS unchanged.
-func Pick(sf *ast.SourceFile, ck *checker.Checker, _ Options) Result {
+// Interfaces, enums, module declarations, and everything else is ignored —
+// those land in JS unchanged.
+func Pick(sf *ast.SourceFile, ck *checker.Checker, opts Options) Result {
 	r := Result{File: sf.FileName()}
 	if sf.Statements == nil {
 		return r
 	}
 
-	// Pre-collect peer names so IsFunctionExtractable can resolve forward calls.
-	topLevelFuncs := map[string]struct{}{}
-	for _, stmt := range sf.Statements.Nodes {
-		if stmt.Kind != ast.KindFunctionDeclaration {
-			continue
+	topLevelFuncs := opts.TopLevelFuncs
+	if topLevelFuncs == nil {
+		// Pre-collect peer names so IsFunctionExtractable can resolve forward calls.
+		topLevelFuncs = map[string]struct{}{}
+		for _, stmt := range sf.Statements.Nodes {
+			if stmt.Kind != ast.KindFunctionDeclaration {
+				continue
+			}
+			fd := stmt.AsFunctionDeclaration()
+			if fd == nil || fd.Name() == nil {
+				continue
+			}
+			topLevelFuncs[fd.Name().AsIdentifier().Text] = struct{}{}
 		}
-		fd := stmt.AsFunctionDeclaration()
-		if fd == nil || fd.Name() == nil {
-			continue
-		}
-		topLevelFuncs[fd.Name().AsIdentifier().Text] = struct{}{}
 	}
 
 	for _, stmt := range sf.Statements.Nodes {

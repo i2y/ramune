@@ -642,7 +642,7 @@ func accumulateNativeFuncs(modName, pkgImport, pkgAlias string, funcs []gotransp
 
 func compileCmd(args []string) {
 	fs := flag.NewFlagSet("compile", flag.ExitOnError)
-	var output string
+	var output, buildTags string
 	var minify, httpMode, hybrid, hybridReport bool
 	var nativeFiles stringSliceFlag
 	fs.StringVar(&output, "o", "", "output binary name")
@@ -651,6 +651,7 @@ func compileCmd(args []string) {
 	fs.BoolVar(&hybrid, "hybrid", false, "extract type-confirmed TS functions to native Go (JS runtime remains the fallback)")
 	fs.BoolVar(&hybridReport, "hybrid-report", false, "print the picker's extraction report to stderr (implies --hybrid)")
 	fs.Var(&nativeFiles, "native", "TypeScript file to transpile as native extension (repeatable)")
+	fs.StringVar(&buildTags, "tags", "", "comma-separated Go build tags for the embedded runtime (e.g. qjswasm,goja)")
 	fs.Parse(args)
 	if hybridReport {
 		hybrid = true
@@ -889,7 +890,12 @@ go 1.26
 	}
 
 	absOutput, _ := filepath.Abs(output)
-	buildCmd := exec.Command("go", "build", "-o", absOutput, ".")
+	goBuildArgs := []string{"build", "-o", absOutput}
+	if buildTags != "" {
+		goBuildArgs = append(goBuildArgs, "-tags", buildTags)
+	}
+	goBuildArgs = append(goBuildArgs, ".")
+	buildCmd := exec.Command("go", goBuildArgs...)
 	buildCmd.Dir = tmpDir
 	buildCmd.Stdout = os.Stdout
 	buildCmd.Stderr = os.Stderr
