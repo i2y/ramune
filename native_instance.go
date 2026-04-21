@@ -120,9 +120,12 @@ func (reg *nativeTypeRegistry) registerType(r *Runtime, info *nativeTypeInfo, t 
 		if !method.IsExported() {
 			continue
 		}
-		if method.Type.NumIn() == 1 && method.Type.NumOut() == 0 {
-			continue
-		}
+		// Skip Go-style getters (`GetFoo() X`). Those are covered by the field
+		// getter path — exposing both would double-register the same property
+		// under "foo" and "getFoo". A zero-arg, zero-return mutator (`Reset()`,
+		// `Increment()` from a TS `void` method) is NOT a getter and must be
+		// callable from JS, so the old blanket skip on NumIn==1 && NumOut==0
+		// was dropped.
 		if strings.HasPrefix(method.Name, "Get") && method.Type.NumIn() == 1 && method.Type.NumOut() == 1 {
 			continue
 		}
