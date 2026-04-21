@@ -226,6 +226,8 @@ export function sanitize(s: string): string { return s.replaceAll("foo", "bar");
 export function prefix(s: string): string { return s.slice(0, 3); }
 export function mid(s: string): string { return s.substring(1, 4); }
 export function leftpad(s: string, n: number): string { return s.padStart(n, "0"); }
+interface Rect { width: number; height: number; }
+export function rectArea(r: Rect): number { return r.width * r.height; }
 export function sumOf(xs: number[]): number {
   let t = 0;
   for (const x of xs) t = t + x;
@@ -457,6 +459,50 @@ func pAdd(a, b float64) *promise.Promise[float64] {
 	return promise.New[float64](func(resolve func(float64), _ func(error)) {
 		resolve(a + b)
 	})
+}
+
+// Rect mirrors `interface Rect { width: number; height: number; }`. The
+// transpiler emits a Go struct with JSON tags; NativeModuleFromFuncs
+// reconstructs from `map[string]any` per-field.
+type Rect struct {
+	Width  float64 `json:"width"`
+	Height float64 `json:"height"`
+}
+
+func area(r Rect) float64 { return r.Width * r.Height }
+
+func TestHybrid_NamedInterfaceParam_RoundTrip(t *testing.T) {
+	src := `
+interface Rect { width: number; height: number; }
+export function area(r: Rect): number { return r.width * r.height; }
+`
+	sf, program, _ := setupProgram(t, src)
+	ck, done := program.GetTypeCheckerForFile(context.Background(), sf)
+	defer done()
+	res, err := composer.Compose(sf, ck, composer.Options{NativeModuleName: "native:obj"})
+	if err != nil {
+		t.Fatalf("compose: %v", err)
+	}
+	if !strings.Contains(res.GoSource, "type Rect struct") {
+		t.Fatalf("expected `type Rect struct` in emitted Go:\n%s", res.GoSource)
+	}
+	if !strings.Contains(res.GoSource, "r.Width") || !strings.Contains(res.GoSource, "r.Height") {
+		t.Fatalf("expected r.Width/r.Height field access in emitted Go:\n%s", res.GoSource)
+	}
+	mod := ramune.NativeModuleFromFuncs("native:obj", map[string]any{"area": area})
+	r := newRamune(t, ramune.NodeCompat(), ramune.WithModule(mod))
+	defer r.Close()
+	if err := r.Exec(res.ShimJS); err != nil {
+		t.Fatalf("shim: %v", err)
+	}
+	v, err := r.Eval(`area({width: 3, height: 4})`)
+	if err != nil {
+		t.Fatalf("eval: %v", err)
+	}
+	got, _ := v.Float64()
+	if got != 12 {
+		t.Fatalf("area({3,4}) = %v, want 12", got)
+	}
 }
 
 func TestHybrid_AsyncPromise_RoundTrip(t *testing.T) {

@@ -495,8 +495,8 @@ var mathSafeConstants = map[string]bool{
 	"PI": true, "E": true,
 }
 
-// checkPropertyAccess accepts `<arrayOrStringVar>.length` and the Math
-// numeric constants listed in mathSafeConstants.
+// checkPropertyAccess accepts the Math numeric constants, `.length` on
+// arrays/strings, and named-interface field access (`r.width`).
 func checkPropertyAccess(node *ast.Node, ctx *bodyCtx) *Reason {
 	pa := node.AsPropertyAccessExpression()
 	if pa == nil || pa.Name() == nil || pa.Name().Kind != ast.KindIdentifier {
@@ -517,7 +517,23 @@ func checkPropertyAccess(node *ast.Node, ctx *bodyCtx) *Reason {
 	if propName == "length" {
 		return rejectNonLengthableReceiver(pa.Expression, ctx)
 	}
-	return &Reason{Code: reasonUnhandledKind, Detail: "only .length and Math.<const> supported (got ." + propName + ")"}
+
+	// Named-interface field access: receiver type must be an extractable
+	// object (named, all-primitive props). The picker accepting `r: Rect`
+	// at the param gate doesn't help by itself - the body walker still needs
+	// to admit `r.width` and reject `obj.foo` on anonymous inline types
+	// (which the emitter would lower via jsrt.Obj reflection).
+	if r := checkExpr(pa.Expression, ctx); r != nil {
+		return r
+	}
+	if ctx.ck == nil {
+		return &Reason{Code: reasonUnhandledKind, Detail: "no checker for field access"}
+	}
+	t := ctx.ck.GetTypeAtLocation(pa.Expression)
+	if !isExtractableObjectType(ctx.ck, t) {
+		return &Reason{Code: reasonObjectType, Detail: "field access requires named-interface receiver (got ." + propName + ")"}
+	}
+	return nil
 }
 
 // checkElementAccess accepts `arrayVar[i]` where the index is number-typed

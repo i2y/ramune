@@ -359,15 +359,62 @@ func TestPicker_Rejects_Generator(t *testing.T) {
 	}
 }
 
-func TestPicker_Rejects_ObjectParam(t *testing.T) {
-	src := `export function name(u: { first: string }): string { return u.first; }`
+func TestPicker_Rejects_AnonymousObjectParam(t *testing.T) {
+	// Anonymous inline object types lower to `jsrt.Obj(u).Get("First").Unwrap().(string)`
+	// in the emitter (ramune-runtime reflection). Keep them out.
+	src := `export function nameOf(u: { first: string }): string { return u.first; }`
 	res := pickOne(t, src)
-	c, _ := byName(res, "name")
+	c, _ := byName(res, "nameOf")
 	if c.Extracted {
-		t.Fatalf("expected rejection for object param")
+		t.Fatalf("expected rejection for anonymous object param")
 	}
 	if c.Reason.Code != "object-type" {
 		t.Fatalf("expected object-type, got %q", c.Reason.Code)
+	}
+}
+
+func TestPicker_Accepts_NamedInterfaceObjectParam(t *testing.T) {
+	// Named interfaces are emitted as Go structs with JSON tags, which the
+	// NativeModuleFromFuncs bridge reconstructs field-by-field. Field access
+	// (`r.width`) lowers to direct Go struct field access.
+	src := `
+interface Rect { width: number; height: number; }
+export function area(r: Rect): number { return r.width * r.height; }
+export function perimeter(r: Rect): number { return 2 * (r.width + r.height); }
+`
+	res := pickOne(t, src)
+	for _, name := range []string{"area", "perimeter"} {
+		c, ok := byName(res, name)
+		if !ok || !c.Extracted {
+			t.Fatalf("expected `%s` extracted; got %+v", name, c.Reason)
+		}
+	}
+}
+
+func TestPicker_Rejects_NamedInterfaceWithObjectField(t *testing.T) {
+	// Nested object field would force the emitter to do recursive jsrt.Obj
+	// lookups. Reject named interfaces whose any field is non-primitive.
+	src := `
+interface Inner { x: number; }
+interface Outer { inner: Inner; }
+export function getX(o: Outer): number { return o.inner.x; }
+`
+	res := pickOne(t, src)
+	c, _ := byName(res, "getX")
+	if c.Extracted {
+		t.Fatalf("expected rejection for nested-object interface")
+	}
+}
+
+func TestPicker_Rejects_NamedInterfaceWithMethod(t *testing.T) {
+	src := `
+interface Greeter { greet(): string; }
+export function greet(g: Greeter): string { return g.greet(); }
+`
+	res := pickOne(t, src)
+	c, _ := byName(res, "greet")
+	if c.Extracted {
+		t.Fatalf("expected rejection for interface with method (call signature)")
 	}
 }
 

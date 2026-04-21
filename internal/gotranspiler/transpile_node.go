@@ -58,6 +58,11 @@ func TranspileNodes(ck *checker.Checker, nodes []*ast.Node, pkgName string) (str
 		switch n.Kind {
 		case ast.KindFunctionDeclaration:
 			t.emitFunctionDeclaration(n)
+		case ast.KindInterfaceDeclaration:
+			// Interface declarations referenced by extracted functions become
+			// Go structs; the picker collects them so the param/return types
+			// resolve.
+			t.emitInterfaceDeclaration(n)
 		default:
 			return "", fmt.Errorf("unsupported node kind for TranspileNodes: %v", n.Kind)
 		}

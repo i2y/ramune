@@ -1,6 +1,8 @@
 package picker
 
 import (
+	"strings"
+
 	"github.com/i2y/ramune/internal/tsgo/ast"
 	"github.com/i2y/ramune/internal/tsgo/checker"
 )
@@ -94,6 +96,9 @@ func isExtractableType(ck *checker.Checker, t *checker.Type) *Reason {
 			}
 			return nil
 		}
+		if isExtractableObjectType(ck, t) {
+			return nil
+		}
 		return &Reason{Code: reasonObjectType, Detail: "object/reference type not supported in v1"}
 	}
 	return &Reason{Code: reasonUnhandledKind, Detail: "unclassified type"}
@@ -124,6 +129,58 @@ func isNumberLikeNode(ck *checker.Checker, n *ast.Node) bool {
 		return false
 	}
 	return isNumberLikeType(ck.GetTypeAtLocation(n))
+}
+
+// isExtractableObjectType returns true when t is a named interface or type
+// alias whose every property is a primitive (number/string/boolean) and that
+// has no callable, constructible, or index signatures. The emitter renders
+// such types as Go structs with JSON tags, which the NativeModuleFromFuncs
+// bridge round-trips through field-by-field reconstruction.
+//
+// Anonymous inline `{ a: number }` types are excluded - they have no
+// declared name and the emitter falls back to the `jsrt.Obj` reflection
+// path. The detection: anonymous types are flagged ObjectFlagsAnonymous;
+// reference types (Array, Promise, Map, Set, etc.) carry ObjectFlagsReference
+// and are handled by their own callers above.
+func isExtractableObjectType(ck *checker.Checker, t *checker.Type) bool {
+	if ck == nil || t == nil {
+		return false
+	}
+	objFlags := t.ObjectFlags()
+	if objFlags&checker.ObjectFlagsAnonymous != 0 || objFlags&checker.ObjectFlagsReference != 0 {
+		return false
+	}
+	sym := t.Symbol()
+	if sym == nil {
+		return false
+	}
+	name := sym.Name
+	if name == "" || strings.HasPrefix(name, "__") {
+		return false
+	}
+	if len(ck.GetSignaturesOfType(t, checker.SignatureKindCall)) > 0 {
+		return false
+	}
+	if len(ck.GetSignaturesOfType(t, checker.SignatureKindConstruct)) > 0 {
+		return false
+	}
+	if len(ck.GetIndexInfosOfType(t)) > 0 {
+		return false
+	}
+	props := ck.GetPropertiesOfType(t)
+	if len(props) == 0 {
+		return false
+	}
+	for _, p := range props {
+		pt := ck.GetTypeOfSymbol(p)
+		if pt == nil {
+			return false
+		}
+		if pt.Flags()&(checker.TypeFlagsStringLike|checker.TypeFlagsNumberLike|checker.TypeFlagsBooleanLike) == 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // arrayElementType returns T when t is `Array<T>` / `ReadonlyArray<T>` /

@@ -24,6 +24,7 @@ type Kind int
 const (
 	KindFunction Kind = iota
 	KindClass
+	KindInterface
 )
 
 func (k Kind) String() string {
@@ -32,6 +33,8 @@ func (k Kind) String() string {
 		return "function"
 	case KindClass:
 		return "class"
+	case KindInterface:
+		return "interface"
 	default:
 		return "?"
 	}
@@ -88,22 +91,43 @@ func Pick(sf *ast.SourceFile, ck *checker.Checker, _ Options) Result {
 	}
 
 	for _, stmt := range sf.Statements.Nodes {
-		if stmt.Kind != ast.KindFunctionDeclaration {
-			continue
+		switch stmt.Kind {
+		case ast.KindFunctionDeclaration:
+			fd := stmt.AsFunctionDeclaration()
+			if fd == nil || fd.Name() == nil {
+				continue
+			}
+			name := fd.Name().AsIdentifier().Text
+			ok, reason := IsFunctionExtractable(stmt, ck, topLevelFuncs)
+			r.Candidates = append(r.Candidates, Candidate{
+				Node:      stmt,
+				Name:      name,
+				Kind:      KindFunction,
+				Extracted: ok,
+				Reason:    reason,
+			})
+		case ast.KindInterfaceDeclaration:
+			// Interfaces that satisfy the extractable-object predicate are
+			// emitted as Go structs (with JSON tags). Always include them so
+			// extracted functions referencing them resolve. Non-qualifying
+			// interfaces are simply not emitted; the picker rejects any
+			// function whose param/return type points at a non-extractable
+			// interface, so unresolved type references can't slip through.
+			id := stmt.Name()
+			if id == nil || id.Kind != ast.KindIdentifier {
+				continue
+			}
+			declType := ck.GetTypeAtLocation(id)
+			if !isExtractableObjectType(ck, declType) {
+				continue
+			}
+			r.Candidates = append(r.Candidates, Candidate{
+				Node:      stmt,
+				Name:      id.AsIdentifier().Text,
+				Kind:      KindInterface,
+				Extracted: true,
+			})
 		}
-		fd := stmt.AsFunctionDeclaration()
-		if fd == nil || fd.Name() == nil {
-			continue
-		}
-		name := fd.Name().AsIdentifier().Text
-		ok, reason := IsFunctionExtractable(stmt, ck, topLevelFuncs)
-		r.Candidates = append(r.Candidates, Candidate{
-			Node:      stmt,
-			Name:      name,
-			Kind:      KindFunction,
-			Extracted: ok,
-			Reason:    reason,
-		})
 	}
 	return r
 }
