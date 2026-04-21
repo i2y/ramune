@@ -34,3 +34,6 @@ Thumbs.db
 
 # ramune serve runtime data (SQLite files default here)
 .ramune/
+
+# Web Platform Tests checkout (cloned on demand by `make test-wpt`)
+test/wpt/
