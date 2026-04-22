@@ -9,6 +9,7 @@ import (
 	"github.com/i2y/ramune/internal/rslint/shim/tspath"
 	importPlugin "github.com/i2y/ramune/internal/rslint/plugins/import"
 	jestPlugin "github.com/i2y/ramune/internal/rslint/plugins/jest"
+	promisePlugin "github.com/i2y/ramune/internal/rslint/plugins/promise"
 	reactPlugin "github.com/i2y/ramune/internal/rslint/plugins/react"
 	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/adjacent_overload_signatures"
 	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/array_type"
@@ -34,7 +35,7 @@ import (
 	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_array_delete"
 	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_base_to_string"
 	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_confusing_void_expression"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_dupe_class_members"
+	ts_no_dupe_class_members "github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_dupe_class_members"
 	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_duplicate_enum_values"
 	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_duplicate_type_constituents"
 	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_dynamic_delete"
@@ -57,6 +58,7 @@ import (
 	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_non_null_asserted_nullish_coalescing"
 	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_non_null_asserted_optional_chain"
 	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_non_null_assertion"
+	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_redeclare"
 	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_redundant_type_constituents"
 	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_require_imports"
 	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_this_alias"
@@ -65,6 +67,7 @@ import (
 	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_unnecessary_template_expression"
 	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_unnecessary_type_arguments"
 	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_unnecessary_type_assertion"
+	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_unnecessary_type_constraint"
 	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_unsafe_argument"
 	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_unsafe_assignment"
 	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_unsafe_call"
@@ -76,7 +79,7 @@ import (
 	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_unused_expressions"
 	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_unused_vars"
 	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_use_before_define"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_useless_constructor"
+	ts_no_useless_constructor "github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_useless_constructor"
 	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_useless_empty_export"
 	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_var_requires"
 	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/non_nullable_type_assertion_style"
@@ -86,6 +89,7 @@ import (
 	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/prefer_includes"
 	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/prefer_literal_enum_member"
 	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/prefer_namespace_keyword"
+	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/prefer_optional_chain"
 	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/prefer_promise_reject_errors"
 	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/prefer_readonly"
 
@@ -108,6 +112,7 @@ import (
 	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/unified_signatures"
 	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/use_unknown_in_catch_callback_variable"
 	"github.com/i2y/ramune/internal/rslint/rule"
+	"github.com/i2y/ramune/internal/rslint/rules/accessor_pairs"
 	"github.com/i2y/ramune/internal/rslint/rules/array_callback_return"
 	"github.com/i2y/ramune/internal/rslint/rules/constructor_super"
 	"github.com/i2y/ramune/internal/rslint/rules/default_case"
@@ -115,9 +120,12 @@ import (
 	"github.com/i2y/ramune/internal/rslint/rules/eqeqeq"
 	"github.com/i2y/ramune/internal/rslint/rules/for_direction"
 	"github.com/i2y/ramune/internal/rslint/rules/getter_return"
+	"github.com/i2y/ramune/internal/rslint/rules/guard_for_in"
+	"github.com/i2y/ramune/internal/rslint/rules/max_lines"
 	"github.com/i2y/ramune/internal/rslint/rules/no_alert"
 	"github.com/i2y/ramune/internal/rslint/rules/no_async_promise_executor"
 	"github.com/i2y/ramune/internal/rslint/rules/no_await_in_loop"
+	"github.com/i2y/ramune/internal/rslint/rules/no_bitwise"
 	"github.com/i2y/ramune/internal/rslint/rules/no_caller"
 	"github.com/i2y/ramune/internal/rslint/rules/no_case_declarations"
 	"github.com/i2y/ramune/internal/rslint/rules/no_class_assign"
@@ -128,9 +136,12 @@ import (
 	"github.com/i2y/ramune/internal/rslint/rules/no_constant_binary_expression"
 	"github.com/i2y/ramune/internal/rslint/rules/no_constant_condition"
 	"github.com/i2y/ramune/internal/rslint/rules/no_constructor_return"
+	"github.com/i2y/ramune/internal/rslint/rules/no_control_regex"
 	"github.com/i2y/ramune/internal/rslint/rules/no_debugger"
 	"github.com/i2y/ramune/internal/rslint/rules/no_delete_var"
 	"github.com/i2y/ramune/internal/rslint/rules/no_dupe_args"
+	"github.com/i2y/ramune/internal/rslint/rules/no_dupe_class_members"
+	"github.com/i2y/ramune/internal/rslint/rules/no_dupe_else_if"
 	"github.com/i2y/ramune/internal/rslint/rules/no_dupe_keys"
 	"github.com/i2y/ramune/internal/rslint/rules/no_duplicate_case"
 	"github.com/i2y/ramune/internal/rslint/rules/no_empty"
@@ -138,43 +149,79 @@ import (
 	"github.com/i2y/ramune/internal/rslint/rules/no_empty_pattern"
 	"github.com/i2y/ramune/internal/rslint/rules/no_eval"
 	"github.com/i2y/ramune/internal/rslint/rules/no_ex_assign"
+	"github.com/i2y/ramune/internal/rslint/rules/no_extend_native"
 	"github.com/i2y/ramune/internal/rslint/rules/no_extra_bind"
+	"github.com/i2y/ramune/internal/rslint/rules/no_extra_boolean_cast"
+	"github.com/i2y/ramune/internal/rslint/rules/no_extra_label"
 	"github.com/i2y/ramune/internal/rslint/rules/no_fallthrough"
 	"github.com/i2y/ramune/internal/rslint/rules/no_func_assign"
 	"github.com/i2y/ramune/internal/rslint/rules/no_global_assign"
+	"github.com/i2y/ramune/internal/rslint/rules/no_implicit_coercion"
+	core_no_implied_eval "github.com/i2y/ramune/internal/rslint/rules/no_implied_eval"
 	"github.com/i2y/ramune/internal/rslint/rules/no_import_assign"
 	"github.com/i2y/ramune/internal/rslint/rules/no_inner_declarations"
 	"github.com/i2y/ramune/internal/rslint/rules/no_invalid_regexp"
 	"github.com/i2y/ramune/internal/rslint/rules/no_iterator"
+	"github.com/i2y/ramune/internal/rslint/rules/no_label_var"
 	"github.com/i2y/ramune/internal/rslint/rules/no_labels"
+	"github.com/i2y/ramune/internal/rslint/rules/no_lone_blocks"
+	"github.com/i2y/ramune/internal/rslint/rules/no_loop_func"
 	"github.com/i2y/ramune/internal/rslint/rules/no_loss_of_precision"
+	"github.com/i2y/ramune/internal/rslint/rules/no_misleading_character_class"
 	"github.com/i2y/ramune/internal/rslint/rules/no_multi_str"
+	"github.com/i2y/ramune/internal/rslint/rules/no_nested_ternary"
+	"github.com/i2y/ramune/internal/rslint/rules/no_new"
 	"github.com/i2y/ramune/internal/rslint/rules/no_new_func"
 	"github.com/i2y/ramune/internal/rslint/rules/no_new_object"
-	"github.com/i2y/ramune/internal/rslint/rules/require_atomic_updates"
 	"github.com/i2y/ramune/internal/rslint/rules/no_new_symbol"
 	"github.com/i2y/ramune/internal/rslint/rules/no_new_wrappers"
 	"github.com/i2y/ramune/internal/rslint/rules/no_obj_calls"
+	"github.com/i2y/ramune/internal/rslint/rules/no_octal"
 	"github.com/i2y/ramune/internal/rslint/rules/no_octal_escape"
+	"github.com/i2y/ramune/internal/rslint/rules/no_param_reassign"
 	"github.com/i2y/ramune/internal/rslint/rules/no_proto"
+	"github.com/i2y/ramune/internal/rslint/rules/no_prototype_builtins"
+	"github.com/i2y/ramune/internal/rslint/rules/no_regex_spaces"
 	"github.com/i2y/ramune/internal/rslint/rules/no_restricted_imports"
+	"github.com/i2y/ramune/internal/rslint/rules/no_return_assign"
 	"github.com/i2y/ramune/internal/rslint/rules/no_script_url"
 	"github.com/i2y/ramune/internal/rslint/rules/no_self_assign"
+	"github.com/i2y/ramune/internal/rslint/rules/no_self_compare"
+	"github.com/i2y/ramune/internal/rslint/rules/no_sequences"
 	"github.com/i2y/ramune/internal/rslint/rules/no_setter_return"
+	"github.com/i2y/ramune/internal/rslint/rules/no_shadow"
+	"github.com/i2y/ramune/internal/rslint/rules/no_shadow_restricted_names"
 	"github.com/i2y/ramune/internal/rslint/rules/no_sparse_arrays"
 	"github.com/i2y/ramune/internal/rslint/rules/no_template_curly_in_string"
 	"github.com/i2y/ramune/internal/rslint/rules/no_this_before_super"
 	"github.com/i2y/ramune/internal/rslint/rules/no_undef"
 	"github.com/i2y/ramune/internal/rslint/rules/no_undef_init"
 	"github.com/i2y/ramune/internal/rslint/rules/no_unmodified_loop_condition"
+	"github.com/i2y/ramune/internal/rslint/rules/no_unneeded_ternary"
 	"github.com/i2y/ramune/internal/rslint/rules/no_unreachable"
 	"github.com/i2y/ramune/internal/rslint/rules/no_unsafe_finally"
 	"github.com/i2y/ramune/internal/rslint/rules/no_unsafe_negation"
+	"github.com/i2y/ramune/internal/rslint/rules/no_throw_literal"
 	"github.com/i2y/ramune/internal/rslint/rules/no_unsafe_optional_chaining"
+	"github.com/i2y/ramune/internal/rslint/rules/no_useless_call"
+	"github.com/i2y/ramune/internal/rslint/rules/no_useless_catch"
+	"github.com/i2y/ramune/internal/rslint/rules/no_useless_computed_key"
+	"github.com/i2y/ramune/internal/rslint/rules/no_useless_constructor"
+	"github.com/i2y/ramune/internal/rslint/rules/no_useless_concat"
+	"github.com/i2y/ramune/internal/rslint/rules/no_useless_rename"
 	"github.com/i2y/ramune/internal/rslint/rules/no_var"
 	"github.com/i2y/ramune/internal/rslint/rules/no_with"
+	"github.com/i2y/ramune/internal/rslint/rules/object_shorthand"
 	"github.com/i2y/ramune/internal/rslint/rules/prefer_const"
+	core_prefer_promise_reject_errors "github.com/i2y/ramune/internal/rslint/rules/prefer_promise_reject_errors"
 	"github.com/i2y/ramune/internal/rslint/rules/prefer_rest_params"
+	"github.com/i2y/ramune/internal/rslint/rules/prefer_spread"
+	"github.com/i2y/ramune/internal/rslint/rules/prefer_template"
+	"github.com/i2y/ramune/internal/rslint/rules/radix"
+	"github.com/i2y/ramune/internal/rslint/rules/require_atomic_updates"
+	"github.com/i2y/ramune/internal/rslint/rules/require_yield"
+	"github.com/i2y/ramune/internal/rslint/rules/strict"
+	"github.com/i2y/ramune/internal/rslint/rules/symbol_description"
 	"github.com/i2y/ramune/internal/rslint/rules/use_isnan"
 	"github.com/i2y/ramune/internal/rslint/rules/valid_typeof"
 )
@@ -307,6 +354,11 @@ var KnownPlugins = []PluginInfo{
 		getAllRules: func() []rule.Rule { return jestPlugin.GetAllRules() },
 	},
 	{
+		RulePrefix:  "promise",
+		DeclNames:   []string{"eslint-plugin-promise", "promise"},
+		getAllRules: func() []rule.Rule { return promisePlugin.GetAllRules() },
+	},
+	{
 		RulePrefix:  "react",
 		DeclNames:   []string{"react"},
 		getAllRules: func() []rule.Rule { return reactPlugin.GetAllRules() },
@@ -379,6 +431,7 @@ func RegisterAllRules() {
 		registerAllEslintImportPluginRules()
 		registerAllReactPluginRules()
 		registerAllJestPluginRules()
+		registerAllPromisePluginRules()
 		registerAllCoreEslintRules()
 	})
 }
@@ -391,6 +444,12 @@ func registerAllReactPluginRules() {
 
 func registerAllJestPluginRules() {
 	for _, rule := range jestPlugin.GetAllRules() {
+		GlobalRuleRegistry.Register(rule.Name, rule)
+	}
+}
+
+func registerAllPromisePluginRules() {
+	for _, rule := range promisePlugin.GetAllRules() {
 		GlobalRuleRegistry.Register(rule.Name, rule)
 	}
 }
@@ -421,7 +480,7 @@ func registerAllTypeScriptEslintPluginRules() {
 	GlobalRuleRegistry.Register("@typescript-eslint/no-array-delete", no_array_delete.NoArrayDeleteRule)
 	GlobalRuleRegistry.Register("@typescript-eslint/no-base-to-string", no_base_to_string.NoBaseToStringRule)
 	GlobalRuleRegistry.Register("@typescript-eslint/no-confusing-void-expression", no_confusing_void_expression.NoConfusingVoidExpressionRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/no-dupe-class-members", no_dupe_class_members.NoDupeClassMembersRule)
+	GlobalRuleRegistry.Register("@typescript-eslint/no-dupe-class-members", ts_no_dupe_class_members.NoDupeClassMembersRule)
 	GlobalRuleRegistry.Register("@typescript-eslint/no-duplicate-enum-values", no_duplicate_enum_values.NoDuplicateEnumValuesRule)
 	GlobalRuleRegistry.Register("@typescript-eslint/no-duplicate-type-constituents", no_duplicate_type_constituents.NoDuplicateTypeConstituentsRule)
 	GlobalRuleRegistry.Register("@typescript-eslint/no-dynamic-delete", no_dynamic_delete.NoDynamicDeleteRule)
@@ -444,6 +503,7 @@ func registerAllTypeScriptEslintPluginRules() {
 	GlobalRuleRegistry.Register("@typescript-eslint/no-non-null-asserted-nullish-coalescing", no_non_null_asserted_nullish_coalescing.NoNonNullAssertedNullishCoalescingRule)
 	GlobalRuleRegistry.Register("@typescript-eslint/no-non-null-asserted-optional-chain", no_non_null_asserted_optional_chain.NoNonNullAssertedOptionalChainRule)
 	GlobalRuleRegistry.Register("@typescript-eslint/no-non-null-assertion", no_non_null_assertion.NoNonNullAssertionRule)
+	GlobalRuleRegistry.Register("@typescript-eslint/no-redeclare", no_redeclare.NoRedeclareRule)
 	GlobalRuleRegistry.Register("@typescript-eslint/no-redundant-type-constituents", no_redundant_type_constituents.NoRedundantTypeConstituentsRule)
 	GlobalRuleRegistry.Register("@typescript-eslint/no-this-alias", no_this_alias.NoThisAliasRule)
 	GlobalRuleRegistry.Register("@typescript-eslint/no-require-imports", no_require_imports.NoRequireImportsRule)
@@ -452,6 +512,7 @@ func registerAllTypeScriptEslintPluginRules() {
 	GlobalRuleRegistry.Register("@typescript-eslint/no-unnecessary-template-expression", no_unnecessary_template_expression.NoUnnecessaryTemplateExpressionRule)
 	GlobalRuleRegistry.Register("@typescript-eslint/no-unnecessary-type-arguments", no_unnecessary_type_arguments.NoUnnecessaryTypeArgumentsRule)
 	GlobalRuleRegistry.Register("@typescript-eslint/no-unnecessary-type-assertion", no_unnecessary_type_assertion.NoUnnecessaryTypeAssertionRule)
+	GlobalRuleRegistry.Register("@typescript-eslint/no-unnecessary-type-constraint", no_unnecessary_type_constraint.NoUnnecessaryTypeConstraintRule)
 	GlobalRuleRegistry.Register("@typescript-eslint/no-unsafe-argument", no_unsafe_argument.NoUnsafeArgumentRule)
 	GlobalRuleRegistry.Register("@typescript-eslint/no-unsafe-assignment", no_unsafe_assignment.NoUnsafeAssignmentRule)
 	GlobalRuleRegistry.Register("@typescript-eslint/no-unsafe-call", no_unsafe_call.NoUnsafeCallRule)
@@ -463,7 +524,7 @@ func registerAllTypeScriptEslintPluginRules() {
 	GlobalRuleRegistry.Register("@typescript-eslint/no-unused-expressions", no_unused_expressions.NoUnusedExpressionsRule)
 	GlobalRuleRegistry.Register("@typescript-eslint/no-unused-vars", no_unused_vars.NoUnusedVarsRule)
 	GlobalRuleRegistry.Register("@typescript-eslint/no-use-before-define", no_use_before_define.NoUseBeforeDefineRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/no-useless-constructor", no_useless_constructor.NoUselessConstructorRule)
+	GlobalRuleRegistry.Register("@typescript-eslint/no-useless-constructor", ts_no_useless_constructor.NoUselessConstructorRule)
 	GlobalRuleRegistry.Register("@typescript-eslint/no-useless-empty-export", no_useless_empty_export.NoUselessEmptyExportRule)
 	GlobalRuleRegistry.Register("@typescript-eslint/no-var-requires", no_var_requires.NoVarRequiresRule)
 	GlobalRuleRegistry.Register("@typescript-eslint/non-nullable-type-assertion-style", non_nullable_type_assertion_style.NonNullableTypeAssertionStyleRule)
@@ -473,6 +534,7 @@ func registerAllTypeScriptEslintPluginRules() {
 	GlobalRuleRegistry.Register("@typescript-eslint/prefer-includes", prefer_includes.PreferIncludesRule)
 	GlobalRuleRegistry.Register("@typescript-eslint/prefer-literal-enum-member", prefer_literal_enum_member.PreferLiteralEnumMemberRule)
 	GlobalRuleRegistry.Register("@typescript-eslint/prefer-namespace-keyword", prefer_namespace_keyword.PreferNamespaceKeywordRule)
+	GlobalRuleRegistry.Register("@typescript-eslint/prefer-optional-chain", prefer_optional_chain.PreferOptionalChainRule)
 	GlobalRuleRegistry.Register("@typescript-eslint/prefer-promise-reject-errors", prefer_promise_reject_errors.PreferPromiseRejectErrorsRule)
 	GlobalRuleRegistry.Register("@typescript-eslint/prefer-readonly", prefer_readonly.PreferReadonlyRule)
 	// TODO: prefer-readonly-parameter-types needs complete implementation for proper type checking
@@ -506,15 +568,19 @@ func registerAllEslintImportPluginRules() {
 
 // registerAllCoreEslintRules registers core ESLint rules
 func registerAllCoreEslintRules() {
+	GlobalRuleRegistry.Register("accessor-pairs", accessor_pairs.AccessorPairsRule)
 	GlobalRuleRegistry.Register("array-callback-return", array_callback_return.ArrayCallbackReturnRule)
 	GlobalRuleRegistry.Register("constructor-super", constructor_super.ConstructorSuperRule)
 	GlobalRuleRegistry.Register("default-case", default_case.DefaultCaseRule)
 	GlobalRuleRegistry.Register("default-case-last", default_case_last.DefaultCaseLastRule)
 	GlobalRuleRegistry.Register("for-direction", for_direction.ForDirectionRule)
 	GlobalRuleRegistry.Register("getter-return", getter_return.GetterReturnRule)
+	GlobalRuleRegistry.Register("guard-for-in", guard_for_in.GuardForInRule)
+	GlobalRuleRegistry.Register("max-lines", max_lines.MaxLinesRule)
 	GlobalRuleRegistry.Register("no-alert", no_alert.NoAlertRule)
 	GlobalRuleRegistry.Register("no-async-promise-executor", no_async_promise_executor.NoAsyncPromiseExecutorRule)
 	GlobalRuleRegistry.Register("no-await-in-loop", no_await_in_loop.NoAwaitInLoopRule)
+	GlobalRuleRegistry.Register("no-bitwise", no_bitwise.NoBitwiseRule)
 	GlobalRuleRegistry.Register("no-caller", no_caller.NoCallerRule)
 	GlobalRuleRegistry.Register("no-case-declarations", no_case_declarations.NoCaseDeclarationsRule)
 	GlobalRuleRegistry.Register("no-class-assign", no_class_assign.NoClassAssignRule)
@@ -525,39 +591,68 @@ func registerAllCoreEslintRules() {
 	GlobalRuleRegistry.Register("no-constant-binary-expression", no_constant_binary_expression.NoConstantBinaryExpressionRule)
 	GlobalRuleRegistry.Register("no-constant-condition", no_constant_condition.NoConstantConditionRule)
 	GlobalRuleRegistry.Register("no-constructor-return", no_constructor_return.NoConstructorReturnRule)
+	GlobalRuleRegistry.Register("no-control-regex", no_control_regex.NoControlRegexRule)
 	GlobalRuleRegistry.Register("no-debugger", no_debugger.NoDebuggerRule)
 	GlobalRuleRegistry.Register("no-delete-var", no_delete_var.NoDeleteVarRule)
 	GlobalRuleRegistry.Register("no-dupe-args", no_dupe_args.NoDupeArgsRule)
+	GlobalRuleRegistry.Register("no-dupe-class-members", no_dupe_class_members.NoDupeClassMembersRule)
 	GlobalRuleRegistry.Register("no-dupe-keys", no_dupe_keys.NoDupeKeysRule)
 	GlobalRuleRegistry.Register("no-duplicate-case", no_duplicate_case.NoDuplicateCaseRule)
 	GlobalRuleRegistry.Register("no-empty", no_empty.NoEmptyRule)
 	GlobalRuleRegistry.Register("no-empty-pattern", no_empty_pattern.NoEmptyPatternRule)
 	GlobalRuleRegistry.Register("no-eval", no_eval.NoEvalRule)
 	GlobalRuleRegistry.Register("no-ex-assign", no_ex_assign.NoExAssignRule)
+	GlobalRuleRegistry.Register("no-extend-native", no_extend_native.NoExtendNativeRule)
 	GlobalRuleRegistry.Register("no-extra-bind", no_extra_bind.NoExtraBindRule)
+	GlobalRuleRegistry.Register("no-extra-label", no_extra_label.NoExtraLabelRule)
+	GlobalRuleRegistry.Register("no-label-var", no_label_var.NoLabelVarRule)
 	GlobalRuleRegistry.Register("no-labels", no_labels.NoLabelsRule)
 	GlobalRuleRegistry.Register("no-func-assign", no_func_assign.NoFuncAssignRule)
 	GlobalRuleRegistry.Register("no-global-assign", no_global_assign.NoGlobalAssignRule)
+	GlobalRuleRegistry.Register("no-implicit-coercion", no_implicit_coercion.NoImplicitCoercionRule)
+	GlobalRuleRegistry.Register("no-implied-eval", core_no_implied_eval.NoImpliedEvalRule)
 	GlobalRuleRegistry.Register("no-import-assign", no_import_assign.NoImportAssignRule)
 	GlobalRuleRegistry.Register("no-inner-declarations", no_inner_declarations.NoInnerDeclarationsRule)
+	GlobalRuleRegistry.Register("no-lone-blocks", no_lone_blocks.NoLoneBlocksRule)
+	GlobalRuleRegistry.Register("no-loop-func", no_loop_func.NoLoopFuncRule)
 	GlobalRuleRegistry.Register("no-loss-of-precision", no_loss_of_precision.NoLossOfPrecisionRule)
+	GlobalRuleRegistry.Register("no-misleading-character-class", no_misleading_character_class.NoMisleadingCharacterClassRule)
+	GlobalRuleRegistry.Register("no-new", no_new.NoNewRule)
 	GlobalRuleRegistry.Register("no-new-func", no_new_func.NoNewFuncRule)
 	GlobalRuleRegistry.Register("no-new-wrappers", no_new_wrappers.NoNewWrappersRule)
 	GlobalRuleRegistry.Register("no-restricted-imports", no_restricted_imports.NoRestrictedImportsRule)
 	GlobalRuleRegistry.Register("no-multi-str", no_multi_str.NoMultiStrRule)
+	GlobalRuleRegistry.Register("no-nested-ternary", no_nested_ternary.NoNestedTernaryRule)
+	GlobalRuleRegistry.Register("no-octal", no_octal.NoOctalRule)
 	GlobalRuleRegistry.Register("no-octal-escape", no_octal_escape.NoOctalEscapeRule)
+	GlobalRuleRegistry.Register("no-param-reassign", no_param_reassign.NoParamReassignRule)
 	GlobalRuleRegistry.Register("no-proto", no_proto.NoProtoRule)
+	GlobalRuleRegistry.Register("radix", radix.RadixRule)
+	GlobalRuleRegistry.Register("no-regex-spaces", no_regex_spaces.NoRegexSpacesRule)
+	GlobalRuleRegistry.Register("no-return-assign", no_return_assign.NoReturnAssignRule)
 	GlobalRuleRegistry.Register("no-script-url", no_script_url.NoScriptUrlRule)
 	GlobalRuleRegistry.Register("no-self-assign", no_self_assign.NoSelfAssignRule)
+	GlobalRuleRegistry.Register("no-self-compare", no_self_compare.NoSelfCompareRule)
+	GlobalRuleRegistry.Register("no-sequences", no_sequences.NoSequencesRule)
+	GlobalRuleRegistry.Register("no-shadow", no_shadow.NoShadowRule)
+	GlobalRuleRegistry.Register("no-shadow-restricted-names", no_shadow_restricted_names.NoShadowRestrictedNamesRule)
+	GlobalRuleRegistry.Register("strict", strict.StrictRule)
 	GlobalRuleRegistry.Register("no-template-curly-in-string", no_template_curly_in_string.NoTemplateCurlyInString)
+	GlobalRuleRegistry.Register("no-useless-computed-key", no_useless_computed_key.NoUselessComputedKeyRule)
+	GlobalRuleRegistry.Register("no-useless-concat", no_useless_concat.NoUselessConcatRule)
 	GlobalRuleRegistry.Register("no-sparse-arrays", no_sparse_arrays.NoSparseArraysRule)
+	GlobalRuleRegistry.Register("no-extra-boolean-cast", no_extra_boolean_cast.NoExtraBooleanCastRule)
+	GlobalRuleRegistry.Register("no-unneeded-ternary", no_unneeded_ternary.NoUnneededTernaryRule)
 	GlobalRuleRegistry.Register("no-undef", no_undef.NoUndefRule)
 	GlobalRuleRegistry.Register("no-undef-init", no_undef_init.NoUndefInitRule)
 	GlobalRuleRegistry.Register("prefer-const", prefer_const.PreferConstRule)
+	GlobalRuleRegistry.Register("prefer-promise-reject-errors", core_prefer_promise_reject_errors.PreferPromiseRejectErrorsRule)
+	GlobalRuleRegistry.Register("prefer-template", prefer_template.PreferTemplateRule)
 	GlobalRuleRegistry.Register("no-this-before-super", no_this_before_super.NoThisBeforeSuperRule)
 	GlobalRuleRegistry.Register("no-var", no_var.NoVarRule)
 	GlobalRuleRegistry.Register("no-with", no_with.NoWithRule)
 	GlobalRuleRegistry.Register("prefer-rest-params", prefer_rest_params.PreferRestParamsRule)
+	GlobalRuleRegistry.Register("prefer-spread", prefer_spread.PreferSpreadRule)
 	GlobalRuleRegistry.Register("no-empty-character-class", no_empty_character_class.NoEmptyCharacterClassRule)
 	GlobalRuleRegistry.Register("no-invalid-regexp", no_invalid_regexp.NoInvalidRegexpRule)
 	GlobalRuleRegistry.Register("no-iterator", no_iterator.NoIteratorRule)
@@ -575,6 +670,16 @@ func registerAllCoreEslintRules() {
 	GlobalRuleRegistry.Register("no-unmodified-loop-condition", no_unmodified_loop_condition.NoUnmodifiedLoopConditionRule)
 	GlobalRuleRegistry.Register("no-unreachable", no_unreachable.NoUnreachableRule)
 	GlobalRuleRegistry.Register("require-atomic-updates", require_atomic_updates.RequireAtomicUpdatesRule)
+	GlobalRuleRegistry.Register("object-shorthand", object_shorthand.ObjectShorthandRule)
+	GlobalRuleRegistry.Register("no-dupe-else-if", no_dupe_else_if.NoDupeElseIfRule)
+	GlobalRuleRegistry.Register("no-throw-literal", no_throw_literal.NoThrowLiteralRule)
+	GlobalRuleRegistry.Register("no-useless-call", no_useless_call.NoUselessCallRule)
+	GlobalRuleRegistry.Register("no-useless-catch", no_useless_catch.NoUselessCatchRule)
+	GlobalRuleRegistry.Register("no-useless-rename", no_useless_rename.NoUselessRenameRule)
+	GlobalRuleRegistry.Register("no-useless-constructor", no_useless_constructor.NoUselessConstructorRule)
+	GlobalRuleRegistry.Register("no-prototype-builtins", no_prototype_builtins.NoPrototypeBuiltinsRule)
+	GlobalRuleRegistry.Register("require-yield", require_yield.RequireYieldRule)
+	GlobalRuleRegistry.Register("symbol-description", symbol_description.SymbolDescriptionRule)
 }
 
 // isFileIgnored checks if a file is matched by ignore patterns, evaluated sequentially.
@@ -725,6 +830,20 @@ type MergedConfig struct {
 	Settings        Settings
 	LanguageOptions *LanguageOptions
 	Plugins         map[string]struct{}
+}
+
+// IsFileIgnored reports whether filePath is excluded by the config's global
+// `ignores` patterns. It is distinct from GetConfigForFile returning nil,
+// which also covers "no entry matched this file" — callers that need ESLint's
+// "ignores hides the file from the linter entirely" semantics (including
+// type-check diagnostics and file counts) should use this method.
+func (config RslintConfig) IsFileIgnored(filePath string, cwd string) bool {
+	patterns := ExtractConfigIgnores(config)
+	if len(patterns) == 0 {
+		return false
+	}
+	return isDirBlockedByIgnores(filePath, patterns, cwd) ||
+		isFileIgnored(filePath, patterns, cwd)
 }
 
 // GetConfigForFile computes the merged configuration for a file following ESLint flat config semantics.

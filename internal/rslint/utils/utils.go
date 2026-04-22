@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/i2y/ramune/internal/rslint/shim/ast"
 	"github.com/i2y/ramune/internal/rslint/shim/checker"
@@ -161,6 +162,48 @@ func Flatten[T any](array [][]T) []T {
 	return result
 }
 
+// IsConstructorName reports whether `name` follows the ESLint constructor
+// naming convention: the first character that is not `_`, `$`, or an ASCII
+// digit is uppercase. Names consisting only of `_`, `$` and ASCII digits
+// (e.g. `_`, `$$`, `_8`) are not treated as constructors.
+//
+// Matches the `isConstructor` helper used by ESLint's `new-cap` and
+// `object-shorthand` rules, including Unicode identifier characters
+// (e.g. `Π`). ESLint's regex `/[^_$0-9]/u` pairs an ASCII-only digit range
+// with a Unicode-aware `toUpperCase()` check — we mirror that: the digit
+// prefix is strictly ASCII while the case test is `unicode.IsUpper`.
+func IsConstructorName(name string) bool {
+	for _, r := range name {
+		if r == '_' || r == '$' || (r >= '0' && r <= '9') {
+			continue
+		}
+		// First non-prefix rune: constructor iff uppercase.
+		return unicode.IsUpper(r)
+	}
+	return false
+}
+
+// IsStringLiteralOrTemplate reports whether node is a string literal or a
+// template literal (with or without substitutions). Matches the semantics of
+// ESLint's `astUtils.isStringLiteral`, which treats `Literal{string}` and
+// `TemplateLiteral` as equivalent. The shim's `ast.IsStringLiteralLike` only
+// covers `StringLiteral` and `NoSubstitutionTemplateLiteral`, so we also
+// include `TemplateExpression` (templates with `${}`).
+func IsStringLiteralOrTemplate(node *ast.Node) bool {
+	return node != nil && (ast.IsStringLiteralLike(node) || node.Kind == ast.KindTemplateExpression)
+}
+
+// IsPlusBinaryExpression reports whether node is a `+` binary expression.
+// Covers both string concatenation and numeric addition — callers that only
+// care about concatenation must additionally inspect the operands.
+func IsPlusBinaryExpression(node *ast.Node) bool {
+	if node == nil || node.Kind != ast.KindBinaryExpression {
+		return false
+	}
+	bin := node.AsBinaryExpression()
+	return bin != nil && bin.OperatorToken != nil && bin.OperatorToken.Kind == ast.KindPlusToken
+}
+
 func IncludesModifier(node interface{ Modifiers() *ast.ModifierList }, modifier ast.Kind) bool {
 	modifiers := node.Modifiers()
 	if modifiers == nil {
@@ -286,6 +329,31 @@ func ToStringSlice(val interface{}) []string {
 		return nil
 	}
 	return result
+}
+
+// NeedsLeadingSpaceForReplacement reports whether inserting `replacement`
+// at `insertPos` in `src` would merge with the preceding character into a
+// single identifier token. Callers use this when synthesizing a fix whose
+// text starts with an identifier (e.g. `Boolean(foo)`, `Number(foo)`,
+// `String(foo)`) to decide whether a leading space is required.
+//
+// Mirrors the identifier/keyword case of ESLint's `canTokensBeAdjacent`:
+// `typeof+foo` replaced with `Number(foo)` would otherwise become
+// `typeofNumber(foo)` (a single identifier). Multi-byte identifier chars
+// are handled via `scanner.IsIdentifierPart` / `scanner.IsIdentifierStart`.
+func NeedsLeadingSpaceForReplacement(src string, insertPos int, replacement string) bool {
+	if insertPos <= 0 || insertPos > len(src) || replacement == "" {
+		return false
+	}
+	firstRune, _ := utf8.DecodeRuneInString(replacement)
+	if firstRune == utf8.RuneError || !scanner.IsIdentifierStart(firstRune) {
+		return false
+	}
+	prevRune, _ := utf8.DecodeLastRuneInString(src[:insertPos])
+	if prevRune == utf8.RuneError {
+		return false
+	}
+	return scanner.IsIdentifierPart(prevRune)
 }
 
 // NaturalCompare compares two strings using natural sort order,

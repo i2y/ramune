@@ -2,7 +2,87 @@ package utils
 
 import (
 	"github.com/i2y/ramune/internal/rslint/shim/ast"
+	"github.com/i2y/ramune/internal/rslint/shim/checker"
 )
+
+// IsNameShadowedBetween walks from `node` up to (but not including) `boundary`,
+// returning true if any intermediate scope introduces a binding for `name`.
+//
+// Scopes examined:
+//   - Function-like parameter lists (covers all 7 function-like kinds).
+//   - Block-scoped declarations (var/let/const/function/class inside a Block).
+//   - Catch-clause variable bindings (including destructured patterns).
+//   - For-statement `let`/`const` init (scoped to the loop).
+//   - For-in / for-of `let`/`const` init (scoped to the loop).
+//   - Class declaration/expression names (scoped to the class body).
+//
+// Use this when a rule tracks a specific declaration (e.g. a parameter, class,
+// or function name) and needs to ignore references that were shadowed before
+// they reached the declaration site. For scope walks that should also examine
+// the SourceFile or module boundary, use `IsShadowed` instead.
+func IsNameShadowedBetween(node *ast.Node, boundary *ast.Node, name string) bool {
+	for current := node.Parent; current != nil && current != boundary; current = current.Parent {
+		if ast.IsFunctionLikeDeclaration(current) {
+			if HasShadowingParameter(current, name) {
+				return true
+			}
+		}
+		switch current.Kind {
+		case ast.KindBlock:
+			if HasShadowingDeclaration(current, name) {
+				return true
+			}
+		case ast.KindCatchClause:
+			cc := current.AsCatchClause()
+			if cc != nil && cc.VariableDeclaration != nil {
+				vd := cc.VariableDeclaration.AsVariableDeclaration()
+				if vd != nil && vd.Name() != nil && HasNameInBindingPattern(vd.Name(), name) {
+					return true
+				}
+			}
+		case ast.KindForStatement:
+			forStmt := current.AsForStatement()
+			if forStmt != nil && forStmt.Initializer != nil &&
+				forStmt.Initializer.Kind == ast.KindVariableDeclarationList &&
+				HasVarDeclListWithName(forStmt.Initializer, name) {
+				return true
+			}
+		case ast.KindForInStatement, ast.KindForOfStatement:
+			stmt := current.AsForInOrOfStatement()
+			if stmt != nil && stmt.Initializer != nil &&
+				stmt.Initializer.Kind == ast.KindVariableDeclarationList &&
+				HasVarDeclListWithName(stmt.Initializer, name) {
+				return true
+			}
+		case ast.KindClassDeclaration, ast.KindClassExpression:
+			if n := current.Name(); n != nil && n.Kind == ast.KindIdentifier && n.Text() == name {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// GetReferenceSymbol returns the variable symbol for the given identifier.
+// When the identifier is the key of a shorthand property assignment in a
+// destructuring pattern (e.g., `({foo} = bar)`), it returns the value-binding
+// symbol rather than the property symbol that `GetSymbolAtLocation` would
+// otherwise produce.
+func GetReferenceSymbol(node *ast.Node, typeChecker *checker.Checker) *ast.Symbol {
+	if node == nil || typeChecker == nil {
+		return nil
+	}
+	parent := node.Parent
+	if parent != nil && parent.Kind == ast.KindShorthandPropertyAssignment {
+		shorthand := parent.AsShorthandPropertyAssignment()
+		if shorthand != nil && shorthand.Name() == node {
+			if symbol := typeChecker.GetShorthandAssignmentValueSymbol(parent); symbol != nil {
+				return symbol
+			}
+		}
+	}
+	return typeChecker.GetSymbolAtLocation(node)
+}
 
 // IsShadowed checks whether the given identifier name is shadowed by a local
 // declaration at the usage site. It walks from node up to the SourceFile,
@@ -113,7 +193,7 @@ func HasShadowingParameter(node *ast.Node, name string) bool {
 }
 
 // HasShadowingDeclaration checks if a block contains a variable, function,
-// or class declaration whose name matches the given name.
+// class, enum, or namespace declaration whose name matches the given name.
 func HasShadowingDeclaration(node *ast.Node, name string) bool {
 	if node.Kind != ast.KindBlock {
 		return false
@@ -162,6 +242,19 @@ func HasShadowingDeclaration(node *ast.Node, name string) bool {
 			}
 		case ast.KindClassDeclaration:
 			if n := stmt.Name(); n != nil && n.Kind == ast.KindIdentifier && n.Text() == name {
+				return true
+			}
+		case ast.KindEnumDeclaration:
+			if n := stmt.Name(); n != nil && n.Kind == ast.KindIdentifier && n.Text() == name {
+				return true
+			}
+		case ast.KindModuleDeclaration:
+			// `namespace X {}` / `module X {}` introduce a value binding when
+			// named by an identifier. Skip ambient modules (`declare module "x"`),
+			// which use a string literal name and don't bind a variable.
+			modDecl := stmt.AsModuleDeclaration()
+			if modDecl != nil && modDecl.Name() != nil &&
+				modDecl.Name().Kind == ast.KindIdentifier && modDecl.Name().Text() == name {
 				return true
 			}
 		}
@@ -213,8 +306,11 @@ func HasLocalDeclarationInStatements(statements []*ast.Node, name string) bool {
 			}
 
 		case ast.KindModuleDeclaration:
+			// Ambient module (`declare module "x"`) uses a string-literal name
+			// and doesn't bind a variable — only identifier-named namespaces do.
 			modDecl := stmt.AsModuleDeclaration()
-			if modDecl != nil && modDecl.Name() != nil && modDecl.Name().Text() == name {
+			if modDecl != nil && modDecl.Name() != nil &&
+				modDecl.Name().Kind == ast.KindIdentifier && modDecl.Name().Text() == name {
 				return true
 			}
 

@@ -58,7 +58,7 @@ for pkg in config linter rule rules utils; do
 done
 
 # rslint plugins
-for pkg in plugins/import plugins/jest plugins/react plugins/typescript; do
+for pkg in plugins/import plugins/jest plugins/promise plugins/react plugins/typescript; do
     copy_pkg_recursive "$RSLINT_SRC/internal" "$DST" "$pkg"
 done
 
@@ -69,6 +69,7 @@ SHIM_PKGS=(
     checker
     compiler
     core
+    evaluator
     scanner
     tsoptions
     tspath

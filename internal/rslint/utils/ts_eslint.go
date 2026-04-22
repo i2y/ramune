@@ -196,7 +196,13 @@ func GetFunctionHeadLoc(sourceFile *ast.SourceFile, node *ast.Node) core.TextRan
 	switch node.Kind {
 	case ast.KindMethodDeclaration, ast.KindGetAccessor, ast.KindSetAccessor, ast.KindConstructor:
 		start := TrimNodeTextRange(sourceFile, node)
-		if parenPos := findOpenParenPos(sourceFile, node); parenPos >= 0 {
+		// Start scanning for the parameters `(` after the method name to avoid
+		// matching the `(` of a decorator factory call like `@dec()`.
+		searchFrom := node.Pos()
+		if name := node.Name(); name != nil {
+			searchFrom = name.End()
+		}
+		if parenPos := findOpenParenPosFrom(sourceFile, searchFrom, node.End()); parenPos >= 0 {
 			return start.WithEnd(parenPos)
 		}
 		if node.Body() != nil {
@@ -257,8 +263,12 @@ func GetFunctionHeadLoc(sourceFile *ast.SourceFile, node *ast.Node) core.TextRan
 
 // findOpenParenPos finds the position of the first '(' token in a function node.
 func findOpenParenPos(sourceFile *ast.SourceFile, node *ast.Node) int {
-	s := scanner.GetScannerForSourceFile(sourceFile, node.Pos())
-	end := node.End()
+	return findOpenParenPosFrom(sourceFile, node.Pos(), node.End())
+}
+
+// findOpenParenPosFrom scans for the first '(' token within [start, end).
+func findOpenParenPosFrom(sourceFile *ast.SourceFile, start int, end int) int {
+	s := scanner.GetScannerForSourceFile(sourceFile, start)
 	for s.TokenStart() < end {
 		if s.Token() == ast.KindOpenParenToken {
 			return s.TokenStart()
@@ -806,6 +816,12 @@ func GetStaticPropertyName(nameNode *ast.Node) (string, bool) {
 			return expr.AsNoSubstitutionTemplateLiteral().Text, true
 		case ast.KindNullKeyword:
 			return "null", true
+		case ast.KindTrueKeyword:
+			return "true", true
+		case ast.KindFalseKeyword:
+			return "false", true
+		case ast.KindRegularExpressionLiteral:
+			return expr.AsRegularExpressionLiteral().Text, true
 		}
 		return "", false
 	default:
@@ -1236,4 +1252,313 @@ func VisitDestructuringIdentifiers(node *ast.Node, fn func(*ast.Node)) {
 		}
 		return false
 	})
+}
+
+// IsSpecificMemberAccess reports whether `node` is a member access of the
+// form `<objectName>.<methodName>`. Both dot (`Object.defineProperty`) and
+// bracket-with-static-string (`Object['defineProperty']`) forms are matched,
+// each transparently unwrapping parentheses (e.g. `(Object).defineProperty`)
+// and optional chaining (`Object?.defineProperty`, `Object?.['defineProperty']`).
+// Mirrors ESLint's `astUtils.isSpecificMemberAccess`.
+//
+// If `objectName` is the empty string, the object identity check is skipped
+// — any expression on the left of the method is accepted — matching ESLint's
+// behavior when the `objectName` argument is `null`.
+func IsSpecificMemberAccess(node *ast.Node, objectName, methodName string) bool {
+	node = ast.SkipParentheses(node)
+	if node == nil {
+		return false
+	}
+	var obj *ast.Node
+	switch node.Kind {
+	case ast.KindPropertyAccessExpression:
+		pae := node.AsPropertyAccessExpression()
+		name := pae.Name()
+		if name == nil || !ast.IsIdentifier(name) || name.AsIdentifier().Text != methodName {
+			return false
+		}
+		obj = pae.Expression
+	case ast.KindElementAccessExpression:
+		eae := node.AsElementAccessExpression()
+		argText, ok := GetStaticExpressionValue(ast.SkipParentheses(eae.ArgumentExpression))
+		if !ok || argText != methodName {
+			return false
+		}
+		obj = eae.Expression
+	default:
+		return false
+	}
+	if objectName == "" {
+		return true
+	}
+	obj = ast.SkipParentheses(obj)
+	return obj != nil && ast.IsIdentifier(obj) && obj.AsIdentifier().Text == objectName
+}
+
+// AreNodesStructurallyEqual reports whether two AST subtrees have identical
+// syntactic shape and leaf values, transparently unwrapping
+// ParenthesizedExpression on both sides at every level. Useful for rules that
+// compare computed keys, duplicate case expressions, or any pattern that must
+// be evaluated at the source-syntax level rather than by semantic reference
+// identity (for which see [IsSameReference]).
+//
+// Leaf comparison:
+//   - Identifier / PrivateIdentifier: `.Text` equality.
+//   - StringLiteral / NoSubstitutionTemplateLiteral / TemplateHead / Middle /
+//     Tail / RegularExpressionLiteral: textual equality.
+//   - NumericLiteral: normalized numeric value equality (e.g. `0x10` == `16`).
+//   - BigIntLiteral: normalized bigint value equality (e.g. `0x1n` == `1n`).
+//   - All other kinds (keyword tokens, punctuation tokens, composite nodes):
+//     Kind must match, and the non-nil children visited by [ast.Node.ForEachChild]
+//     must be pairwise structurally equal in order.
+//
+// Comments and whitespace are not part of the AST and are therefore ignored
+// (so `a+b` and `a + b` compare equal). Optional chaining IS preserved
+// (`a.b` != `a?.b`). Type-only syntax (`as T`, `<T>x`, `x!`, `x satisfies T`)
+// is compared as-is — callers that want to see through it should strip it
+// first via [ast.SkipOuterExpressions] before calling this helper.
+func AreNodesStructurallyEqual(a, b *ast.Node) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	a = ast.SkipParentheses(a)
+	b = ast.SkipParentheses(b)
+	if a == nil || b == nil {
+		return a == b
+	}
+	if a.Kind != b.Kind {
+		return false
+	}
+	switch a.Kind {
+	case ast.KindIdentifier:
+		return a.AsIdentifier().Text == b.AsIdentifier().Text
+	case ast.KindPrivateIdentifier:
+		return a.AsPrivateIdentifier().Text == b.AsPrivateIdentifier().Text
+	case ast.KindStringLiteral:
+		return a.AsStringLiteral().Text == b.AsStringLiteral().Text
+	case ast.KindNoSubstitutionTemplateLiteral:
+		return a.AsNoSubstitutionTemplateLiteral().Text == b.AsNoSubstitutionTemplateLiteral().Text
+	case ast.KindNumericLiteral:
+		// Note: tsgo already normalizes numeric literals at parse time
+		// (`0x1` / `1e2` / `1.0` are all stored as their decimal form).
+		// Normalize again to be explicit about the intent; two literals
+		// that differ only in source form (e.g. `0x1` vs `1`) are treated
+		// as equal here. This is slightly more forgiving than ESLint's
+		// token-level comparison, which would see them as distinct — but
+		// the raw source form is not recoverable from the tsgo AST
+		// without a *SourceFile, which we deliberately don't take.
+		return NormalizeNumericLiteral(a.AsNumericLiteral().Text) ==
+			NormalizeNumericLiteral(b.AsNumericLiteral().Text)
+	case ast.KindBigIntLiteral:
+		return NormalizeBigIntLiteral(a.AsBigIntLiteral().Text) ==
+			NormalizeBigIntLiteral(b.AsBigIntLiteral().Text)
+	case ast.KindTemplateHead, ast.KindTemplateMiddle, ast.KindTemplateTail,
+		ast.KindRegularExpressionLiteral:
+		return a.Text() == b.Text()
+	case ast.KindPrefixUnaryExpression:
+		// tsgo stores the operator as a Kind field, not as a child node, so
+		// ForEachChild would otherwise collapse `+x` and `-x` (both have one
+		// child, the Operand). Compare the Operator field before recursing.
+		ap, bp := a.AsPrefixUnaryExpression(), b.AsPrefixUnaryExpression()
+		return ap.Operator == bp.Operator && AreNodesStructurallyEqual(ap.Operand, bp.Operand)
+	case ast.KindPostfixUnaryExpression:
+		// Same gotcha as PrefixUnaryExpression — ForEachChild omits Operator.
+		ap, bp := a.AsPostfixUnaryExpression(), b.AsPostfixUnaryExpression()
+		return ap.Operator == bp.Operator && AreNodesStructurallyEqual(ap.Operand, bp.Operand)
+	case ast.KindMetaProperty:
+		// `new.target` and `import.meta` both use MetaProperty; the meta
+		// keyword lives in KeywordToken (Kind), which ForEachChild doesn't
+		// visit. In practice `name` (target vs meta) already distinguishes
+		// them, but compare the keyword explicitly for principled alignment.
+		am, bm := a.AsMetaProperty(), b.AsMetaProperty()
+		return am.KeywordToken == bm.KeywordToken && AreNodesStructurallyEqual(am.Name(), bm.Name())
+	}
+	// Composite / pure-token kinds: compare children pairwise. Token kinds
+	// without children (operators, keywords) fall through the empty loop and
+	// return true, which is correct — Kind already uniquely identifies them.
+	var aKids, bKids []*ast.Node
+	a.ForEachChild(func(c *ast.Node) bool {
+		aKids = append(aKids, c)
+		return false
+	})
+	b.ForEachChild(func(c *ast.Node) bool {
+		bKids = append(bKids, c)
+		return false
+	})
+	if len(aKids) != len(bKids) {
+		return false
+	}
+	for i := range aKids {
+		if !AreNodesStructurallyEqual(aKids[i], bKids[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// HasSameTokens reports whether two nodes produce the same token stream when
+// viewed at the raw-source level — matching ESLint's
+// `sourceCode.getTokens(a)` vs `sourceCode.getTokens(b)` semantics, which
+// preserves the original source form of each literal. Unlike
+// [AreNodesStructurallyEqual], this helper distinguishes:
+//
+//   - `'a'` vs `"a"` (different quote style)
+//   - `0x1` vs `1` (different numeric source form)
+//   - `1n` vs `0x1n` (different bigint source form)
+//   - `1e2` vs `100` / `1.0` vs `1`
+//
+// Implementation: we recurse on the AST using [ast.SkipParentheses] and
+// [ast.Node.ForEachChild]. At leaf nodes (no children — identifiers,
+// literals, keyword tokens) we compare the raw source slice via
+// [scanner.GetSourceTextOfNodeFromSourceFile]. For composite nodes we
+// recurse on children pairwise AND scan the "gaps" between children
+// (and before/after the first/last child) with [scanner.Scanner] to pick
+// up punctuation, keyword tokens, and operators that tsgo's ForEachChild
+// does not visit — `(` `)` `,` `.` between children of a CallExpression,
+// the `+`/`-` operator of a PrefixUnaryExpression, the `new`/`import`
+// keyword of a MetaProperty, and so on. Whitespace and comments in a
+// gap are trivia (scanner skips them), so the comparison is
+// whitespace-insensitive exactly like ESLint's `getTokens`.
+//
+// Parens: stripped once at the top level (matches ESLint / ESTree, where
+// outer parens wrapping an operand aren't nodes and their tokens fall
+// outside the operand's range). Parens INSIDE a compound expression —
+// e.g. `(x).y` — ARE visible tokens in ESLint's view, and preserved here
+// by the recursion not calling SkipParentheses again.
+//
+// Templates: TemplateExpression / TemplateSpan children already cover
+// the whole template source range contiguously, so the gap between any
+// two children inside a template is empty. This means gap scanning never
+// enters template-expression context and thus never needs the scanner's
+// `ReScanTemplateToken` (which isn't exposed through the shim).
+//
+// Use this helper when porting an ESLint rule whose oracle is token-level
+// equality (e.g. `no-self-compare`'s `hasSameTokens`); use
+// [AreNodesStructurallyEqual] when the rule's oracle is structural AST
+// equality and literal-form / trivia differences should NOT matter (e.g.
+// duplicate case detection).
+func HasSameTokens(sourceFile *ast.SourceFile, a, b *ast.Node) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return hasSameTokens(sourceFile, ast.SkipParentheses(a), ast.SkipParentheses(b))
+}
+
+// hasSameTokens is the recursive core. It does NOT call SkipParentheses
+// on its inputs — parens nested inside a compound expression are visible
+// tokens in ESLint's per-node getTokens view (e.g. `(x).y` has tokens
+// `[(, x, ), ., y]`), so a recursive paren strip would collapse them.
+func hasSameTokens(sf *ast.SourceFile, a, b *ast.Node) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	if a.Kind != b.Kind {
+		return false
+	}
+	aKids, bKids := collectKids(a), collectKids(b)
+	// Leaves (no children via ForEachChild). Two sub-classes collide here:
+	//   1. True leaves (Identifier, Literal, keyword tokens) — raw source
+	//      text is exactly the single token's text, so raw-text equality
+	//      is correct.
+	//   2. Empty composites (`[]`, `{}`) — raw text includes the brackets
+	//      AND any whitespace/comments inside, so raw-text would
+	//      incorrectly distinguish `[]` from `[ ]` or `[\n/*c*/\n]`. ESLint's
+	//      `getTokens` treats these as equivalent (only `[`, `]` tokens).
+	// For class 2 we scan tokens; for class 1 we keep the raw-text shortcut
+	// because some leaf kinds (e.g. TemplateHead / TemplateTail inside a
+	// TemplateExpression) cannot be re-scanned standalone — the scanner
+	// needs `ReScanTemplateToken` context that isn't exposed through the
+	// shim.
+	if len(aKids) == 0 && len(bKids) == 0 {
+		switch a.Kind {
+		case ast.KindArrayLiteralExpression, ast.KindObjectLiteralExpression:
+			return sameTokensInRange(sf, a.Pos(), a.End(), b.Pos(), b.End())
+		}
+		return scanner.GetSourceTextOfNodeFromSourceFile(sf, a, false) ==
+			scanner.GetSourceTextOfNodeFromSourceFile(sf, b, false)
+	}
+	if len(aKids) != len(bKids) {
+		return false
+	}
+	// Compare children pairwise AND compare the token sequences living in
+	// the gaps between children (and the prefix / suffix gaps). Gap tokens
+	// are the operators / punctuation / keywords that ForEachChild does not
+	// yield as nodes — `(` `)` `,` `.` between call arguments, `+` / `-` for
+	// PrefixUnaryExpression, `new` / `import` for MetaProperty, and so on.
+	//
+	// With zero children the loop is skipped and the two nodes are compared
+	// entirely via the trailing gap scan — this covers both simple leaves
+	// (identifiers, literals, keyword tokens: one token each) AND empty
+	// composites (`[]`, `{}`: bracket/brace tokens only). The scanner treats
+	// whitespace and comments as trivia, so `[]` and `[ ]` compare equal —
+	// matching ESLint's `getTokens` semantics.
+	prevA, prevB := a.Pos(), b.Pos()
+	for i := range aKids {
+		if !sameTokensInRange(sf, prevA, aKids[i].Pos(), prevB, bKids[i].Pos()) {
+			return false
+		}
+		if !hasSameTokens(sf, aKids[i], bKids[i]) {
+			return false
+		}
+		prevA, prevB = aKids[i].End(), bKids[i].End()
+	}
+	return sameTokensInRange(sf, prevA, a.End(), prevB, b.End())
+}
+
+func collectKids(n *ast.Node) []*ast.Node {
+	var out []*ast.Node
+	n.ForEachChild(func(c *ast.Node) bool { out = append(out, c); return false })
+	return out
+}
+
+// sameTokensInRange reports whether scanning [aStart, aEnd) and
+// [bStart, bEnd) produces the same sequence of (kind, raw text) pairs.
+// Trivia (whitespace, comments) is skipped by the scanner, matching
+// ESLint's `getTokens` which excludes comments by default.
+func sameTokensInRange(sf *ast.SourceFile, aStart, aEnd, bStart, bEnd int) bool {
+	var sa, sb *scanner.Scanner
+	if aStart < aEnd {
+		sa = scanner.GetScannerForSourceFile(sf, aStart)
+	}
+	if bStart < bEnd {
+		sb = scanner.GetScannerForSourceFile(sf, bStart)
+	}
+	liveA := func() bool {
+		return sa != nil && sa.Token() != ast.KindEndOfFile && sa.TokenStart() < aEnd && sa.TokenEnd() <= aEnd
+	}
+	liveB := func() bool {
+		return sb != nil && sb.Token() != ast.KindEndOfFile && sb.TokenStart() < bEnd && sb.TokenEnd() <= bEnd
+	}
+	for {
+		la, lb := liveA(), liveB()
+		if !la && !lb {
+			return true
+		}
+		if la != lb || sa.Token() != sb.Token() || sa.TokenText() != sb.TokenText() {
+			return false
+		}
+		sa.Scan()
+		sb.Scan()
+	}
+}
+
+// IsArgumentOfSpecificCall reports whether `node` sits at argument position
+// `index` of a call to `<objectName>.<methodName>(...)` — covering optional
+// chaining and parenthesized callee expressions, e.g. `(Object?.defineProperty)(...)`.
+// This is the common shape for detecting property-descriptor arguments in
+// `Object.defineProperty` / `Reflect.defineProperty`, mutation targets in
+// `Object.assign`, and similar well-known API calls.
+func IsArgumentOfSpecificCall(node *ast.Node, index int, objectName, methodName string) bool {
+	if node == nil || node.Parent == nil || node.Parent.Kind != ast.KindCallExpression {
+		return false
+	}
+	call := node.Parent.AsCallExpression()
+	if call.Arguments == nil {
+		return false
+	}
+	args := call.Arguments.Nodes
+	if index < 0 || index >= len(args) || args[index] != node {
+		return false
+	}
+	return IsSpecificMemberAccess(call.Expression, objectName, methodName)
 }
