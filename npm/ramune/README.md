@@ -1,4 +1,4 @@
-# ramune
+# @ramunejs/cli
 
 JavaScript/TypeScript runtime and embeddable JS engine for Go. This package ships the Ramune CLI via npm.
 
@@ -7,7 +7,7 @@ Project homepage: https://github.com/i2y/ramune
 ## Install
 
 ```
-npm install -g ramune
+npm install -g @ramunejs/cli
 ```
 
 The correct platform-specific binary is installed automatically via `optionalDependencies`.

@@ -1,5 +1,5 @@
 {
-  "name": "@ramune/__PLATFORM__",
+  "name": "@ramunejs/__PLATFORM__",
   "version": "__VERSION__",
   "description": "Ramune CLI binary for __PLATFORM__. Installed automatically as an optional dependency of the `ramune` package.",
   "homepage": "https://github.com/i2y/ramune",

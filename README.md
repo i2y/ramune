@@ -51,7 +51,7 @@ Five use cases, five audiences. Jump to the section that matches your motivation
 
 **4. Run JS/TS from the command line.** Not our main battlefield — Bun and Deno are faster for pure CLI use. But Ramune ships `ramune run` / `test` / `check` / `fmt` / `lint` / `repl` / `compile` with tsgo + rslint + esbuild built in, and is competitive (Node-equivalent HTTP, 1.3× faster than Node on CPU-fib). → see [Quick Start](#quick-start)
 
-**5. You don't know Go.** `npm install -g ramune` ships prebuilt binaries — no Go toolchain, no `go install`. Self-host Workers handlers (#3), run / test / type-check / fmt / lint / REPL TS/JS (#4), `ramune compile` to a single binary — all accessible from the npm install. Only the embed-in-Go API (#1) and custom build tags still want the Go toolchain. → see [Install via npm](#via-npm)
+**5. You don't know Go.** `npm install -g @ramunejs/cli` ships prebuilt binaries — no Go toolchain, no `go install`. Self-host Workers handlers (#3), run / test / type-check / fmt / lint / REPL TS/JS (#4), `ramune compile` to a single binary — all accessible from the npm install. Only the embed-in-Go API (#1) and custom build tags still want the Go toolchain. → see [Install via npm](#via-npm)
 
 ## Key capabilities
 
@@ -97,7 +97,7 @@ All three are pure Go at build time: `go build` needs no C toolchain. Runtime de
 No Go toolchain required.
 
 ```bash
-npm install -g ramune
+npm install -g @ramunejs/cli
 ```
 
 Prebuilt binaries for macOS arm64, Linux x64/arm64, and Windows x64/arm64; the correct one is resolved via `optionalDependencies`. macOS ships JavaScriptCore with JIT enabled (ad-hoc codesigned with the required entitlement in CI); if a JIT error ever shows up, run `ramune setup-jit`. Linux and Windows use the QuickJS-NG (qjswasm) backend — zero host dependencies and `FROM scratch` compatibility, at the cost of JSC-level CPU throughput. For JavaScriptCore throughput on Linux, use `go install` (see below).

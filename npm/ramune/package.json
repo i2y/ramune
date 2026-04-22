@@ -1,5 +1,5 @@
 {
-  "name": "ramune",
+  "name": "@ramunejs/cli",
   "version": "0.0.0",
   "description": "JavaScript/TypeScript runtime for Go. Workers-style self-hosting, Node/Bun API compat. This is the CLI distribution.",
   "homepage": "https://github.com/i2y/ramune",
@@ -31,11 +31,11 @@
     "LICENSE"
   ],
   "optionalDependencies": {
-    "@ramune/darwin-arm64": "0.0.0",
-    "@ramune/linux-x64": "0.0.0",
-    "@ramune/linux-arm64": "0.0.0",
-    "@ramune/win32-x64": "0.0.0",
-    "@ramune/win32-arm64": "0.0.0"
+    "@ramunejs/darwin-arm64": "0.0.0",
+    "@ramunejs/linux-x64": "0.0.0",
+    "@ramunejs/linux-arm64": "0.0.0",
+    "@ramunejs/win32-x64": "0.0.0",
+    "@ramunejs/win32-arm64": "0.0.0"
   },
   "engines": {
     "node": ">=18"

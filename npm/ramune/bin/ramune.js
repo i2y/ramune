@@ -6,11 +6,11 @@ const path = require("node:path");
 const fs = require("node:fs");
 
 const PLATFORM_PACKAGES = {
-  "darwin-arm64": "@ramune/darwin-arm64",
-  "linux-x64": "@ramune/linux-x64",
-  "linux-arm64": "@ramune/linux-arm64",
-  "win32-x64": "@ramune/win32-x64",
-  "win32-arm64": "@ramune/win32-arm64",
+  "darwin-arm64": "@ramunejs/darwin-arm64",
+  "linux-x64": "@ramunejs/linux-x64",
+  "linux-arm64": "@ramunejs/linux-arm64",
+  "win32-x64": "@ramunejs/win32-x64",
+  "win32-arm64": "@ramunejs/win32-arm64",
 };
 
 const GO_INSTALL_URL =
