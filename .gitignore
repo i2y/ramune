@@ -37,3 +37,6 @@ Thumbs.db
 
 # Web Platform Tests checkout (cloned on demand by `make test-wpt`)
 test/wpt/
+
+# Landing page (docs/) node_modules; bundle.js itself is committed
+docs/node_modules/

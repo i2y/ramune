@@ -1,4 +1,4 @@
-.PHONY: all build build-cli build-toolchain build-goja build-qjswasm fmt fmt-check vet test test-goja test-qjswasm test-qjswasm-ci test-downstream test-wpt ci bench bench-go clean sync-tsgo sync-tsgo-pinned sync-rslint sync
+.PHONY: all build build-cli build-toolchain build-goja build-qjswasm fmt fmt-check vet test test-goja test-qjswasm test-qjswasm-ci test-downstream test-wpt ci bench bench-go clean sync-tsgo sync-tsgo-pinned sync-rslint sync site
 
 all: ci
 
@@ -111,3 +111,7 @@ sync: sync-tsgo sync-tsgo-pinned sync-rslint
 
 clean:
 	go clean -cache -testcache
+
+# Build the GitHub Pages landing page in docs/. Runs npm install on first run.
+site:
+	cd docs && npm install && npm run build
