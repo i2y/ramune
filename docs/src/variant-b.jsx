@@ -137,7 +137,7 @@ function VariantB() {
             textDecoration: "none",
           }}>
             <Marble size={18}/>
-            {tr("go get · quickstart", "go get · クイックスタート")}
+            {tr("install · quickstart", "インストール · クイックスタート")}
           </a>
           <button onClick={() => smoothScrollTo("#bench")} style={{
             padding: "12px 18px", borderRadius: 10, border: "1px solid rgba(10,22,40,.12)",
@@ -149,7 +149,7 @@ function VariantB() {
           <div style={{
             fontFamily: "JetBrains Mono, monospace", fontSize: 11.5,
             color: "rgba(10,22,40,.45)", marginLeft: 6,
-          }}>MIT · Go 1.26+</div>
+          }}>MIT · npm · Go 1.26+</div>
         </div>
 
         <div style={{
@@ -157,7 +157,7 @@ function VariantB() {
           marginTop: 48,
         }}>
           {[
-            { n: "01", t: tr("Run TS from CLI","CLIでTS実行"), d: tr("go install → ramune run hello.ts. One binary with run · test · compile · check · fmt · lint · repl, --sandbox, and --docker for untrusted code.","go install → ramune run hello.ts。run · test · compile · check · fmt · lint · repl がバイナリ 1 本、--sandbox / --docker で信頼できないコードも扱える。"), h: "cli", href: "#quickstart" },
+            { n: "01", t: tr("Run TS from CLI","CLIでTS実行"), d: tr("npm i -g ramune → ramune run hello.ts. One binary with run · test · compile · check · fmt · lint · repl, --sandbox, and --docker for untrusted code. Go toolchain optional.","npm i -g ramune → ramune run hello.ts。run · test · compile · check · fmt · lint · repl がバイナリ 1 本、--sandbox / --docker で信頼できないコードも扱える。Go 環境は任意。"), h: "cli", href: "#quickstart" },
             { n: "02", t: tr("Sandbox & permissions","サンドボックスと権限"), d: tr("Layered: language-level deny-all + allow-lists on every backend, plus WASM VM isolation via wazero when built with -tags qjswasm. Docker is an optional extra layer.","多層: どのバックエンドでも言語層の deny-all + allow-list、-tags qjswasm ビルドなら wazero の WASM VM 隔離も追加。Docker は任意の追加層。"), h: "sandbox", href: "#quickstart" },
             { n: "03", t: tr("Embed in Go","Go に埋め込む"), d: tr("Call any Go lib from JS. Same API across all three backends, zero Cgo at build time.","GoライブラリをJSから呼出し、3バックエンド共通API、ビルド時Cgo不要。"), h: "embed", href: "#backends" },
             { n: "04", t: tr("Self-host Workers","Workersセルフホスト"), d: tr("export default { fetch }. Compile handler + runtime into a single Go binary; run on your VM, bare metal, or scratch container.","export default { fetch }。ハンドラとランタイムを 1 つの Go バイナリに、自分の VM / bare metal / scratch コンテナで実行。"), h: "workers", href: "https://github.com/i2y/ramune/tree/main/examples/workers" },
@@ -330,8 +330,8 @@ function VariantB() {
             </div>
             <div style={{ fontSize: 13, color: "rgba(10,22,40,.55)", lineHeight: 1.55 }}>
               {tr(
-                "A JS/TS runtime you embed in Go. Three backends behind one API — JSC with JIT, QuickJS-NG on wazero, goja — plus compile-time --hybrid extraction and self-hosted Workers-style modules.",
-                "Go に組み込む JS/TS ランタイム。3 バックエンド (JSC+JIT / QuickJS-NG on wazero / goja) を 1 つの API で切替、コンパイル時 --hybrid 抽出、セルフホスト Workers 対応。"
+                "A JS/TS runtime — embed it in Go, or install via npm. Three backends behind one API (JSC+JIT, QuickJS-NG on wazero, goja), compile-time --hybrid extraction, self-hosted Workers-style modules.",
+                "JS/TS ランタイム — Go に組み込むか npm で入れる。3 バックエンド (JSC+JIT / QuickJS-NG on wazero / goja) を 1 つの API で切替、コンパイル時 --hybrid 抽出、セルフホスト Workers 対応。"
               )}
             </div>
           </div>
@@ -444,7 +444,10 @@ function BackendTable() {
 }
 
 function QuickstartSection() {
-  const cliCode = `${sy.c("# install the CLI + toolchain (check / fmt / lint / compile / transpile / typegen)")}
+  const cliCode = `${sy.c("# easiest: prebuilt binaries via npm, no Go toolchain required")}
+$ ${sy.f("npm")} install -g ramune
+
+${sy.c("# or via Go, for JSC+JIT on Linux or custom build tags")}
 $ ${sy.f("go install")} github.com/i2y/ramune/cmd/ramune@latest
 $ ${sy.f("go install")} github.com/i2y/ramune/cmd/ramune-toolchain@latest
 $ ${sy.f("ramune")} setup-jit   ${sy.c("# macOS: enable JIT (~10× faster)")}

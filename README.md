@@ -41,7 +41,7 @@ ramune compile worker.ts -o myworker   # bundle handler + runtime into one Go bi
 
 ## Who Ramune is for
 
-Four use cases, four audiences. Jump to the section that matches your motivation.
+Five use cases, five audiences. Jump to the section that matches your motivation.
 
 **1. Embed a JS engine in a Go program.** Competitors: `goja`, `otto`. Ramune's `goja` backend (`-tags goja`) is a drop-in replacement for existing goja users, with esbuild auto-lowering so modern JS syntax works. Switch to `-tags qjswasm` (pure-Go QuickJS-NG on wazero, ES2023) or the default JSC backend (JIT, 60×+ faster than goja on CPU-bound JS). Same API across all three — swap at build time to trade off startup vs throughput vs platform reach. Call any Go library from JS via `RegisterFunc`; expose typed Go functions as `require()`-able modules via `NativeModuleFromFuncs`. → see [Embed in Go](#embed-in-go)
 
@@ -50,6 +50,8 @@ Four use cases, four audiences. Jump to the section that matches your motivation
 **3. Self-host Cloudflare Workers-style handlers.** You have `export default { fetch, scheduled }` handlers and want them running on your VM, bare metal, or `FROM scratch` Docker. `ramune serve worker.ts` or `ramune compile worker.ts -o myworker` — single binary, no Wrangler, no Dockerfile, no Node. Default surface covers `fetch` / `env.KV` / `env.DB` / `env.SECRETS` / `ctx.waitUntil` / `scheduled` / cron / WinterCG; see the [Workers serve](#workers-style-modules-ramune-serve) section for the full scope (what ships, what's user-supplied, what's still partial).
 
 **4. Run JS/TS from the command line.** Not our main battlefield — Bun and Deno are faster for pure CLI use. But Ramune ships `ramune run` / `test` / `check` / `fmt` / `lint` / `repl` / `compile` with tsgo + rslint + esbuild built in, and is competitive (Node-equivalent HTTP, 1.3× faster than Node on CPU-fib). → see [Quick Start](#quick-start)
+
+**5. You don't know Go.** `npm install -g ramune` ships prebuilt binaries — no Go toolchain, no `go install`. Self-host Workers handlers (#3), run / test / type-check / fmt / lint / REPL TS/JS (#4), `ramune compile` to a single binary — all accessible from the npm install. Only the embed-in-Go API (#1) and custom build tags still want the Go toolchain. → see [Install via npm](#via-npm)
 
 ## Key capabilities
 
@@ -90,7 +92,21 @@ All three are pure Go at build time: `go build` needs no C toolchain. Runtime de
 
 ## Install
 
-### macOS
+### Via npm
+
+No Go toolchain required.
+
+```bash
+npm install -g ramune
+```
+
+Prebuilt binaries for macOS arm64, Linux x64/arm64, and Windows x64/arm64; the correct one is resolved via `optionalDependencies`. macOS ships JavaScriptCore with JIT enabled (ad-hoc codesigned with the required entitlement in CI); if a JIT error ever shows up, run `ramune setup-jit`. Linux and Windows use the QuickJS-NG (qjswasm) backend — zero host dependencies and `FROM scratch` compatibility, at the cost of JSC-level CPU throughput. For JavaScriptCore throughput on Linux, use `go install` (see below).
+
+### Via `go install`
+
+Use `go install` for JavaScriptCore throughput on Linux, non-default build tags, a smaller binary, or to embed the Go API directly.
+
+#### macOS
 
 JavaScriptCore is built into macOS — no extra dependencies.
 
@@ -100,7 +116,7 @@ go install github.com/i2y/ramune/cmd/ramune-toolchain@latest  # for check / fmt 
 ramune setup-jit   # enable JIT (~10x faster, recommended)
 ```
 
-### Linux
+#### Linux
 
 ```bash
 sudo apt install libjavascriptcoregtk-4.1-dev   # JSC runtime (required)
@@ -110,7 +126,7 @@ go install github.com/i2y/ramune/cmd/ramune-toolchain@latest  # for check / fmt 
 
 Multi-runtime (RuntimePool, worker_threads) works out of the box on x86_64. On arm64, gcc is required for cgo signal forwarding (`apt install gcc`).
 
-### Windows / Zero-dependency (qjswasm backend)
+#### Windows / Zero-dependency (qjswasm backend)
 
 ```bash
 go install -tags qjswasm github.com/i2y/ramune/cmd/ramune@latest
@@ -119,7 +135,7 @@ go install -tags qjswasm github.com/i2y/ramune/cmd/ramune-toolchain@latest  # op
 
 The qjswasm backend uses [fastschema/qjs](https://github.com/fastschema/qjs) — QuickJS-NG compiled to WebAssembly and driven by [wazero](https://github.com/tetratelabs/wazero)'s compiler-mode JIT (AOT WASM→native). Pure Go, ES2023, no shared libraries — works on **Windows**, macOS, and Linux. Trade-off: no JS JIT, so CPU-bound code is slower than JSC (see [Performance](#performance)).
 
-### Goja backend (`-tags goja`, pure Go, reflect-based)
+#### Goja backend (`-tags goja`, pure Go, reflect-based)
 
 ```bash
 go install -tags goja github.com/i2y/ramune/cmd/ramune@latest
@@ -127,7 +143,7 @@ go install -tags goja github.com/i2y/ramune/cmd/ramune@latest
 
 The goja backend wraps [dop251/goja](https://github.com/dop251/goja) unchanged, so it's a **drop-in for existing goja users**: scripts and Go interop code that run on goja directly run on Ramune with `-tags goja` with no behavioral change, and can later switch to `-tags qjswasm` or the default JSC build to gain throughput without touching the handler code. goja is a reflection-based Go JS interpreter with ~94% ECMAScript coverage. Appropriate when you want **pure-Go embedding on Windows** without any shared libraries and want to avoid the cgo signal-forwarding requirement that JSC needs on Linux/arm64. Modern JS syntax that goja's parser rejects (private class fields, top-level await, `Object.hasOwn`, logical assignment, etc.) is transparently lowered to ES2017 via esbuild on first-encounter parse failure in `Runtime.Eval` / `Runtime.Exec` — both CLI and library paths see the same effective ES2023 surface, and the lowered result is cached so repeated source is amortized.
 
-### Smaller binary
+#### Smaller binary
 
 ```bash
 go install -tags nosqlite -ldflags="-s -w" github.com/i2y/ramune/cmd/ramune@latest
