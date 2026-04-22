@@ -158,7 +158,7 @@ function VariantB() {
         }}>
           {[
             { n: "01", t: tr("Run TS from CLI","CLIでTS実行"), d: tr("go install → ramune run hello.ts. One binary with run · test · compile · check · fmt · lint · repl, --sandbox, and --docker for untrusted code.","go install → ramune run hello.ts。run · test · compile · check · fmt · lint · repl がバイナリ 1 本、--sandbox / --docker で信頼できないコードも扱える。"), h: "cli", href: "#quickstart" },
-            { n: "02", t: tr("Sandbox & permissions","サンドボックスと権限"), d: tr("Deny-all by default, allow-list reads / writes / net / env / subprocess. Same controls from CLI flags, ramune.toml, and Go options.","deny-all から出発、read / write / net / env / subprocess を allow-list。CLI フラグ・ramune.toml・Go Option で同じ設定を書ける。"), h: "sandbox", href: "#quickstart" },
+            { n: "02", t: tr("Sandbox & permissions","サンドボックスと権限"), d: tr("Layered: language-level deny-all + allow-lists on every backend, plus WASM VM isolation via wazero when built with -tags qjswasm. Docker is an optional extra layer.","多層: どのバックエンドでも言語層の deny-all + allow-list、-tags qjswasm ビルドなら wazero の WASM VM 隔離も追加。Docker は任意の追加層。"), h: "sandbox", href: "#quickstart" },
             { n: "03", t: tr("Embed in Go","Go に埋め込む"), d: tr("Call any Go lib from JS. Same API across all three backends, zero Cgo at build time.","GoライブラリをJSから呼出し、3バックエンド共通API、ビルド時Cgo不要。"), h: "embed", href: "#backends" },
             { n: "04", t: tr("Self-host Workers","Workersセルフホスト"), d: tr("export default { fetch }. Compile handler + runtime into a single Go binary; run on your VM, bare metal, or scratch container.","export default { fetch }。ハンドラとランタイムを 1 つの Go バイナリに、自分の VM / bare metal / scratch コンテナで実行。"), h: "workers", href: "https://github.com/i2y/ramune/tree/main/examples/workers" },
           ].map((p) => {
@@ -449,17 +449,18 @@ $ ${sy.f("go install")} github.com/i2y/ramune/cmd/ramune@latest
 $ ${sy.f("go install")} github.com/i2y/ramune/cmd/ramune-toolchain@latest
 $ ${sy.f("ramune")} setup-jit   ${sy.c("# macOS: enable JIT (~10× faster)")}
 
+${sy.c("# stronger isolation: build with -tags qjswasm → JS runs")}
+${sy.c("# inside a wazero WASM VM (no host syscalls by default)")}
+$ ${sy.f("go install")} ${sy.k("-tags")} qjswasm github.com/i2y/ramune/cmd/ramune@latest
+
 ${sy.c("# run a .ts file")}
 $ ${sy.f("ramune")} run hello.ts
 
-${sy.c("# untrusted code: deny-all, then allow exactly what it needs")}
+${sy.c("# untrusted code: language-level deny-all + allowlists")}
 $ ${sy.f("ramune")} run ${sy.k("--sandbox")} \\
     ${sy.k("--allow-net")} example.com:443 \\
     ${sy.k("--allow-read")} ./data \\
     untrusted.ts
-
-${sy.c("# or fully isolate inside Docker, memory-capped")}
-$ ${sy.f("ramune")} run ${sy.k("--docker")} ${sy.k("--docker-memory")} 256 untrusted.ts
 
 ${sy.c("# commit the policy next to your handler")}
 $ ${sy.f("cat")} ramune.toml
@@ -467,7 +468,10 @@ $ ${sy.f("cat")} ramune.toml
 net        = ${sy.s('"allow"')}
 net_hosts  = [${sy.s('"example.com:443"')}]
 read       = ${sy.s('"allow"')}
-read_paths = [${sy.s('"./data"')}]`;
+read_paths = [${sy.s('"./data"')}]
+
+${sy.c("# optional extra layer: Docker")}
+$ ${sy.f("ramune")} run ${sy.k("--docker")} ${sy.k("--docker-memory")} 256 untrusted.ts`;
 
   const goCode = `${sy.c("// same knobs, from the Go embedding API")}
 rt, _ := ramune.${sy.f("New")}(
@@ -488,7 +492,10 @@ rt, _ := ramune.${sy.f("New")}(
 ${sy.k("defer")} rt.${sy.f("Close")}()
 rt.${sy.f("Eval")}(userScript)
 
-${sy.c("// or isolate inside a Docker container")}
+${sy.c("// build with -tags qjswasm to run JS inside a wazero WASM VM")}
+${sy.c("// (no host syscalls by default, stacks on top of the above)")}
+
+${sy.c("// optional extra layer: Docker containment")}
 ramune.${sy.f("SandboxRun")}(${sy.s('"untrusted.ts"')}, &ramune.SandboxConfig{
   Image: ${sy.s('"ubuntu:24.04"')}, MemoryMB: 256, NoNetwork: ${sy.k("true")},
 })`;
@@ -507,17 +514,18 @@ ramune.${sy.f("SandboxRun")}(${sy.s('"untrusted.ts"')}, &ramune.SandboxConfig{
           )}</h2>
           <p style={{ fontSize: 15.5, color: "rgba(10,22,40,.65)", lineHeight: 1.6, marginBottom: 22, maxWidth: 520 }}>
             {tr(
-              "One go install and you have run · test · repl · check · fmt · lint · compile · serve. Sandboxing and permissions are first-class on both surfaces — the same deny-by-default / allow-list controls are exposed as CLI flags (and ramune.toml keys) and as Go options when you embed the runtime.",
-              "go install 一度で run · test · repl · check · fmt · lint · compile · serve が揃う。サンドボックスと権限はどちらの経路でも一級市民で、同じ deny-all / allow-list の設定が CLI フラグ (ramune.toml キー) でも Go 組み込み時の Option でも書ける。"
+              "One go install and you have run · test · repl · check · fmt · lint · compile · serve. Sandboxing is layered — language-level deny-all / allow-lists on every backend, plus WASM VM isolation via wazero when you build with -tags qjswasm (JS has no host syscalls by default). Same knobs from CLI flags, ramune.toml, or Go options.",
+              "go install 一度で run · test · repl · check · fmt · lint · compile · serve が揃う。サンドボックスは多層構造 — どのバックエンドでも言語層の deny-all / allow-list が効き、-tags qjswasm でビルドすれば wazero の WASM VM 内に JS が隔離される (host syscall は既定で無い)。CLI フラグ・ramune.toml・Go Option いずれも同じ設定項目。"
             )}
           </p>
           <div style={{ display: "flex", flexDirection: "column", gap: 10, maxWidth: 520 }}>
             {[
-              { k: "--sandbox", v: tr("Deny read / write / net / env / subprocess by default.","read / write / net / env / subprocess を既定で deny。") },
+              { k: "-tags qjswasm", v: tr("Build-time: JS runs inside a wazero WASM VM — no host syscalls by default. Complements (doesn't replace) --sandbox.","ビルド時: JS は wazero の WASM VM 内で動作、host syscall は既定で無い。--sandbox とは補完関係 (置き換えではない)。") },
+              { k: "--sandbox", v: tr("Runtime: deny read / write / net / env / subprocess by default.","実行時: read / write / net / env / subprocess を既定で deny。") },
               { k: "--allow-{read,write,net,env,run}", v: tr("Comma-separated allowlists; empty value grants all.","カンマ区切りの allowlist (空指定で全許可)。") },
-              { k: "--docker · --docker-memory", v: tr("Run the script inside a Docker container, memory-capped.","Docker コンテナで隔離実行 / メモリ上限付き。") },
               { k: "ramune.toml", v: tr("[permissions] — commit the policy next to your handler.","[permissions] セクションにハンドラと並べてコミット。") },
               { k: tr("Go options","Go Option"), v: tr("WithPermissions · WithResourceLimits · NewSandboxRuntime — identical knobs from Go.","WithPermissions / WithResourceLimits / NewSandboxRuntime で Go からも同じ項目を設定。") },
+              { k: "--docker · --docker-memory", v: tr("Optional extra layer: wrap the script in a Docker container.","任意の追加層: スクリプトを Docker コンテナで包む。") },
             ].map((r) => (
               <div key={r.k} style={{
                 display: "grid", gridTemplateColumns: "210px 1fr", gap: 14,
