@@ -1,0 +1,44 @@
+{
+  "name": "ramune",
+  "version": "0.0.0",
+  "description": "JavaScript/TypeScript runtime for Go. Workers-style self-hosting, Node/Bun API compat. This is the CLI distribution.",
+  "homepage": "https://github.com/i2y/ramune",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/i2y/ramune.git"
+  },
+  "bugs": {
+    "url": "https://github.com/i2y/ramune/issues"
+  },
+  "license": "MIT",
+  "author": "Yasushi Itoh",
+  "keywords": [
+    "javascript",
+    "typescript",
+    "runtime",
+    "cli",
+    "workers",
+    "cloudflare-workers",
+    "javascriptcore",
+    "quickjs"
+  ],
+  "bin": {
+    "ramune": "bin/ramune.js"
+  },
+  "files": [
+    "bin/ramune.js",
+    "README.md",
+    "LICENSE"
+  ],
+  "optionalDependencies": {
+    "@ramune/darwin-arm64": "0.0.0",
+    "@ramune/linux-x64": "0.0.0",
+    "@ramune/linux-arm64": "0.0.0",
+    "@ramune/win32-x64": "0.0.0",
+    "@ramune/win32-arm64": "0.0.0"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "private": true
+}

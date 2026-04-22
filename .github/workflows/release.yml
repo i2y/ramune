@@ -1,0 +1,232 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Git tag to build (e.g. v0.16.0). The tag must already exist.'
+        required: true
+
+permissions:
+  contents: write   # softprops/action-gh-release creates / updates a GitHub Release
+  id-token: write   # npm publish --provenance uses GitHub OIDC
+
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      tag: ${{ steps.v.outputs.tag }}
+      prerelease: ${{ steps.v.outputs.prerelease }}
+    steps:
+      - id: v
+        run: |
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          version="${tag#v}"
+          if [[ "$version" == *-* ]]; then
+            prerelease=true
+          else
+            prerelease=false
+          fi
+          echo "tag=$tag"                 >> "$GITHUB_OUTPUT"
+          echo "version=$version"         >> "$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease"   >> "$GITHUB_OUTPUT"
+          echo "resolved tag=$tag version=$version prerelease=$prerelease"
+
+  build-macos:
+    needs: setup
+    runs-on: macos-15
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.setup.outputs.tag }}
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Build ramune + ramune-toolchain (JSC)
+        run: |
+          go build -ldflags "-X main.version=${VERSION}" -o ramune           ./cmd/ramune
+          go build -ldflags "-X main.version=${VERSION}" -o ramune-toolchain ./cmd/ramune-toolchain
+        env:
+          VERSION: ${{ needs.setup.outputs.version }}
+
+      - name: Codesign with JIT entitlement (ad-hoc)
+        run: |
+          codesign --force --sign - --entitlements entitlements.plist ramune
+          codesign --force --sign - --entitlements entitlements.plist ramune-toolchain
+          echo "--- ramune entitlements ---"
+          codesign -d --entitlements - ramune
+
+      - name: Smoke test
+        run: ./ramune eval "1+1"
+
+      - name: Stage artifact
+        run: |
+          mkdir -p out/darwin-arm64
+          mv ramune           out/darwin-arm64/ramune
+          mv ramune-toolchain out/darwin-arm64/ramune-toolchain
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: bin-darwin-arm64
+          path: out/darwin-arm64
+          if-no-files-found: error
+          retention-days: 7
+
+  build-cross:
+    needs: setup
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            ext: ''
+            artifact: linux-x64
+          - goos: linux
+            goarch: arm64
+            ext: ''
+            artifact: linux-arm64
+          - goos: windows
+            goarch: amd64
+            ext: .exe
+            artifact: win32-x64
+          - goos: windows
+            goarch: arm64
+            ext: .exe
+            artifact: win32-arm64
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.setup.outputs.tag }}
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Build ramune + ramune-toolchain (qjswasm, static)
+        env:
+          CGO_ENABLED: '0'
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          VERSION: ${{ needs.setup.outputs.version }}
+        run: |
+          go build -tags qjswasm -ldflags "-X main.version=${VERSION}" -o ramune${{ matrix.ext }}           ./cmd/ramune
+          go build -tags qjswasm -ldflags "-X main.version=${VERSION}" -o ramune-toolchain${{ matrix.ext }} ./cmd/ramune-toolchain
+
+      - name: Stage artifact
+        run: |
+          mkdir -p out/${{ matrix.artifact }}
+          mv ramune${{ matrix.ext }}           out/${{ matrix.artifact }}/
+          mv ramune-toolchain${{ matrix.ext }} out/${{ matrix.artifact }}/
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: bin-${{ matrix.artifact }}
+          path: out/${{ matrix.artifact }}
+          if-no-files-found: error
+          retention-days: 7
+
+  publish-npm:
+    needs: [setup, build-macos, build-cross]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.setup.outputs.tag }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+
+      - uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+          pattern: bin-*
+
+      - name: Reshape artifacts into ARTIFACTS_DIR/<platform>/
+        run: |
+          mkdir -p reshaped
+          for dir in artifacts/bin-*; do
+            plat="$(basename "$dir" | sed 's/^bin-//')"
+            mkdir -p "reshaped/$plat"
+            cp -r "$dir"/* "reshaped/$plat/"
+          done
+          echo "--- reshaped ---"
+          find reshaped -maxdepth 2 -type f | sort
+
+      - name: Assemble npm packages
+        env:
+          VERSION: ${{ needs.setup.outputs.version }}
+          ARTIFACTS_DIR: ${{ github.workspace }}/reshaped
+          OUT_DIR: ${{ github.workspace }}/npm-dist
+        run: ./scripts/assemble-npm-packages.sh
+
+      - name: Publish platform packages
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -e
+          for dir in npm-dist/platform/*; do
+            echo "--- publishing $(basename "$dir") ---"
+            (cd "$dir" && npm publish --access public --provenance)
+          done
+
+      - name: Publish top-level ramune package
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          cd npm-dist/ramune
+          echo "--- publishing ramune ---"
+          npm publish --access public --provenance
+
+  gh-release:
+    needs: [setup, build-macos, build-cross]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+          pattern: bin-*
+
+      - name: Package per-platform archives
+        env:
+          VERSION: ${{ needs.setup.outputs.version }}
+        run: |
+          set -e
+          mkdir -p dist
+          for dir in artifacts/bin-*; do
+            plat="$(basename "$dir" | sed 's/^bin-//')"
+            base="ramune-${VERSION}-${plat}"
+            if [[ "$plat" == win32-* ]]; then
+              (cd "$dir" && zip -r "$GITHUB_WORKSPACE/dist/${base}.zip" .)
+            else
+              chmod 0755 "$dir"/ramune "$dir"/ramune-toolchain
+              tar -C "$dir" -czf "dist/${base}.tar.gz" ramune ramune-toolchain
+            fi
+          done
+          echo "--- dist ---"
+          ls -la dist/
+
+      - uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ needs.setup.outputs.tag }}
+          files: dist/*
+          prerelease: ${{ needs.setup.outputs.prerelease == 'true' }}
+          fail_on_unmatched_files: true
+          generate_release_notes: true
