@@ -869,7 +869,7 @@ go 1.26
 	} else {
 		ver := getVersion()
 		if ver == "" || ver == "dev" {
-			ver = "v0.15.0"
+			ver = "v0.15.1"
 		} else if !strings.HasPrefix(ver, "v") {
 			ver = "v" + ver
 		}
