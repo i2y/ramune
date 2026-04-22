@@ -291,6 +291,25 @@ function VariantB() {
         </div>
       </section>
 
+      {/* Built-on strip */}
+      <section style={{
+        padding: "16px 56px 40px", maxWidth: 1280, margin: "0 auto", textAlign: "center",
+      }}>
+        <div style={{
+          fontSize: 10.5, fontFamily: "JetBrains Mono, monospace",
+          color: "rgba(10,22,40,.4)", letterSpacing: ".12em",
+          textTransform: "uppercase", marginBottom: 14, fontWeight: 600,
+        }}>
+          {tr("Built on", "スタック")}
+        </div>
+        <div style={{
+          fontSize: 13, color: "rgba(10,22,40,.6)", lineHeight: 1.9,
+          fontFamily: "JetBrains Mono, monospace",
+        }}>
+          JavaScriptCore · QuickJS-NG · goja · wazero · fastschema/qjs · purego · esbuild · typescript-go · rslint
+        </div>
+      </section>
+
       {/* Footer */}
       <footer style={{
         position: "relative", padding: "56px 56px 48px",
@@ -303,13 +322,13 @@ function VariantB() {
         }}>
           <RamuneBottle width={140} height={360} withMarble={true} fizzy={false}/>
         </div>
-        <div style={{ maxWidth: 1280, margin: "0 auto", display: "flex", alignItems: "flex-end", gap: 48, position: "relative" }}>
-          <div>
+        <div style={{ maxWidth: 1280, margin: "0 auto", display: "flex", alignItems: "flex-start", gap: 48, position: "relative" }}>
+          <div style={{ maxWidth: 420 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
               <img src="assets/ramune.png" alt="" style={{ width: 28, height: 28, objectFit: "contain" }}/>
               <span style={{ fontSize: 16, fontWeight: 700, letterSpacing: "-.02em", fontFamily: "Inter Tight" }}>Ramune</span>
             </div>
-            <div style={{ fontSize: 13, color: "rgba(10,22,40,.55)", maxWidth: 420, lineHeight: 1.55 }}>
+            <div style={{ fontSize: 13, color: "rgba(10,22,40,.55)", lineHeight: 1.55 }}>
               {tr(
                 "A JS/TS runtime you embed in Go. Three backends behind one API — JSC with JIT, QuickJS-NG on wazero, goja — plus compile-time --hybrid extraction and self-hosted Workers-style modules.",
                 "Go に組み込む JS/TS ランタイム。3 バックエンド (JSC+JIT / QuickJS-NG on wazero / goja) を 1 つの API で切替、コンパイル時 --hybrid 抽出、セルフホスト Workers 対応。"
@@ -317,8 +336,43 @@ function VariantB() {
             </div>
           </div>
           <div style={{ flex: 1 }}/>
-          <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 11.5, color: "rgba(10,22,40,.5)" }}>
-            MIT · © 2026 · <a href={GITHUB_URL} target="_blank" rel="noopener" style={{ color: "inherit", textDecoration: "none" }}>github.com/i2y/ramune</a>
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 18 }}>
+            <div>
+              <div style={{
+                fontSize: 10.5, fontFamily: "JetBrains Mono, monospace",
+                color: "rgba(10,22,40,.5)", letterSpacing: ".12em",
+                textTransform: "uppercase", fontWeight: 600,
+                textAlign: "right", marginBottom: 8,
+              }}>
+                {tr("Credits · thank you", "クレジット · ありがとうございます")}
+              </div>
+              <div style={{
+                fontSize: 12, color: "rgba(10,22,40,.65)", lineHeight: 1.9,
+                fontFamily: "JetBrains Mono, monospace", textAlign: "right",
+              }}>
+                {[
+                  { name: "JavaScriptCore",  url: "https://webkit.org/",                          tag: tr("engine · JIT","エンジン · JIT") },
+                  { name: "QuickJS-NG",      url: "https://github.com/quickjs-ng/quickjs",        tag: tr("engine · wasm","エンジン · wasm") },
+                  { name: "goja",            url: "https://github.com/dop251/goja",               tag: tr("engine · pure Go","エンジン · pure Go") },
+                  { name: "wazero",          url: "https://github.com/tetratelabs/wazero",        tag: tr("wasm runtime","wasm runtime") },
+                  { name: "fastschema/qjs",  url: "https://github.com/fastschema/qjs",            tag: tr("qjs wrapper","qjs wrapper") },
+                  { name: "purego",          url: "https://github.com/ebitengine/purego",         tag: tr("Cgo-free FFI","Cgo-free FFI") },
+                  { name: "esbuild",         url: "https://github.com/evanw/esbuild",             tag: tr("bundler","バンドラ") },
+                  { name: "typescript-go",   url: "https://github.com/microsoft/typescript-go",   tag: tr("checker · fmt","check · fmt") },
+                  { name: "rslint",          url: "https://github.com/web-infra-dev/rslint",      tag: tr("linter","lint") },
+                ].map((c) => (
+                  <div key={c.name}>
+                    <span style={{ color: "rgba(10,22,40,.35)" }}>{c.tag} · </span>
+                    <a href={c.url} target="_blank" rel="noopener" style={{
+                      color: "rgba(10,22,40,.8)", textDecoration: "none", fontWeight: 500,
+                    }}>{c.name} ↗</a>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 11.5, color: "rgba(10,22,40,.5)" }}>
+              MIT · © 2026 · <a href={GITHUB_URL} target="_blank" rel="noopener" style={{ color: "inherit", textDecoration: "none" }}>github.com/i2y/ramune</a>
+            </div>
           </div>
         </div>
       </footer>
