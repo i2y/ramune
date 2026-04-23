@@ -354,7 +354,7 @@ function VariantB() {
                   { name: "fastschema/qjs",  url: "https://github.com/fastschema/qjs",            tag: tr("qjs wrapper","qjs wrapper") },
                   { name: "purego",          url: "https://github.com/ebitengine/purego",         tag: tr("Cgo-free FFI","Cgo-free FFI") },
                   { name: "esbuild",         url: "https://github.com/evanw/esbuild",             tag: tr("bundler","バンドラ") },
-                  { name: "typescript-go",   url: "https://github.com/microsoft/typescript-go",   tag: tr("checker · fmt","check · fmt") },
+                  { name: "typescript-go",   url: "https://github.com/microsoft/typescript-go",   tag: tr("checker · fmt · emit","check · fmt · emit") },
                   { name: "rslint",          url: "https://github.com/web-infra-dev/rslint",      tag: tr("linter","lint") },
                 ].map((c) => (
                   <div key={c.name}>
