@@ -2,7 +2,7 @@
 
 Foundation for Workers-style platforms in Go, embeddable and extensible; Cloudflare-Workers-compatible out of the box. Primary use case: build your own Workers-style platform (your `env`, your backends, your bindings) on a runtime that already speaks the Workers handler shape, so Cloudflare-authored handlers (`export default { fetch(req, env, ctx), scheduled }`) run unchanged as a consequence of the default surface. Deploy to your own hardware with full Go interop. Core scope: [WinterCG](https://wintercg.org/) + fetch + `env.DB` / `env.KV` / `env.SECRETS` + `ctx.waitUntil` + cron. Advanced CF bindings (Durable Objects / Queues / R2 / AI Gateway) are **not shipped**; they are implemented as user-supplied `env.*` bindings via `RegisterFunc` + `WithExtraEnvJS`, and the same mechanism is how you design bindings that have no CF analogue at all. **No Cgo**: JSC via `purego`, qjswasm and goja pure Go; `go build` cross-compiles to any GOOS/GOARCH without a C toolchain, and qjswasm/goja run on `FROM scratch` Docker. Ramune is also a complete JS/TS runtime (`run` / `test` / `check` / `fmt` / `lint` / `repl` / `compile`) and an embeddable JS engine for any Go program.
 
-> Ramune is a JavaScript/TypeScript runtime and embeddable JS engine for Go. Tri-backend: JavaScriptCore (JIT, macOS/Linux) via [purego](https://github.com/ebitengine/purego), qjswasm (pure Go, cross-platform incl. Windows — QuickJS-NG compiled to WebAssembly and driven by wazero) via [fastschema/qjs](https://github.com/fastschema/qjs), and goja (pure Go, reflect-based) via [dop251/goja](https://github.com/dop251/goja) — no Cgo required for any of them.
+> Ramune is a JS/TS runtime with soundness-gated AOT native compilation. `ramune compile --hybrid` walks every user TS file and extracts each function whose signature and body are statically provable to behave identically in Go; rejected functions keep running as JS unchanged. Tri-backend: JavaScriptCore (JIT, macOS/Linux) via [purego](https://github.com/ebitengine/purego), qjswasm (pure Go, cross-platform incl. Windows — QuickJS-NG compiled to WebAssembly and driven by wazero) via [fastschema/qjs](https://github.com/fastschema/qjs), and goja (pure Go, reflect-based) via [dop251/goja](https://github.com/dop251/goja) — no Cgo required for any of them.
 
 ## Install
 
@@ -54,7 +54,7 @@ ramune version               Show version
 
 Run options: `-p <pkg>` (npm package), `-w`/`--watch`, `--check`, `--sandbox`, `--allow-read[=path]`, `--allow-write[=path]`, `--allow-net[=host]`, `--allow-env[=var]`, `--allow-run[=cmd]`.
 
-Compile options: `-o output`, `--minify`, `--http` (Ramune.serve event loop), `--native <file.ts>` (repeatable; transpile TS to native Go extension).
+Compile options: `-o output`, `--minify`, `--http` (Ramune.serve event loop), `--native <file.ts>` (repeatable; transpile TS to native Go extension), `--hybrid` (soundness-gated auto-extraction of typed functions to native Go), `--hybrid-report` (per-function picker report on stderr).
 
 Transpile options: `-o outdir`, `--module name`, `--compile` (transpile + build binary).
 
@@ -312,7 +312,7 @@ handler, err := workers.Register(rt, "worker.ts", src,
 )
 http.ListenAndServe(":3000", handler)
 
-// N runtimes (esbuild runs once, attached to each)
+// N runtimes (typescript-go transpile runs once, attached to each)
 p, _ := workers.Prepare("worker.ts", src)
 for i := 0; i < 4; i++ {
     rt, _ := ramune.New(ramune.NodeCompat(), ramune.WithFetch())
@@ -458,8 +458,8 @@ Also: TextEncoder/TextDecoder, AbortController/AbortSignal, Symbol.dispose/async
 
 ## TypeScript
 
-- `.ts`/`.tsx` files transpiled via esbuild (type annotations stripped)
-- `require('./module.ts')` resolves and transpiles `.ts` files
+- `.ts`/`.tsx` files transpiled via typescript-go (TS 7) — same compiler as `ramune check`/`fmt`. esbuild is kept for bundling and as the parse-failure lowerer on the goja backend.
+- `require('./module.ts')` resolves and transpiles `.ts` files via typescript-go
 - REPL accepts TypeScript syntax
 - `ramune eval` handles TypeScript expressions
 - `ramune check` uses tsgo (TypeScript 7, 10x faster than tsc)
@@ -564,7 +564,7 @@ Run `make bench` to reproduce.
 - **Linux multi-runtime (JSC)**: On arm64, `CGO_ENABLED=1` and gcc required (cgo signal forwarding for JSC GC). On x86_64, works without cgo.
 - **Multi-worker scaling (JSC)**: Scaling flattens around 4+ workers on macOS due to JSC shared-cache threading constraints.
 - **qjswasm backend**: No JS JIT (wazero AOT-compiles the WASM but QuickJS-NG itself is an interpreter). CPU-bound JS is slower than JSC. JS error stack traces not yet round-tripped. `ResourceLimits.MaxExecutionTime` silently ignored until the C-shim interrupt handler is wired (memory/stack/GC limits work).
-- **goja backend**: ~94% ECMAScript spec coverage. No SharedArrayBuffer/Atomics/WebAssembly. Raw `for await` / async generator syntax not accepted by the parser (esbuild lowers it when running via `ramune run`/`ramune eval`, but direct `Eval`/`EvalAsync` of raw JS that uses those features will fail). WebSocket upgrade path is not wired for goja. No JS error stack traces.
+- **goja backend**: ~94% ECMAScript spec coverage. No SharedArrayBuffer/Atomics/WebAssembly. Raw `for await` / async generator syntax not accepted by the parser (the CLI TS→JS path lowers them through tsgo at ES2017; direct `Runtime.Eval`/`Exec` with raw modern JS triggers a second-chance esbuild lowering on parse failure — esbuild is kept for that one site because tsc does not lower top-level await in CJS). WebSocket upgrade path is not wired for goja. No JS error stack traces.
 - **Native module instance lifecycle**: Struct instances returned to JS are not automatically freed when JS GC collects the object. Cleaned up on Runtime.Close().
 - **Generic native exports**: Generic functions cannot be exposed as native module exports; wrap in a non-generic function.
 

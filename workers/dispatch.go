@@ -5,13 +5,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 
-	esbuildapi "github.com/evanw/esbuild/pkg/api"
 	"github.com/i2y/ramune"
+	"github.com/i2y/ramune/internal/tsgo/core"
+	"github.com/i2y/ramune/internal/tsgotranspile"
 )
 
 // IsWorkersStyle reports whether the source uses a default export, the
@@ -29,31 +29,34 @@ func IsWorkersStyle(code string) bool {
 //
 // becomes
 //
-//	var __workers_export = (() => { … return { default: … }; })();
+//	var __workers_export = (function(){ var module={exports:{}};
+//	                                    var exports=module.exports;
+//	                                    <tsgo CJS output>
+//	                                    return module.exports; })();
 //
 // Returned code may be evaluated with Runtime.Exec in any context; it
 // does not rely on ESM host support.
 func TranspileModule(filename string, code string) (string, error) {
-	loader := esbuildapi.LoaderJS
-	switch strings.ToLower(filepath.Ext(filename)) {
-	case ".ts", ".mts", ".cts":
-		loader = esbuildapi.LoaderTS
-	case ".tsx":
-		loader = esbuildapi.LoaderTSX
-	case ".jsx":
-		loader = esbuildapi.LoaderJSX
-	}
-	result := esbuildapi.Transform(code, esbuildapi.TransformOptions{
-		Sourcefile: filepath.Base(filename),
-		Loader:     loader,
-		Target:     esbuildapi.ESNext,
-		Format:     esbuildapi.FormatIIFE,
-		GlobalName: "__workers_export",
+	r, err := tsgotranspile.Transpile(code, tsgotranspile.Options{
+		FileName: filename,
+		Target:   core.ScriptTargetESNext,
+		Module:   core.ModuleKindCommonJS,
 	})
-	if len(result.Errors) > 0 {
-		return "", fmt.Errorf("workers: esbuild %s: %s", filename, result.Errors[0].Text)
+	if err != nil {
+		return "", fmt.Errorf("workers: tsgo %s: %w", filename, err)
 	}
-	return string(result.Code), nil
+	if e := tsgotranspile.FirstError(r.Diagnostics); e != nil {
+		return "", fmt.Errorf("workers: tsgo %s: %w", filename, e)
+	}
+	var b strings.Builder
+	b.Grow(len(r.JS) + 128)
+	b.WriteString("var __workers_export = (function(){\n")
+	b.WriteString("var module = { exports: {} };\n")
+	b.WriteString("var exports = module.exports;\n")
+	b.WriteString(r.JS)
+	b.WriteString("\nreturn module.exports;\n")
+	b.WriteString("})();\n")
+	return b.String(), nil
 }
 
 // ModuleConfig is the subset of a Workers-style module's default export

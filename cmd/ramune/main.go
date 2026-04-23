@@ -40,6 +40,8 @@ import (
 	"github.com/fsnotify/fsnotify"
 	"github.com/i2y/ramune"
 	"github.com/i2y/ramune/internal/registry"
+	"github.com/i2y/ramune/internal/tsgo/core"
+	"github.com/i2y/ramune/internal/tsgotranspile"
 )
 
 //go:embed skills
@@ -720,12 +722,17 @@ func replCmd(args []string) {
 
 		multiline += line + "\n"
 
-		// Transpile TypeScript.
+		// Transpile TypeScript. Preserve module shape so REPL expressions
+		// land in the runtime's global scope (not wrapped in an exports
+		// IIFE). Broken/incomplete input leaves evalCode untouched so
+		// the multiline-continuation logic below can catch EOF errors.
 		evalCode := multiline
-		if result := api.Transform(evalCode, api.TransformOptions{
-			Loader: api.LoaderTS, Target: esbuildTarget(),
-		}); len(result.Errors) == 0 && len(result.Code) > 0 {
-			evalCode = string(result.Code)
+		if r, err := tsgotranspile.Transpile(evalCode, tsgotranspile.Options{
+			FileName: "repl.ts",
+			Target:   tsgoTarget(),
+			Module:   core.ModuleKindPreserve,
+		}); err == nil && r.JS != "" && tsgotranspile.FirstError(r.Diagnostics) == nil {
+			evalCode = r.JS
 		}
 
 		val, evalErr := rt.Eval(evalCode)
@@ -963,60 +970,22 @@ func isTypeScript(filename string) bool {
 	return ext == ".ts" || ext == ".tsx"
 }
 
-// transformTypeScript transpiles TypeScript to JavaScript using esbuild.
+// transformTypeScript transpiles TypeScript to JavaScript via tsgo's
+// emit pipeline. ModuleKindCommonJS makes tsgo produce `exports.foo = foo`
+// / `module.exports = …` directly, so no post-processing is needed.
 func transformTypeScript(filename string, code []byte) ([]byte, error) {
-	loader := api.LoaderTS
-	if strings.HasSuffix(filename, ".tsx") {
-		loader = api.LoaderTSX
+	r, err := tsgotranspile.Transpile(string(code), tsgotranspile.Options{
+		FileName: filepath.Base(filename),
+		Target:   tsgoTarget(),
+		Module:   core.ModuleKindCommonJS,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("TypeScript %s: %w", filepath.Base(filename), err)
 	}
-	result := api.Transform(string(code), api.TransformOptions{
-		Sourcefile: filepath.Base(filename),
-		Loader:     loader,
-		Target:     esbuildTarget(),
-	})
-	if len(result.Errors) > 0 {
-		msgs := make([]string, len(result.Errors))
-		for i, e := range result.Errors {
-			msgs[i] = e.Text
-		}
-		return nil, fmt.Errorf("TypeScript: %s", strings.Join(msgs, "; "))
+	if e := tsgotranspile.FirstError(r.Diagnostics); e != nil {
+		return nil, fmt.Errorf("TypeScript %s: %w", filepath.Base(filename), e)
 	}
-	out := string(result.Code)
-	// Convert export to CommonJS assignments.
-	// `export function greet(...)` → `function greet(...)\nexports.greet = greet;`
-	exportedNames := []string{}
-	out = regexp.MustCompile(`export\s+default\s+`).ReplaceAllStringFunc(out, func(m string) string {
-		exportedNames = append(exportedNames, "default")
-		return "module.exports = "
-	})
-	re := regexp.MustCompile(`export\s+(const|let|var|function|class)\s+(\w+)`)
-	out = re.ReplaceAllStringFunc(out, func(m string) string {
-		parts := re.FindStringSubmatch(m)
-		if len(parts) >= 3 {
-			exportedNames = append(exportedNames, parts[2])
-		}
-		return parts[1] + " " + parts[2]
-	})
-	// Remove export blocks and add CJS assignments at the end.
-	exportBlockRe := regexp.MustCompile(`(?m)^export\s*\{([^}]*)\};?\s*$`)
-	out = exportBlockRe.ReplaceAllStringFunc(out, func(m string) string {
-		inner := exportBlockRe.FindStringSubmatch(m)
-		if len(inner) >= 2 {
-			for _, name := range strings.Split(inner[1], ",") {
-				name = strings.TrimSpace(name)
-				if name != "" {
-					exportedNames = append(exportedNames, name)
-				}
-			}
-		}
-		return ""
-	})
-	for _, name := range exportedNames {
-		if name != "default" {
-			out += fmt.Sprintf("\nexports.%s = %s;", name, name)
-		}
-	}
-	return []byte(out), nil
+	return []byte(r.JS), nil
 }
 
 // isESM detects if the code uses ESM syntax.
@@ -1720,12 +1689,14 @@ func evalCmd(args []string) {
 
 	expr := strings.Join(args, " ")
 
-	// Transpile TypeScript type annotations if present.
-	if result := api.Transform(expr, api.TransformOptions{
-		Loader: api.LoaderTS,
-		Target: esbuildTarget(),
-	}); len(result.Errors) == 0 && len(result.Code) > 0 {
-		jsCode := strings.TrimRight(string(result.Code), "\n\r\t ")
+	// Transpile TypeScript type annotations if present. Preserve module
+	// shape so a bare expression stays evaluable (no exports IIFE wrap).
+	if r, err := tsgotranspile.Transpile(expr, tsgotranspile.Options{
+		FileName: "eval.ts",
+		Target:   tsgoTarget(),
+		Module:   core.ModuleKindPreserve,
+	}); err == nil && r.JS != "" && tsgotranspile.FirstError(r.Diagnostics) == nil {
+		jsCode := strings.TrimRight(r.JS, "\n\r\t ")
 		// If the result contains multiple statements, wrap in an IIFE
 		// that returns the last expression.
 		lines := strings.Split(jsCode, "\n")

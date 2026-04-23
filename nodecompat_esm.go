@@ -8,7 +8,8 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/evanw/esbuild/pkg/api"
+	"github.com/i2y/ramune/internal/tsgo/core"
+	"github.com/i2y/ramune/internal/tsgotranspile"
 )
 
 var esmImportRe = regexp.MustCompile(`(?m)^\s*(import\s+|export\s+(default\s+|const\s+|function\s+|class\s+|let\s+|var\s+|\{))`)
@@ -42,32 +43,36 @@ func isESMSource(filename, source string) bool {
 	return esmImportRe.MatchString(source)
 }
 
-func esbuildErrors(errs []api.Message) string {
-	msgs := make([]string, len(errs))
-	for i, e := range errs {
-		msgs[i] = e.Text
+// transformSource runs tsgo's TS->JS emit on source. When commonJS is
+// true, ESM syntax is converted to CJS (module.exports / require); when
+// false, module shape is preserved. Dynamic import() is always rewritten
+// to Ramune's __dynamicImport polyfill in the CJS path.
+func transformSource(filename, source string, commonJS bool) (string, error) {
+	module := core.ModuleKindPreserve
+	feedName := filepath.Base(filename)
+	if commonJS {
+		module = core.ModuleKindCommonJS
+		// .mjs / .cjs force their module kind regardless of CompilerOptions.
+		// Rename the feed so tsgo treats it as ambiguous .js and honours
+		// Module=CommonJS. The source content is plain JS in either case.
+		switch strings.ToLower(filepath.Ext(feedName)) {
+		case ".mjs", ".cjs":
+			feedName = strings.TrimSuffix(feedName, filepath.Ext(feedName)) + ".js"
+		}
 	}
-	return strings.Join(msgs, "; ")
-}
-
-// transformSource runs esbuild Transform with the given loader and format.
-// Use FormatDefault to skip ESM-to-CJS conversion (e.g. TS-only stripping).
-func transformSource(filename, source string, loader api.Loader, format api.Format) (string, error) {
-	opts := api.TransformOptions{
-		Sourcefile: filepath.Base(filename),
-		Loader:     loader,
-		Target:     esbuildTarget(),
+	r, err := tsgotranspile.Transpile(source, tsgotranspile.Options{
+		FileName: feedName,
+		Target:   tsgoTarget(),
+		Module:   module,
+	})
+	if err != nil {
+		return "", fmt.Errorf("transform %s: %w", filepath.Base(filename), err)
 	}
-	if format != api.FormatDefault {
-		opts.Format = format
-		opts.Platform = api.PlatformNode
+	if e := tsgotranspile.FirstError(r.Diagnostics); e != nil {
+		return "", fmt.Errorf("transform %s: %w", filepath.Base(filename), e)
 	}
-	result := api.Transform(source, opts)
-	if len(result.Errors) > 0 {
-		return "", fmt.Errorf("transform %s: %s", filepath.Base(filename), esbuildErrors(result.Errors))
-	}
-	out := string(result.Code)
-	if format == api.FormatCommonJS {
+	out := r.JS
+	if commonJS {
 		out = strings.ReplaceAll(out, "import(", "__dynamicImport(")
 	}
 	return out, nil
@@ -262,19 +267,9 @@ func (r *Runtime) goLoadModuleFunc() GoFunc {
 		isTS := ext == ".ts" || ext == ".tsx"
 		isESM := isESMSource(absPath, source)
 
-		// Single esbuild pass handles TS stripping and/or ESM-to-CJS conversion.
+		// One tsgo pass covers both TS type-stripping and ESM->CJS conversion.
 		if isTS || isESM {
-			loader := api.LoaderJS
-			if ext == ".ts" {
-				loader = api.LoaderTS
-			} else if ext == ".tsx" {
-				loader = api.LoaderTSX
-			}
-			format := api.FormatDefault
-			if isESM {
-				format = api.FormatCommonJS
-			}
-			source, err = transformSource(absPath, source, loader, format)
+			source, err = transformSource(absPath, source, isESM)
 			if err != nil {
 				return nil, err
 			}

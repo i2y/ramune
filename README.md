@@ -60,7 +60,7 @@ Five use cases, five audiences. Jump to the section that matches your motivation
 - **Single-binary deploy.** `ramune compile worker.ts -o myworker` bundles handler + runtime into one Go executable. No Kubernetes, no Wrangler, no Dockerfile required — `scp ./myworker prod:` and run. qjswasm path is fully self-contained; JSC path still resolves the system JSC at run time (see next bullet).
 - **No Cgo at build; honest about runtime.** `go build` cross-compiles to any `GOOS`/`GOARCH` without a C toolchain. JSC backend loads JavaScriptCore dynamically via [`purego`](https://github.com/ebitengine/purego) — zero install on macOS, `libjavascriptcoregtk-4.1` on Linux. qjswasm is pure Go with zero runtime dependencies (QuickJS-NG compiled to WebAssembly, embedded into the Go binary, driven by wazero) and runs on `FROM scratch` Docker.
 
-Tri-backend: **JavaScriptCore** (JIT, macOS/Linux) via [purego](https://github.com/ebitengine/purego), **qjswasm** (pure Go, cross-platform incl. Windows — QuickJS-NG compiled to WebAssembly and driven by wazero) via [fastschema/qjs](https://github.com/fastschema/qjs), and **goja** (pure Go, reflect-based, ~94% ECMAScript) via [github.com/dop251/goja](https://github.com/dop251/goja) — no Cgo required for any of them. Type checker and formatter ([typescript-go](https://github.com/microsoft/typescript-go)), linter ([rslint](https://github.com/web-infra-dev/rslint)), bundler ([esbuild](https://github.com/evanw/esbuild)), and all Node.js polyfills are built in with zero external tool dependencies.
+Tri-backend: **JavaScriptCore** (JIT, macOS/Linux) via [purego](https://github.com/ebitengine/purego), **qjswasm** (pure Go, cross-platform incl. Windows — QuickJS-NG compiled to WebAssembly and driven by wazero) via [fastschema/qjs](https://github.com/fastschema/qjs), and **goja** (pure Go, reflect-based, ~94% ECMAScript) via [github.com/dop251/goja](https://github.com/dop251/goja) — no Cgo required for any of them. Type checker, formatter, and TypeScript→JavaScript transpiler ([typescript-go](https://github.com/microsoft/typescript-go), the upcoming TypeScript 7), linter ([rslint](https://github.com/web-infra-dev/rslint)), bundler ([esbuild](https://github.com/evanw/esbuild)), and all Node.js polyfills are built in with zero external tool dependencies.
 
 ```bash
 ramune serve worker.ts        # Serve Workers-style module
@@ -83,7 +83,7 @@ Three backends, same API:
 | **JIT** | Yes | No | No |
 | **Platforms** | macOS, Linux | macOS, Linux, **Windows** | macOS, Linux, **Windows** |
 | **System deps** | macOS: none. Linux: libjavascriptcoregtk | None | None |
-| **Spec coverage** | ES2023 | ES2023 | ES2023 effective (goja native ~ES2017; esbuild lowers newer syntax transparently on Eval) |
+| **Spec coverage** | ES2023 | ES2023 | ES2023 effective (goja native ~ES2017; post-ES2017 syntax is auto-lowered — tsgo on the CLI TS→JS path, esbuild as parse-failure fallback on raw `Eval`) |
 | **Best for** | Performance, HTTP servers | Embedding, scripting, portability | Pure-Go embedding, Windows-native, no cgo signal forwarding |
 
 All three are pure Go at build time: `go build` needs no C toolchain. Runtime deps differ: JSC resolves the system JavaScriptCore (zero install on macOS, `libjavascriptcoregtk-4.1` on Linux); qjswasm and goja have none.
@@ -141,7 +141,7 @@ The qjswasm backend uses [fastschema/qjs](https://github.com/fastschema/qjs) —
 go install -tags goja github.com/i2y/ramune/cmd/ramune@latest
 ```
 
-The goja backend wraps [dop251/goja](https://github.com/dop251/goja) unchanged, so it's a **drop-in for existing goja users**: scripts and Go interop code that run on goja directly run on Ramune with `-tags goja` with no behavioral change, and can later switch to `-tags qjswasm` or the default JSC build to gain throughput without touching the handler code. goja is a reflection-based Go JS interpreter with ~94% ECMAScript coverage. Appropriate when you want **pure-Go embedding on Windows** without any shared libraries and want to avoid the cgo signal-forwarding requirement that JSC needs on Linux/arm64. Modern JS syntax that goja's parser rejects (private class fields, top-level await, `Object.hasOwn`, logical assignment, etc.) is transparently lowered to ES2017 via esbuild on first-encounter parse failure in `Runtime.Eval` / `Runtime.Exec` — both CLI and library paths see the same effective ES2023 surface, and the lowered result is cached so repeated source is amortized.
+The goja backend wraps [dop251/goja](https://github.com/dop251/goja) unchanged, so it's a **drop-in for existing goja users**: scripts and Go interop code that run on goja directly run on Ramune with `-tags goja` with no behavioral change, and can later switch to `-tags qjswasm` or the default JSC build to gain throughput without touching the handler code. goja is a reflection-based Go JS interpreter with ~94% ECMAScript coverage. Appropriate when you want **pure-Go embedding on Windows** without any shared libraries and want to avoid the cgo signal-forwarding requirement that JSC needs on Linux/arm64. Modern TS/JS syntax that goja's parser rejects (private class fields, top-level await, `Object.hasOwn`, logical assignment, etc.) is lowered automatically: the CLI TS→JS path (`ramune run` / `eval` / `repl`) emits at ES2017 through tsgo, and any leftover modern JS passed to `Runtime.Eval` / `Runtime.Exec` hits a second-chance esbuild pass on parse failure (esbuild is kept for this one site because tsc does not lower top-level await in CJS). Both CLI and library paths see the same effective ES2023 surface, and the lowered result is cached so repeated source is amortized.
 
 #### Smaller binary
 
@@ -358,7 +358,7 @@ The formatter uses typescript-go's built-in formatter. The linter uses [rslint](
 
 If `rslint.json` or `rslint.jsonc` exists, `ramune lint` uses that configuration. Otherwise, all recommended rules are enabled by default.
 
-> **Note:** TypeScript transpilation (`ramune run app.ts`) uses [esbuild](https://esbuild.github.io/) which is also built into Ramune.
+> **Note:** TypeScript transpilation (`ramune run app.ts`) uses [typescript-go](https://github.com/microsoft/typescript-go), the upcoming TypeScript 7 — the same compiler that backs `ramune check` and `ramune fmt`. Bundling (`ramune build`, `Ramune.build`) uses [esbuild](https://esbuild.github.io/). Both are built into Ramune.
 
 ### Package Manager
 
@@ -684,8 +684,8 @@ http.ListenAndServe(":3000", handler)
 
 `ctx.waitUntil(promise)` is honoured — the HTTP response ships
 immediately while the executor drains pending promises. For multi-VM
-setups, `workers.Prepare` runs esbuild once and `workers.AttachPrepared`
-binds to each Runtime.
+setups, `workers.Prepare` runs tsgo's TS→JS emit once and
+`workers.AttachPrepared` binds to each Runtime.
 
 **Swap env.KV / env.DB for anything.** The built-in SQLite path is
 built on `KVBackend` / `DBBackend` Go interfaces; implement them with
@@ -1174,7 +1174,7 @@ const utils = require('./utils.ts');         // TypeScript stripping
 const pkg = require('some-package');         // node_modules resolution
 ```
 
-ESM detection: `.mjs` extension, `package.json` `"type": "module"`, or `import`/`export` keywords. TypeScript ESM files (`.ts` with `import`/`export`) are processed in a single esbuild pass. Modules are cached by resolved absolute path. Per-module `require` functions ensure correct relative path resolution in nested imports.
+ESM detection: `.mjs` extension, `package.json` `"type": "module"`, or `import`/`export` keywords. TypeScript ESM files (`.ts` with `import`/`export`) are processed in a single tsgo emit pass that strips types and converts ESM to CommonJS in one shot. Modules are cached by resolved absolute path. Per-module `require` functions ensure correct relative path resolution in nested imports.
 
 Ramune also supports `package.json` `"exports"` field resolution (conditional exports with `require`/`import`/`default` and subpath exports).
 
@@ -1240,14 +1240,14 @@ Ramune includes code from the following projects:
 
 | Project | License | Usage | Inclusion |
 |---------|---------|-------|-----------|
-| [microsoft/typescript-go](https://github.com/microsoft/typescript-go) | Apache-2.0 | Type checker, formatter (TS 7.0-dev) | Source copy (`internal/tsgo/`) |
+| [microsoft/typescript-go](https://github.com/microsoft/typescript-go) | Apache-2.0 | Type checker, formatter, and TypeScript→JavaScript transpiler (TS 7.0-dev) | Source copy (`internal/tsgo/`) |
 | [web-infra-dev/rslint](https://github.com/web-infra-dev/rslint) | MIT | Linter | Source copy (`internal/rslint/`) |
 | [dop251/goja](https://github.com/dop251/goja) | MIT | goja backend (`-tags goja`) | Go module dependency |
 | [fastschema/qjs](https://github.com/fastschema/qjs) | MIT | qjswasm backend (`-tags qjswasm`) — QuickJS-NG on wazero, fork adds a `DisableFS` option for sandboxed use | Inline vendored (`third_party/qjs/`) |
 | [QuickJS-NG](https://github.com/quickjs-ng/quickjs) | MIT | Baked into the prebuilt `third_party/qjs/qjs.wasm` that the qjswasm backend embeds; license text at `third_party/qjs/qjswasm/quickjs/LICENSE` | Compiled-binary inclusion |
 | [tetratelabs/wazero](https://github.com/tetratelabs/wazero) | Apache-2.0 | WebAssembly runtime that drives `qjs.wasm` for the qjswasm backend | Go module dependency |
 | [modernc.org/sqlite](https://pkg.go.dev/modernc.org/sqlite) | BSD-3-Clause | Pure-Go SQLite for `bun:sqlite` and the Workers-style `env.DB` default | Go module dependency |
-| [evanw/esbuild](https://github.com/evanw/esbuild) | MIT | TypeScript transpilation, bundling | Go module dependency |
+| [evanw/esbuild](https://github.com/evanw/esbuild) | MIT | Bundling (`ramune build`, `Ramune.build`, npm-dep cache, ESM-to-CJS fallback) plus the goja parse-failure lowerer; TS→JS emit moved to typescript-go | Go module dependency |
 
 License texts for source-copied projects are in `internal/tsgo/LICENSE`, `internal/rslint/LICENSE`, `internal/rslint/tsgo_pinned/LICENSE` (a separate tsgo copy pinned to rslint's version for its shim bindings), and `third_party/qjs/LICENSE` + `third_party/qjs/qjswasm/quickjs/LICENSE` (see `third_party/qjs/NOTICES.md`).
 

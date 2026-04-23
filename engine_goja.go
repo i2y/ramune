@@ -46,6 +46,12 @@ func isGojaParseError(err error) bool {
 // (private class fields, top-level await, Object.hasOwn, etc.) becomes parseable
 // by goja. Result is cached by source string - same source reused inside a hot
 // loop only pays the esbuild cost once.
+//
+// Kept on esbuild rather than the tsgo-backed tsgotranspile path because tsc
+// does not lower top-level await in CommonJS emit (it raises TS1378 and emits
+// the await verbatim). Since this function exists specifically to rescue code
+// that goja's parser rejects - TLA included - esbuild's IIFE wrap is the only
+// semantics that works here.
 func lowerForGoja(src string) (string, error) {
 	gojaLowerMu.RLock()
 	if cached, ok := gojaLowerCache[src]; ok {
