@@ -32,6 +32,8 @@ type Options struct {
 	Target                 core.ScriptTarget // ScriptTargetESNext / ES2017 / ...
 	Module                 core.ModuleKind   // usually ModuleKindCommonJS
 	JSX                    core.JsxEmit      // JsxEmitPreserve / JsxEmitReact / ...
+	JsxFactory             string            // e.g. "__jsx"; paired with JsxEmitReact
+	JsxFragmentFactory     string            // e.g. "__Fragment"; paired with JsxEmitReact
 	RemoveComments         bool
 	InlineSourceMap        bool
 	ExperimentalDecorators bool
@@ -111,12 +113,14 @@ func (t *Transpiler) Transpile(source string, opts Options) (Result, error) {
 	host := &libCachingHost{inner: inner, cache: t.libs, libPath: t.libPath}
 
 	co := &core.CompilerOptions{
-		Target:       opts.Target,
-		Module:       opts.Module,
-		Jsx:          opts.JSX,
-		OutDir:       outDir,
-		SkipLibCheck: core.TSTrue,
-		AllowJs:      core.TSTrue,
+		Target:             opts.Target,
+		Module:             opts.Module,
+		Jsx:                opts.JSX,
+		JsxFactory:         opts.JsxFactory,
+		JsxFragmentFactory: opts.JsxFragmentFactory,
+		OutDir:             outDir,
+		SkipLibCheck:       core.TSTrue,
+		AllowJs:            core.TSTrue,
 	}
 	if opts.RemoveComments {
 		co.RemoveComments = core.TSTrue

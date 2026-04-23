@@ -11,7 +11,7 @@ import (
 
 	"github.com/i2y/ramune"
 	"github.com/i2y/ramune/internal/tsgo/core"
-	"github.com/i2y/ramune/internal/tsgotranspile"
+	"github.com/i2y/ramune/tsgotranspile"
 )
 
 // IsWorkersStyle reports whether the source uses a default export, the

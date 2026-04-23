@@ -9,7 +9,7 @@ import (
 	"strings"
 
 	"github.com/i2y/ramune/internal/tsgo/core"
-	"github.com/i2y/ramune/internal/tsgotranspile"
+	"github.com/i2y/ramune/tsgotranspile"
 )
 
 var esmImportRe = regexp.MustCompile(`(?m)^\s*(import\s+|export\s+(default\s+|const\s+|function\s+|class\s+|let\s+|var\s+|\{))`)
