@@ -1,0 +1,579 @@
+# Ramune — Full Documentation
+
+Foundation for Workers-style platforms in Go, embeddable and extensible; Cloudflare-Workers-compatible out of the box. Primary use case: build your own Workers-style platform (your `env`, your backends, your bindings) on a runtime that already speaks the Workers handler shape, so Cloudflare-authored handlers (`export default { fetch(req, env, ctx), scheduled }`) run unchanged as a consequence of the default surface. Deploy to your own hardware with full Go interop. Core scope: [WinterCG](https://wintercg.org/) + fetch + `env.DB` / `env.KV` / `env.SECRETS` + `ctx.waitUntil` + cron. Advanced CF bindings (Durable Objects / Queues / R2 / AI Gateway) are **not shipped**; they are implemented as user-supplied `env.*` bindings via `RegisterFunc` + `WithExtraEnvJS`, and the same mechanism is how you design bindings that have no CF analogue at all. **No Cgo**: JSC via `purego`, qjswasm and goja pure Go; `go build` cross-compiles to any GOOS/GOARCH without a C toolchain, and qjswasm/goja run on `FROM scratch` Docker. Ramune is also a complete JS/TS runtime (`run` / `test` / `check` / `fmt` / `lint` / `repl` / `compile`) and an embeddable JS engine for any Go program.
+
+> Ramune is a JS/TS runtime with soundness-gated AOT native compilation. `ramune compile --hybrid` walks every user TS file and extracts each function whose signature and body are statically provable to behave identically in Go; rejected functions keep running as JS unchanged. Tri-backend: JavaScriptCore (JIT, macOS/Linux) via [purego](https://github.com/ebitengine/purego), qjswasm (pure Go, cross-platform incl. Windows — QuickJS-NG compiled to WebAssembly and driven by wazero) via [fastschema/qjs](https://github.com/fastschema/qjs), and goja (pure Go, reflect-based) via [dop251/goja](https://github.com/dop251/goja) — no Cgo required for any of them.
+
+## Install
+
+```
+# JSC backend (default, macOS/Linux)
+go install github.com/i2y/ramune/cmd/ramune@latest
+go install github.com/i2y/ramune/cmd/ramune-toolchain@latest  # needed for check / fmt / lint / compile / transpile / typegen
+ramune setup-jit   # macOS only: enable JSC JIT for full performance
+
+# qjswasm backend (Windows / zero-dependency)
+go install -tags qjswasm github.com/i2y/ramune/cmd/ramune@latest
+go install -tags qjswasm github.com/i2y/ramune/cmd/ramune-toolchain@latest  # optional
+
+# Goja backend (smallest pure-Go build, reflect-based)
+go install -tags goja github.com/i2y/ramune/cmd/ramune@latest
+
+# Smaller binary
+go install -tags nosqlite -ldflags="-s -w" github.com/i2y/ramune/cmd/ramune@latest
+```
+
+The `ramune` binary (~30MB) holds the runtime. `ramune-toolchain` (~60MB) is a separate dev-only binary that `ramune` exec-dispatches to for `check` / `fmt` / `lint` / `compile` / `transpile` / `typegen`. Splitting the tsgo + rslint + gotranspiler trees out of the main binary keeps `ramune run` / `serve` / `eval` startup fast. If you only run / serve / eval / repl / test, you can skip `ramune-toolchain`.
+
+## CLI Commands
+
+```
+ramune run [file]            Run JS/TS file (or package.json entry point)
+ramune run -w file.ts        Watch mode (auto-restart on changes)
+ramune run --check file.ts   Type-check then run
+ramune run --sandbox file.ts Deny all permissions
+ramune run --workers 4 srv.ts Multi-worker HTTP server
+ramune serve <entry.ts>      Workers-style ES-module handler (export default { fetch })
+ramune eval "expr"           Evaluate expression (JS/TS)
+ramune test [dir]            Run test files (*.test.ts, *.spec.js)
+ramune check [file|dir]      Type-check with tsgo
+ramune repl                  Interactive REPL (history, completion, TS)
+ramune build <file>          Bundle with esbuild
+ramune compile <file>        Compile to standalone binary (go:embed)
+ramune bench [dir]           Run benchmark files
+ramune x <pkg>               npx-like package runner
+ramune init                  Create package.json
+ramune add <pkg>             Add dependency
+ramune remove <pkg>          Remove dependency
+ramune install               Install all dependencies
+ramune setup-jit             Enable JSC JIT on macOS
+ramune typegen <pkg...>      Generate .d.ts for Go packages (go: imports)
+ramune skills install        Install Agent Skills for AI agents
+ramune version               Show version
+```
+
+Run options: `-p <pkg>` (npm package), `-w`/`--watch`, `--check`, `--sandbox`, `--allow-read[=path]`, `--allow-write[=path]`, `--allow-net[=host]`, `--allow-env[=var]`, `--allow-run[=cmd]`.
+
+Compile options: `-o output`, `--minify`, `--http` (Ramune.serve event loop), `--native <file.ts>` (repeatable; transpile TS to native Go extension), `--hybrid` (soundness-gated auto-extraction of typed functions to native Go), `--hybrid-report` (per-function picker report on stderr).
+
+Transpile options: `-o outdir`, `--module name`, `--compile` (transpile + build binary).
+
+Typegen options: `-o output.d.ts` (default: `go.d.ts`). Accepts `go:pkg` or `pkg` syntax.
+
+Serve options: `--port N` (default 3000), `--workers N` (independent runtimes, round-robin), `--sqlite <path>` (default `.ramune/data.db`), `--no-sqlite`, `--config <path>` (default `ramune.toml`), `--no-config`, `--secrets-prefix <p>` (default `RAMUNE_SECRET_`), `--wait-until-timeout <dur>` (default 30s, 0=forever), `--env-file`, `--sandbox`, `--allow-read/write/net/env/run`. Reads optional `ramune.toml` for `[dependencies]`, `[permissions]`, `[[kv_namespaces]]`.
+
+## TypeScript-to-Go Transpiler (Experimental)
+
+Ramune includes a built-in TypeScript-to-Go transpiler that converts TypeScript source code to idiomatic Go. This feature is experimental and under active development — generated code may require manual adjustments for complex codebases.
+
+```
+ramune transpile main.ts -o out/                         # single file
+ramune transpile main.ts utils.ts -o out/ --module myapp # multi-file project
+ramune transpile main.ts --compile -o myapp              # transpile + build binary
+```
+
+### Supported TypeScript Features
+
+| Category | Features |
+|----------|----------|
+| Types | `number` → `float64`, `string`, `boolean`, `void`, `null`/`undefined` → `nil`, `any`, `unknown` → `any` |
+| Collections | `T[]` → `[]T`, `Map<K,V>` → `map[K]V`, `Set<T>` → `map[T]struct{}` |
+| Nullable | `T \| null`, `T \| undefined` → `*T` (pointer) |
+| Generics | Functions and classes with type parameters and constraints |
+| Enums | String enums → Go const block, numeric enums → iota |
+| Discriminated unions | `type Shape = Circle \| Square` with narrowing via `if (s.kind === "circle")` |
+| Union of literals | `"a" \| "b" \| "c"` → `string` |
+| Promises | `Promise<T>` → `*promise.Promise[T]`, `async`/`await` supported |
+| Classes | Fields, constructors, methods, inheritance (`extends`), static fields/methods, abstract classes, getter/setter accessors |
+| Interfaces | Converted to Go struct types |
+| Destructuring | Object `{a, b}` and array `[x, y]` patterns, default values (`{a = 1}`) |
+| Spread | `[...arr, elem]`, `{...obj, key: val}` |
+| Template literals | `` `Hello ${name}` `` → `fmt.Sprintf` |
+| Operators | `typeof`, `instanceof`, `in`, `delete`, `?.` (optional chaining), `??` (nullish coalescing), `**` (exponentiation), `>>>`, `&&=`, `\|\|=`, `??=` |
+| Array methods | `map`, `filter`, `reduce`, `find`, `forEach`, `includes`, `some`, `every`, `push`, `pop`, `slice`, `splice`, `concat`, `join`, etc. |
+| String methods | `split`, `includes`, `startsWith`, `endsWith`, `trim`, `replace`, `replaceAll`, `repeat`, `padStart`, `padEnd`, etc. |
+| Loops | `for`, `for...of`, `for...in`, `for await...of`, `while`, `do...while`, labeled `break`/`continue` |
+| Error handling | `try`/`catch`/`finally` |
+| Modules | Relative imports, Node.js built-in modules, npm packages (uuid, lodash, zod), Go packages via `go:` prefix, `export default`, re-exports |
+| Go interop | `go:` prefix imports any Go package, multi-return destructuring (`const [resp, err] = fn()`), auto go.mod |
+| Type resolution | Conditional types, mapped types (`Record<K,V>` → `map[K]V`), intersection types, utility types via checker |
+
+### Type Mapping
+
+| TypeScript | Go |
+|---|---|
+| `number` | `float64` |
+| `string` | `string` |
+| `boolean` | `bool` |
+| `T[]` | `[]T` |
+| `T \| null` | `*T` |
+| `Map<K, V>` | `map[K]V` |
+| `Set<T>` | `map[T]struct{}` |
+| `Promise<T>` | `*promise.Promise[T]` |
+| `any` / `unknown` | `any` |
+| Enum | Named type with const block |
+| Class | Struct with methods |
+| Interface | Struct type |
+
+### Transpiler Limitations
+
+- No decorators — complex metaprogramming, not yet supported
+- No generators / `yield` — Go has no generator concept; use channels or callbacks
+- No dynamic `import()` — use `require()`
+- No Symbol or Proxy — no Go equivalent
+- Numeric precision — all numbers are `float64`
+- `any`-typed property access uses `jsrt.GetField()` runtime reflection
+
+### Go Package Imports (`go:` prefix)
+
+Import any Go standard library or third-party package:
+
+```typescript
+import { Println, Sprintf } from "go:fmt"
+import * as http from "go:net/http"
+import { Default } from "go:github.com/gin-gonic/gin"
+
+const [resp, err] = http.Get("http://example.com")  // Go multi-return
+```
+
+Generate TypeScript type definitions for type checking:
+
+```
+ramune typegen go:fmt go:net/http -o go.d.ts
+```
+
+Generates `declare module "go:fmt" { ... }` with function signatures, interfaces, constants, and type mappings (number, string, boolean, Record, tuples for multi-return, Error | null for error returns).
+
+## Native Extension Modules (Experimental)
+
+Experimental: uses the TypeScript-to-Go transpiler internally, so it inherits the transpiler's experimental status. Simple typed functions (primitives, structs, typed slices) work reliably; generics, decorators, and deep class inheritance may produce Go code that needs manual fixes.
+
+Compile TypeScript functions to native Go code callable from JS at full compiled speed:
+
+```
+ramune compile app.js --native math.ts -o myapp
+ramune compile app.js --native math.ts --native geometry.ts -o myapp
+```
+
+The `--native` flag transpiles TypeScript to Go, exposing exported functions via `require('native:modulename')`.
+
+Workflow: TypeScript → Go transpiler → Go source → NativeModuleFromFuncs → require('native:name')
+
+Supported native function signatures:
+- Primitive parameters and returns: `number`, `string`, `boolean`
+- Struct parameters: JS objects auto-converted to Go structs via field name matching
+- Struct returns: Go structs returned as JS objects with live getter/setter properties
+- Typed slice parameters: `number[]` → `[]float64`, etc.
+- Error returns: `(T, error)` — errors become JS exceptions
+- Pointer returns: `*Struct` — returned with methods and mutable fields
+- Panics caught and converted to JS exceptions
+
+Not supported as native exports:
+- Generic functions (must be wrapped in a non-generic function)
+- Functions with channel parameters
+
+### NativeModuleFromFuncs (Go Library API)
+
+Create native modules from typed Go functions without manual argument parsing:
+
+```go
+mod := ramune.NativeModuleFromFuncs("native:math", map[string]any{
+    "add":       func(a, b float64) float64 { return a + b },
+    "fibonacci": mymath.Fibonacci,
+})
+rt, _ := ramune.New(ramune.NodeCompat(), ramune.WithModule(mod))
+rt.Eval(`require('native:math').add(3, 4)`) // 7
+```
+
+Supports struct parameters (JS objects → Go structs), struct returns with live properties, typed slices, error handling, and panic recovery.
+
+When a function returns a struct pointer, the JS object has live getter/setter properties and callable methods — mutations in JS are reflected in Go and vice versa.
+
+## Go Library API
+
+### Runtime
+
+```go
+rt, err := ramune.New(opts ...Option)
+
+// Options
+ramune.NodeCompat()              // Node.js polyfills
+ramune.WithFetch()               // globalThis.fetch
+ramune.Dependencies("lodash@4")  // npm packages (subpath imports supported: "react-dom/server")
+ramune.PreloadJS(code)           // JS to run before dependency bundles (polyfills)
+ramune.WithGC(ramune.GCConfig{}) // GC tuning
+ramune.WithPermissions(perms)    // sandbox
+ramune.WithModule(module)        // custom require() module
+
+// Evaluate
+val, err := rt.Eval(code)
+err := rt.Exec(code)
+val, err := rt.EvalAsync(code)   // resolve Promises
+
+// Construct values
+obj, _ := rt.NewObject(map[string]any{"key": "value"})
+arr, _ := rt.NewArray(1, "two", true)
+buf, _ := rt.NewUint8Array([]byte{0xFF})
+
+// Go callbacks (GoFunc can safely call Value methods — no deadlock)
+rt.RegisterFunc("name", func(args []any) (any, error) { ... })
+
+// JS function arguments are wrapped as *JSFunc, callable from Go
+rt.RegisterFunc("forEach", func(args []any) (any, error) {
+    fn := args[0].(*ramune.JSFunc)
+    defer fn.Close()
+    fn.Call("hello") // invoke the JS function
+    return nil, nil
+})
+
+// Typed callbacks (generics, supports *JSFunc parameters)
+ramune.Register(rt, "add", func(a, b float64) float64 { return a + b })
+
+// Struct binding
+rt.Bind("user", &User{Name: "Alice", Age: 30})
+
+// Plugin system
+rt.LoadModule(ramune.Module{Name: "mydb", Exports: map[string]ramune.GoFunc{...}})
+
+// Native module from typed functions (reflection-based, no manual arg parsing)
+mod := ramune.NativeModuleFromFuncs("native:math", map[string]any{
+    "add": func(a, b float64) float64 { return a + b },
+})
+rt, _ = ramune.New(ramune.NodeCompat(), ramune.WithModule(mod))
+
+// Event loop
+rt.Tick()
+rt.RunEventLoop()
+rt.Wake()   // signal event loop from any goroutine
+
+// Multi-core pool
+pool, _ := ramune.NewPool(4, ramune.NodeCompat())
+pool.Eval("...")
+pool.Broadcast("...")
+pool.ListenAndServe(":3000", handlerJS)
+
+rt.Close()
+```
+
+### Value
+
+```go
+val.String()                // JS string representation
+val.Float64()               // as float64
+val.Int64()                 // as int64
+val.Bool()                  // as bool
+val.Bytes()                 // TypedArray/ArrayBuffer → []byte
+val.GoString()              // JS string → Go string
+val.IsNull() / IsUndefined() / IsArray() / IsFunction()
+val.Attr("name")            // get property
+val.SetAttr("name", value)  // set property
+val.Has("name")             // check property
+val.Delete("name")          // delete property
+val.Keys()                  // enumerate property names
+val.Len()                   // length property
+val.Index(i)                // array index
+val.ToMap()                 // → map[string]any (via JSON)
+val.ToSlice()               // → []any (via JSON)
+val.Call(args...)            // call as function
+val.Close()                 // release
+```
+
+### JSFunc
+
+JS functions passed as GoFunc callback arguments are wrapped as `*JSFunc`:
+
+```go
+fn := args[0].(*ramune.JSFunc)
+defer fn.Close()                    // release JS reference
+result, err := fn.Call(arg1, arg2)  // invoke, returns Go value
+```
+
+### GC Configuration
+
+```go
+ramune.WithGC(ramune.GCConfig{
+    GCInterval: 2000,   // manual JSC GC every N requests (default: 2000)
+    GCPercent:  100,    // Go GOGC value (default: 100)
+})
+```
+
+### Workers-style Modules (`github.com/i2y/ramune/workers`)
+
+Cloudflare-Workers-style handlers — author a module that `export default { fetch, scheduled }` and serve it inside any Go HTTP server.
+
+```go
+import "github.com/i2y/ramune/workers"
+
+// Single runtime
+handler, err := workers.Register(rt, "worker.ts", src,
+    workers.WithSQLite(".ramune/data.db"),    // env.DB + env.KV
+    workers.WithWaitUntilTimeout(30*time.Second),
+    workers.WithSecretsPrefix("APP_"),         // env.SECRETS source
+)
+http.ListenAndServe(":3000", handler)
+
+// N runtimes (typescript-go transpile runs once, attached to each)
+p, _ := workers.Prepare("worker.ts", src)
+for i := 0; i < 4; i++ {
+    rt, _ := ramune.New(ramune.NodeCompat(), ramune.WithFetch())
+    h, _ := workers.AttachPrepared(rt, p, workers.WithSQLite("db.db"))
+    // ... wire h into a round-robin mux
+}
+
+// Pluggable backends (Redis, Postgres, in-memory ...)
+// type KVBackend interface { Get/Put/Delete/List }
+// type DBBackend interface { Query/Exec }  // ? placeholders
+workers.Register(rt, "w.ts", src,
+    workers.WithKVBackend(myRedisKV),
+    workers.WithDBBackend(myPostgres),
+)
+```
+
+- `ctx.waitUntil(p)` keeps the executor alive post-response until `p` settles or `WithWaitUntilTimeout` fires.
+- `env.SECRETS` is a frozen map of env vars matching `WithSecretsPrefix` (default `RAMUNE_SECRET_`).
+- `WithSQLite` is a convenience — `sqliteKV` / `sqliteSQLBackend` satisfy the same `KVBackend` / `DBBackend` interfaces as user-supplied backends.
+- `workers.LoadRamuneTOML(path)` + `workers.ApplyRamuneTOML(toml)` parse the same `[dependencies]` / `[permissions]` / `[[kv_namespaces]]` schema the CLI uses.
+- `workers.ExtractModuleConfig(rt)` inspects the default export's `route` / `cron` / `fetch` / `scheduled` fields (skips framework methods like Hono's `.route()`).
+- TypeScript declarations live in `workers/workers.d.ts` (`Env`, `WorkersHandler`, `ExecutionContext`, `D1Database`, `KVNamespace`, `Secrets`, `ScheduledEvent`).
+- The CLI wrapper is `ramune serve`.
+
+### Custom `env` bindings (`workers.WithExtraEnvJS` + `RegisterFunc`)
+
+Full extensibility story for CF Workers features Ramune does not ship (Durable Objects, Queues, R2, AI Gateway, Service Bindings, Hyperdrive). Three pieces:
+
+1. **Go callback** — `rt.RegisterFunc("__env_foo_op", fn)` does the actual work (HTTP call, DB query, S3 put...).
+2. **JS facade** — passed via `workers.WithExtraEnvJS(js)`; it mutates the env object through the `globalThis.__extraEnvBindings(env)` hook.
+3. **TypeScript augmentation** (optional) — `interface Env { FOO: ... }` in a `.d.ts` merges into the built-in `Env`.
+
+```go
+// Example: env.EMAIL with a user-supplied Sender
+rt.RegisterFunc("__env_email_send", func(args []any) (any, error) {
+    b, _ := json.Marshal(args[0])
+    var opts struct{ To, Subject, Body string }
+    _ = json.Unmarshal(b, &opts)
+    return nil, mailer.Send(opts.To, opts.Subject, opts.Body)
+})
+
+const facadeJS = `
+globalThis.__extraEnvBindings = (function(prev) {
+    return function(env) {
+        if (prev) prev(env);           // compose with other bindings
+        env.EMAIL = {
+            send: function(opts) { return __env_email_send(opts); },
+        };
+    };
+})(globalThis.__extraEnvBindings);
+`
+
+handler, _ := workers.Register(rt, "w.ts", src, workers.WithExtraEnvJS(facadeJS))
+```
+
+The IIFE composition around `prev` lets multiple packages stack bindings (`mailbinding.FacadeJS + queuebinding.FacadeJS + blobbinding.FacadeJS`) without collisions. `workers.WithSQLite` is a convenience built on this same pattern — it installs `KVBackend` + `DBBackend` via `WithKVBackend` / `WithDBBackend`, which both use the env-builder under the hood. See `workers/BINDINGS.md` and `examples/workers/custom-binding/` for the full walkthrough.
+
+### Permissions
+
+```go
+ramune.WithPermissions(&ramune.Permissions{
+    Read:      ramune.PermGranted,
+    ReadPaths: []string{"/tmp"},
+    Write:     ramune.PermDenied,
+    Net:       ramune.PermDenied,
+    Env:       ramune.PermGranted,
+    Run:       ramune.PermDenied,
+})
+```
+
+## Ramune APIs & Bun Compatibility
+
+Ramune provides its own API namespace (`Ramune.*`). `Bun.*` is available as an alias for backward compatibility, though compatibility is partial and will be improved over time.
+
+Supported APIs:
+- `Ramune.serve({port, fetch, websocket})` — HTTP/WebSocket server (Go net/http backend). Async fetch handlers with setTimeout supported.
+- `Ramune.file(path)` — text(), json(), exists(), size, name
+- `Ramune.write(path, data)` — file write
+- `Ramune.password.hash/verify` — bcrypt
+- `Ramune.sleep(ms)` — Promise-based delay
+- `Ramune.hash(data)` — FNV hash
+- `Ramune.plugin({setup})` — onLoad filters, virtual modules
+- `Request` / `Response` — Web API polyfills (enables Hono, etc.)
+- `Bun.*` — Alias for `Ramune.*` (partial Bun compatibility)
+- `bun:sqlite` — pure Go SQLite (Database, Statement)
+
+## Node.js Compatibility
+
+Enabled via `ramune.NodeCompat()`:
+
+| Module | Coverage | Key Functions |
+|--------|----------|---------------|
+| path | 100% | join, resolve, relative, normalize, isAbsolute, parse, format |
+| fs | 90% | readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync, readdirSync, statSync, rmSync, copyFileSync, realpathSync, accessSync, chmodSync, symlinkSync, createReadStream, createWriteStream, fs.promises, fs.watch |
+| child_process | 80% | spawnSync, execSync, execFileSync, spawn (async goroutine I/O) |
+| crypto | 85% | randomBytes, randomUUID, createHash, createHmac, scryptSync, pbkdf2Sync, createCipheriv, createDecipheriv, randomInt, timingSafeEqual, createSign/Verify, generateKeyPairSync, crypto.subtle |
+| stream | 85% | Readable, Writable, Transform, Duplex, PassThrough as ES6 classes (class extends supported), pipe, asyncIterator (for await...of), backpressure, cork/uncork, unshift, unpipe, objectMode, stream.pipeline, stream.finished |
+| zlib | 75% | gzipSync, gunzipSync, deflateSync, inflateSync, brotliCompressSync, brotliDecompressSync |
+| os | 85% | platform, arch, hostname, type, cpus, totalmem, freemem, userInfo |
+| events | 85% | EventEmitter: on, once, emit, removeListener, setMaxListeners |
+| http/https | 80% | http.request, http.get, http.createServer with streaming response (Go net/http backend) |
+| http2 | 75% | connect, createServer, createSecureServer, trailers, multiplexing, h2c |
+| net/tls | 70% | net.Socket, net.createConnection, net.createServer, tls.connect (async goroutines) |
+| Buffer | 90% | from, alloc, concat, readUInt8/16/32, writeUInt8/16/32, fill, toString(hex/base64/utf8), Buffer.compare, equals, slice, copy |
+| url | 80% | parse, format, resolve, fileURLToPath |
+| assert | 80% | ok, strictEqual, deepStrictEqual, throws, doesNotThrow |
+| util | 80% | types, promisify, callbackify, format, inspect, debuglog |
+| worker_threads | 80% | Worker, parentPort, workerData, postMessage, SharedArrayBuffer, Atomics.waitAsync |
+| vm | 70% | createContext, runInContext, runInNewContext, Script |
+| readline | 70% | async iterator support |
+| querystring | 80% | escape, unescape, stringify, parse |
+| timers/promises | 70% | setTimeout, setImmediate as Promise |
+| perf_hooks | basic | performance.now, mark, measure |
+| process | 85% | env, cwd, platform, arch, hrtime, nextTick, exit, signals via EventEmitter, stdin/stdout/stderr with isTTY |
+| tty | 70% | isatty, ReadStream, WriteStream with columns/rows |
+| dgram | 70% | UDP sockets |
+| async_hooks | basic | AsyncLocalStorage |
+| module | — | createRequire, file-based require with ESM-to-CJS transform |
+| dns | basic | lookup, resolve |
+
+Also: TextEncoder/TextDecoder, AbortController/AbortSignal, Symbol.dispose/asyncDispose.
+
+## Web Platform APIs
+
+| API | Status |
+|-----|--------|
+| `fetch` | Supported (Go net/http backend) |
+| `ReadableStream` / `WritableStream` / `TransformStream` | Supported (pipeTo, pipeThrough, tee, async iterator) |
+| `crypto.subtle` | Supported (digest, sign/verify, encrypt/decrypt, importKey/exportKey, deriveBits/deriveKey) |
+| `crypto.getRandomValues` / `randomUUID` | Supported |
+| `Blob` / `File` | Supported |
+| `FormData` | Supported |
+| `Headers` / `Request` / `Response` | Supported (ReadableStream body) |
+| `TextEncoder` / `TextDecoder` | Supported (UTF-8) |
+| `AbortController` / `AbortSignal` | Supported |
+| `URL` / `URLSearchParams` | Supported |
+| `WebSocket` | Supported (server-side via Ramune.serve) |
+| `performance.now` / `mark` / `measure` | Supported |
+| `structuredClone` | Supported (circular refs, Map, Set, Date, RegExp, TypedArray) |
+| `setTimeout` / `setInterval` | Supported |
+| `navigator` | Supported (userAgent, platform, hardwareConcurrency) |
+| `console.time` / `table` / `trace` | Supported |
+
+## TypeScript
+
+- `.ts`/`.tsx` files transpiled via typescript-go (TS 7) — same compiler as `ramune check`/`fmt`. esbuild is kept for bundling and as the parse-failure lowerer on the goja backend.
+- `require('./module.ts')` resolves and transpiles `.ts` files via typescript-go
+- REPL accepts TypeScript syntax
+- `ramune eval` handles TypeScript expressions
+- `ramune check` uses tsgo (TypeScript 7, 10x faster than tsc)
+- ESM files bundled via esbuild Build API with full import resolution
+
+## Test Runner
+
+```js
+describe("math", () => {
+    test("addition", () => {
+        expect(1 + 2).toBe(3);
+    });
+});
+```
+
+Matchers: toBe, toEqual, toBeTruthy, toBeFalsy, toContain, toThrow, toBeGreaterThan, toBeLessThan, toHaveLength, toBeNull, toBeUndefined, toBeDefined, toHaveBeenCalledTimes, not.*.
+
+Mocking via `jest.fn()` and `jest.spyOn()`:
+
+```js
+test("mock", () => {
+    const fn = jest.fn().mockReturnValue(42);
+    expect(fn()).toBe(42);
+    expect(fn).toHaveBeenCalledTimes(1);
+});
+```
+
+## Architecture
+
+- Each Runtime has a dedicated goroutine pinned to one OS thread via runtime.LockOSThread()
+- All JSC operations dispatched via channel; dispatch() detects re-entrance via goroutine ID
+- Independent VMs via JSContextGroupCreate + JSGlobalContextCreateInGroup (bypasses macOS shared VM)
+- Channel-driven event loop with Wake() — no 10ms polling
+- Multi-core via RuntimePool (N independent JSC contexts on separate OS threads)
+- Map/slice conversion uses JSON.parse to avoid JSC structure table corruption from rapid C API calls
+- Async handlers support setTimeout via real-time tick loop
+- qjswasm backend: QuickJS-NG compiled to WebAssembly (via fastschema/qjs), executed by wazero's compiler-mode JIT (AOT WASM→native). Pure Go. Thread-pinned like JSC/goja because wazero module isn't goroutine-safe. Sandbox-friendly: WithPermissions(SandboxPermissions()) auto-sets DisableFS to skip the ambient WASI FS mount; WithResourceLimits maps to QuickJS-NG memory/stack/GC caps.
+- Backend selected at build time via `-tags qjswasm` or `-tags goja` (default = JSC).
+
+## Performance
+
+### JSC backend (Apple M4 Max, JIT enabled)
+
+| Test | Ramune | Bun | Node.js |
+|------|--------|-----|---------|
+| Hello World | 17.7 ms | 7.7 ms | 19.6 ms |
+| Fibonacci(35) | 53.5 ms | 44.6 ms | 71.6 ms |
+| JSON 10K | 20.5 ms | 10.0 ms | 24.6 ms |
+| Crypto SHA256 | 19.8 ms | 11.0 ms | 20.4 ms |
+| File I/O | 20.7 ms | 13.3 ms | 24.2 ms |
+| HTTP req/s (single) | 90.5 K | 111 K | 89.8 K |
+| HTTP req/s (3 workers, fib(35)) | 85 | 32 | 22 |
+
+### qjswasm backend (pool scaling, Apple M4 Max, wrk)
+
+| Workers | req/s | Scaling |
+|---------|-------|---------|
+| 1 | 2,348 | 1.0x |
+| 2 | 4,666 | 1.99x |
+| 3 | 6,782 | 2.89x |
+| 4 | 9,152 | 3.90x |
+| 5 | 11,331 | 4.83x |
+| 6 | 13,435 | 5.72x |
+
+Monotonic out to 6 workers and still linear. Replaces the removed modernc/quickjs backend: qjswasm is 1.7-2.3× faster at every worker count and scales 5.72× vs modernc's 4.14× (6w).
+
+### goja backend (pool scaling, same machine)
+
+| Workers | req/s | Scaling |
+|---------|-------|---------|
+| 1 | 3,518 | 1.0x |
+| 2 | 5,833 | 1.66x |
+| 3 | 7,404 | 2.10x |
+| 4 | 8,374 | 2.38x |
+| 6 | 10,173 | 2.89x |
+
+Faster than qjswasm at 1-3 workers (no wasm compile cost); qjswasm pulls ahead at 4+ workers.
+
+### Multi-Runtime Pool (JSC)
+
+| Workers | req/s | Scaling |
+|---------|-------|---------|
+| 1 | 40.5K | 1.0x |
+| 2 | 54.5K | 1.35x |
+| 3 | 58.4K | 1.44x |
+| 6 | 62.4K | 1.54x |
+
+### vs Go JS Runtimes
+
+| Test | Ramune (JSC+JIT) | Ramune (qjswasm) | Ramune (goja) | otto |
+|------|-----------------|------------------|---------------|------|
+| Fibonacci(35) | **35ms** | 1,987ms | 2,400ms | 26,413ms |
+| JSON 10K objects | **0.98ms** | 19.6ms | 12.3ms | 27ms |
+
+Run `make bench` to reproduce.
+
+## Known Limitations
+
+- **N-API / Native addons**: Not supported. Packages requiring `.node` native binaries won't work — use pure JS alternatives.
+- **HTTP self-fetch**: Ramune.serve() handlers cannot fetch their own server (same JS context deadlock).
+- **Windows**: JSC backend not available. Use `-tags qjswasm` or `-tags goja` for Windows support.
+- **Linux multi-runtime (JSC)**: On arm64, `CGO_ENABLED=1` and gcc required (cgo signal forwarding for JSC GC). On x86_64, works without cgo.
+- **Multi-worker scaling (JSC)**: Scaling flattens around 4+ workers on macOS due to JSC shared-cache threading constraints.
+- **qjswasm backend**: No JS JIT (wazero AOT-compiles the WASM but QuickJS-NG itself is an interpreter). CPU-bound JS is slower than JSC. JS error stack traces not yet round-tripped. `ResourceLimits.MaxExecutionTime` silently ignored until the C-shim interrupt handler is wired (memory/stack/GC limits work).
+- **goja backend**: ~94% ECMAScript spec coverage. No SharedArrayBuffer/Atomics/WebAssembly. Raw `for await` / async generator syntax not accepted by the parser (the CLI TS→JS path lowers them through tsgo at ES2017; direct `Runtime.Eval`/`Exec` with raw modern JS triggers a second-chance esbuild lowering on parse failure — esbuild is kept for that one site because tsc does not lower top-level await in CJS). WebSocket upgrade path is not wired for goja. No JS error stack traces.
+- **Native module instance lifecycle**: Struct instances returned to JS are not automatically freed when JS GC collects the object. Cleaned up on Runtime.Close().
+- **Generic native exports**: Generic functions cannot be exposed as native module exports; wrap in a non-generic function.
+
+## Requirements
+
+| | JSC backend (default) | qjswasm backend (`-tags qjswasm`) | goja backend (`-tags goja`) |
+|---|---|---|---|
+| **Go** | 1.26+ | 1.26+ | 1.26+ |
+| **Platforms** | macOS, Linux | macOS, Linux, Windows, FreeBSD | macOS, Linux, Windows, FreeBSD |
+| **System deps** | macOS: none. Linux: `apt install libjavascriptcoregtk-4.1-dev` | None | None |
+
+All tools are built in — no external dependencies needed for `check`, `fmt`, `lint`, or TypeScript transpilation. npm packages are fetched directly from the npm registry — no npm or bun CLI required.

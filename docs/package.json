@@ -4,7 +4,10 @@
   "version": "0.0.0",
   "description": "Landing page for github.com/i2y/ramune — served from GitHub Pages.",
   "scripts": {
-    "build": "esbuild src/app.jsx --bundle --loader:.jsx=jsx --outfile=bundle.js --minify --format=iife --define:process.env.NODE_ENV=\"\\\"production\\\"\"",
+    "prerender": "node scripts/prerender.mjs",
+    "bundle": "esbuild src/app.jsx --bundle --loader:.jsx=jsx --outfile=bundle.js --minify --format=iife --define:process.env.NODE_ENV=\"\\\"production\\\"\"",
+    "sync-llms": "node scripts/sync-llms.mjs",
+    "build": "npm run prerender && npm run bundle && npm run sync-llms",
     "dev": "esbuild src/app.jsx --bundle --loader:.jsx=jsx --outfile=bundle.js --format=iife --sourcemap --watch",
     "serve": "python3 -m http.server 8000"
   },

@@ -1,9 +1,10 @@
 import React from "react";
-import { createRoot } from "react-dom/client";
+import { hydrateRoot } from "react-dom/client";
 import { LangProvider } from "./shared.jsx";
 import { VariantB } from "./variant-b.jsx";
 
-createRoot(document.getElementById("root")).render(
+hydrateRoot(
+  document.getElementById("root"),
   <LangProvider>
     <VariantB />
   </LangProvider>
