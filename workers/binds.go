@@ -113,7 +113,7 @@ func registerRequestBinds(rt *ramune.Runtime) error {
 		if err != nil {
 			return map[string]any{}, nil
 		}
-		headers := make(map[string]any, len(state.r.Header))
+		headers := make(map[string]any, len(state.r.Header)+1)
 		for k, v := range state.r.Header {
 			switch len(v) {
 			case 0:
@@ -121,6 +121,14 @@ func registerRequestBinds(rt *ramune.Runtime) error {
 				headers[k] = v[0]
 			default:
 				headers[k] = strings.Join(v, ", ")
+			}
+		}
+		// Go's net/http parses the Host header into r.Host instead of
+		// leaving it in r.Header. Expose it back to JS so workers can
+		// match on the Host header the way Cloudflare Workers do.
+		if state.r.Host != "" {
+			if _, exists := headers["Host"]; !exists {
+				headers["Host"] = state.r.Host
 			}
 		}
 		return headers, nil
