@@ -145,7 +145,7 @@ function VariantB() {
           <div style={{
             fontFamily: "JetBrains Mono, monospace", fontSize: 11.5,
             color: "rgba(10,22,40,.45)", marginLeft: 6,
-          }}>MIT · npm · Go 1.26+</div>
+          }}>MIT · npm · Go 1.26+ · TypeScript 7 Beta (tsgo)</div>
         </div>
 
         <div style={{

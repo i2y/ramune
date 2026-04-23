@@ -18,7 +18,7 @@ Three backends, same API:
 
 - [CLI (cmd/ramune)](https://github.com/i2y/ramune/blob/main/cmd/ramune/main.go): `ramune run`, `ramune serve`, `ramune eval`, `ramune repl`, `ramune test`, `ramune build`, `ramune bench`, `ramune x`, `ramune init/add/remove/install`, `ramune setup-jit`, `ramune skills install`. Dispatches to the separate `ramune-toolchain` binary for `check` / `fmt` / `lint` / `compile` / `transpile` / `typegen` (keeps the main ramune binary free of the tsgo + rslint + gotranspiler init cost).
 - [Toolchain CLI (cmd/ramune-toolchain)](https://github.com/i2y/ramune/blob/main/cmd/ramune-toolchain/main.go): `check` (tsgo type check), `fmt` (tsgo formatter), `lint` (rslint), `compile` (bundle handler + runtime into a single Go binary; the `--native` TS→Go path for extension modules is experimental, see below), `transpile` (TS→Go source, experimental), `typegen` (Go→.d.ts). Install alongside `ramune` via `go install github.com/i2y/ramune/cmd/ramune-toolchain@latest`.
-- TypeScript/TSX support via typescript-go (TS 7) transpilation; same compiler backs `check`/`fmt`
+- TypeScript 7 Beta compiler (typescript-go) across `run` / `check` / `fmt` / transpile / workers dispatch / nodecompat `require('./*.ts')` — one Go-native tsc across every TS surface, no subprocess
 - ESM (import/export) and CommonJS support — per-file emit via typescript-go, multi-file bundling via esbuild Build API
 - `ramune compile` — compile JS/TS to standalone Go binary via go:embed
 - `ramune compile --native <file.ts>` — transpile TypeScript to native Go extensions callable from JS via `require('native:name')` (experimental; inherits transpiler's status)
