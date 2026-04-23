@@ -122,36 +122,58 @@ func (k *sqliteKV) Delete(ns, key string) error {
 	return err
 }
 
-func (k *sqliteKV) List(ns, prefix string, limit int) ([]string, error) {
+func (k *sqliteKV) List(ns, prefix, cursor string, limit int) ([]string, string, error) {
+	// Fetch limit+1 so we can detect whether another page exists and,
+	// if so, return the last key we actually emit as the next cursor.
+	fetch := limit + 1
 	var (
 		rows *sql.Rows
 		err  error
 	)
-	if prefix == "" {
+	switch {
+	case prefix == "" && cursor == "":
 		rows, err = k.db.Query(
 			"SELECT key FROM __ramune_kv WHERE namespace = ? ORDER BY key LIMIT ?",
-			ns, limit)
-	} else {
+			ns, fetch)
+	case prefix == "":
+		rows, err = k.db.Query(
+			"SELECT key FROM __ramune_kv WHERE namespace = ? AND key > ? ORDER BY key LIMIT ?",
+			ns, cursor, fetch)
+	default:
 		p := strings.ReplaceAll(prefix, `\`, `\\`)
 		p = strings.ReplaceAll(p, `%`, `\%`)
 		p = strings.ReplaceAll(p, `_`, `\_`)
-		rows, err = k.db.Query(
-			`SELECT key FROM __ramune_kv WHERE namespace = ? AND key LIKE ? ESCAPE '\' ORDER BY key LIMIT ?`,
-			ns, p+"%", limit)
+		if cursor == "" {
+			rows, err = k.db.Query(
+				`SELECT key FROM __ramune_kv WHERE namespace = ? AND key LIKE ? ESCAPE '\' ORDER BY key LIMIT ?`,
+				ns, p+"%", fetch)
+		} else {
+			rows, err = k.db.Query(
+				`SELECT key FROM __ramune_kv WHERE namespace = ? AND key LIKE ? ESCAPE '\' AND key > ? ORDER BY key LIMIT ?`,
+				ns, p+"%", cursor, fetch)
+		}
 	}
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	defer rows.Close()
-	keys := make([]string, 0)
+	keys := make([]string, 0, limit)
 	for rows.Next() {
 		var s string
 		if err := rows.Scan(&s); err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		keys = append(keys, s)
 	}
-	return keys, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, "", err
+	}
+	nextCursor := ""
+	if len(keys) > limit {
+		keys = keys[:limit]
+		nextCursor = keys[len(keys)-1]
+	}
+	return keys, nextCursor, nil
 }
 
 // sqliteSQLBackend is the DBBackend over database/sql + SQLite. Column

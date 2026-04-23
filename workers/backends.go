@@ -24,8 +24,13 @@ type KVBackend interface {
 	// Delete removes (ns, key). Deleting a missing key must succeed.
 	Delete(ns, key string) error
 	// List returns up to limit keys within ns whose name starts with
-	// prefix (empty prefix = all). Keys should be sorted ascending.
-	List(ns, prefix string, limit int) (keys []string, err error)
+	// prefix (empty prefix = all). Keys must be sorted ascending.
+	//
+	// cursor is an opaque position marker from a prior call; empty
+	// means start from the beginning. nextCursor is empty when the
+	// list has been exhausted, otherwise it is the opaque marker the
+	// caller passes to resume.
+	List(ns, prefix, cursor string, limit int) (keys []string, nextCursor string, err error)
 }
 
 // DBBackend is the contract for an env.DB SQL backend.
@@ -122,24 +127,32 @@ func installKVBackend(rt *ramune.Runtime, b KVBackend) error {
 		return err
 	}
 	if err := regFunc(rt, "__env_kv_list", func(args []any) (any, error) {
+		emptyList := map[string]any{
+			"keys":          []any{},
+			"list_complete": true,
+		}
 		if len(args) < 1 {
-			return map[string]any{"keys": []any{}}, nil
+			return emptyList, nil
 		}
 		ns, _ := args[0].(string)
 		if ns == "" {
-			return map[string]any{"keys": []any{}}, nil
+			return emptyList, nil
 		}
 		prefix := ""
 		if len(args) > 1 {
 			prefix, _ = args[1].(string)
 		}
-		limit := 1000
+		cursor := ""
 		if len(args) > 2 {
-			if n, ok := toInt64(args[2]); ok && n > 0 {
+			cursor, _ = args[2].(string)
+		}
+		limit := 1000
+		if len(args) > 3 {
+			if n, ok := toInt64(args[3]); ok && n > 0 {
 				limit = int(n)
 			}
 		}
-		keys, err := b.List(ns, prefix, limit)
+		keys, nextCursor, err := b.List(ns, prefix, cursor, limit)
 		if err != nil {
 			return nil, err
 		}
@@ -147,7 +160,14 @@ func installKVBackend(rt *ramune.Runtime, b KVBackend) error {
 		for _, k := range keys {
 			out = append(out, map[string]any{"name": k})
 		}
-		return map[string]any{"keys": out}, nil
+		result := map[string]any{
+			"keys":          out,
+			"list_complete": nextCursor == "",
+		}
+		if nextCursor != "" {
+			result["cursor"] = nextCursor
+		}
+		return result, nil
 	}); err != nil {
 		return err
 	}
@@ -256,7 +276,7 @@ const kvBuilderJS = `
 			},
 			list: function(opts) {
 				opts = opts || {};
-				return __env_kv_list(ns, opts.prefix || "", opts.limit || 1000);
+				return __env_kv_list(ns, opts.prefix || "", opts.cursor || "", opts.limit || 1000);
 			},
 			namespace: function(name) {
 				return __buildEnvKV(name);

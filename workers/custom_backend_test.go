@@ -46,21 +46,28 @@ func (k *inMemoryKV) Delete(ns, key string) error {
 	return nil
 }
 
-func (k *inMemoryKV) List(ns, prefix string, limit int) ([]string, error) {
+func (k *inMemoryKV) List(ns, prefix, cursor string, limit int) ([]string, string, error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	nsPrefix := ns + "\x00" + prefix
-	out := make([]string, 0)
+	all := make([]string, 0)
 	for raw := range k.store {
-		if strings.HasPrefix(raw, nsPrefix) {
-			out = append(out, strings.TrimPrefix(raw, ns+"\x00"))
+		if !strings.HasPrefix(raw, nsPrefix) {
+			continue
 		}
+		key := strings.TrimPrefix(raw, ns+"\x00")
+		if cursor != "" && key <= cursor {
+			continue
+		}
+		all = append(all, key)
 	}
-	sort.Strings(out)
-	if limit > 0 && len(out) > limit {
-		out = out[:limit]
+	sort.Strings(all)
+	nextCursor := ""
+	if limit > 0 && len(all) > limit {
+		all = all[:limit]
+		nextCursor = all[len(all)-1]
 	}
-	return out, nil
+	return all, nextCursor, nil
 }
 
 // inMemoryDB is an example DBBackend with a single in-memory key-value
@@ -205,6 +212,51 @@ export default {
 		`"name":"alpha"`,
 		`"name":"beta"`,
 		`"first":"alpha"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in body: %s", want, got)
+		}
+	}
+}
+
+func TestKVListCursorPagination(t *testing.T) {
+	rt := newTestRuntime(t)
+	kv := newInMemoryKV()
+
+	const module = `
+export default {
+  async fetch(_req, env) {
+    for (const k of ["a","b","c","d","e"]) env.KV.put(k, k);
+    const p1 = env.KV.list({ limit: 2 });
+    const p2 = env.KV.list({ limit: 2, cursor: p1.cursor });
+    const p3 = env.KV.list({ limit: 2, cursor: p2.cursor });
+    return Response.json({
+      p1: { keys: p1.keys.map(k => k.name), complete: p1.list_complete, cursor: p1.cursor || "" },
+      p2: { keys: p2.keys.map(k => k.name), complete: p2.list_complete, cursor: p2.cursor || "" },
+      p3: { keys: p3.keys.map(k => k.name), complete: p3.list_complete, cursor: p3.cursor || "" },
+    });
+  },
+};
+`
+	handler, err := workers.Register(rt, "kv-cursor.ts", module, workers.WithKVBackend(kv))
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	got := string(body)
+
+	for _, want := range []string{
+		`"p1":{"keys":["a","b"],"complete":false,"cursor":"b"}`,
+		`"p2":{"keys":["c","d"],"complete":false,"cursor":"d"}`,
+		`"p3":{"keys":["e"],"complete":true,"cursor":""}`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q in body: %s", want, got)
