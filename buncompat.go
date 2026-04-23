@@ -331,6 +331,11 @@ func (s *bunServerState) start(port int) (int, error) {
 				Headers:     headers,
 				Body:        string(body),
 			}
+			// Wake the event loop so it ticks the request out of the
+			// requests channel immediately. Without this the JS side
+			// sleeps up to pendingPollDefault (10ms) per request -
+			// see eventloop.go RunEventLoopFor.
+			s.rt.Wake()
 
 			// Wait for upgrade to complete (or for a normal response).
 			connID := <-pu.done
@@ -367,6 +372,11 @@ func (s *bunServerState) start(port int) (int, error) {
 			Headers:     headers,
 			Body:        string(body),
 		}
+		// Wake the event loop so it ticks the request out of the
+		// requests channel immediately. Without this the JS side
+		// sleeps up to pendingPollDefault (10ms) per request -
+		// see eventloop.go RunEventLoopFor.
+		s.rt.Wake()
 
 		resp := <-respCh
 

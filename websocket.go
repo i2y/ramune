@@ -35,6 +35,20 @@ type wsManager struct {
 	conns  map[int]*wsConn
 	events []wsEvent
 	nextID int
+
+	// wakeFn is set by installWebSocket to r.Wake; it's called after
+	// every events append so the event loop doesn't sit on its
+	// pendingPollDefault (10ms) cap before ticking the new event.
+	wakeFn func()
+}
+
+// wake invokes wakeFn if registered. Safe to call from any goroutine
+// after appending to events (release the mu first to avoid holding it
+// across the channel send inside Wake).
+func (wm *wsManager) wake() {
+	if wm.wakeFn != nil {
+		wm.wakeFn()
+	}
 }
 
 func newWSManager() *wsManager {
@@ -99,6 +113,7 @@ func (wm *wsManager) upgrade(w http.ResponseWriter, r *http.Request) (int, error
 	wm.conns[id] = ws
 	wm.events = append(wm.events, wsEvent{Kind: "open", ConnID: id})
 	wm.mu.Unlock()
+	wm.wake()
 
 	// Read frames in background.
 	go wm.readLoop(id, ws)
@@ -120,6 +135,7 @@ func (wm *wsManager) readLoop(id int, ws *wsConn) {
 		wm.events = append(wm.events, wsEvent{Kind: "close", ConnID: id})
 		delete(wm.conns, id)
 		wm.mu.Unlock()
+		wm.wake()
 	}()
 
 	for {
@@ -133,6 +149,7 @@ func (wm *wsManager) readLoop(id int, ws *wsConn) {
 					wm.mu.Lock()
 					wm.events = append(wm.events, wsEvent{Kind: "error", ConnID: id, Data: err.Error()})
 					wm.mu.Unlock()
+					wm.wake()
 				}
 			}
 			return
@@ -145,6 +162,7 @@ func (wm *wsManager) readLoop(id int, ws *wsConn) {
 		wm.mu.Lock()
 		wm.events = append(wm.events, wsEvent{Kind: "message", ConnID: id, Data: *msg})
 		wm.mu.Unlock()
+		wm.wake()
 	}
 }
 
@@ -377,6 +395,7 @@ func writeWSFrame(w *bufio.Writer, opcode byte, payload []byte) error {
 // Must be called with rt.mu held (called from installBunCompat).
 func (r *Runtime) installWebSocket() error {
 	wm := newWSManager()
+	wm.wakeFn = r.Wake
 	r.bunSrv.wsMgr = wm
 
 	// __go_ws_send(connId, data) — send a message to a WebSocket client.
