@@ -1,3 +1,5 @@
+//go:build !nowebview
+
 package ramune
 
 import (
