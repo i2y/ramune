@@ -233,7 +233,7 @@ Options: `--http` (Ramune.serve event loop), `--minify` (esbuild minification). 
 
 ### Native Extension Modules (Experimental)
 
-> **Note:** This workflow uses the [TypeScript-to-Go transpiler](./TRANSPILER.md) under the hood and inherits its experimental status. Simple typed functions (primitives, structs, typed slices) work reliably; generics, decorators, and deep class inheritance may produce Go code that needs manual fixes.
+> **Note:** This workflow uses the built-in TypeScript-to-Go transpiler under the hood and inherits its experimental status. Simple typed functions (primitives, structs, typed slices) work reliably; generics, decorators, and deep class inheritance may produce Go code that needs manual fixes.
 
 Compile performance-critical TypeScript functions to native Go code and call them from JavaScript at full compiled speed:
 
@@ -333,7 +333,7 @@ ramune transpile main.ts utils.ts -o out/ --module myapp  # multi-file project
 ramune transpile main.ts --compile -o myapp           # transpile + build binary
 ```
 
-The transpiler converts TypeScript types, classes, interfaces, generics, async/await, and more to idiomatic Go. See [`TRANSPILER.md`](./TRANSPILER.md) for supported features and limitations.
+The transpiler converts TypeScript types, classes, interfaces, generics, async/await, and more to idiomatic Go.
 
 ### Type Checking
 
@@ -1184,8 +1184,6 @@ Ramune ships a built-in TypeScript-to-Go transpiler that converts TS source to i
 
 - `ramune compile --hybrid app.ts` — soundness-gated auto-extraction: the picker walks the app and extracts only functions / pure classes whose signature and body are statically provable to behave identically in Go; everything else stays on the JS floor. The extracted Go never needs hand-fixes. See [Automatic Native Extraction](#automatic-native-extraction---hybrid) above.
 - `ramune compile --native file.ts` (experimental) — transpile a designated TS file wholesale and expose it as a `require('native:name')` module. Wider per-function surface (generics, inheritance) but may need hand-fixes for complex patterns.
-
-Full feature list, type mapping, native module workflow, `go:` imports, and limitations: [`TRANSPILER.md`](./TRANSPILER.md).
 
 ## Known Limitations
 
