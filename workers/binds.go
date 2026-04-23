@@ -126,10 +126,8 @@ func registerRequestBinds(rt *ramune.Runtime) error {
 		// Go's net/http parses the Host header into r.Host instead of
 		// leaving it in r.Header. Expose it back to JS so workers can
 		// match on the Host header the way Cloudflare Workers do.
-		if state.r.Host != "" {
-			if _, exists := headers["Host"]; !exists {
-				headers["Host"] = state.r.Host
-			}
+		if _, exists := headers["Host"]; !exists && state.r.Host != "" {
+			headers["Host"] = state.r.Host
 		}
 		return headers, nil
 	})
