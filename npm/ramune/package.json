@@ -1,7 +1,7 @@
 {
   "name": "@ramunejs/cli",
   "version": "0.0.0",
-  "description": "JavaScript/TypeScript runtime for Go. Workers-style self-hosting, Node/Bun API compat. This is the CLI distribution.",
+  "description": "A JS/TS runtime with soundness-gated AOT native compilation. Workers-style self-hosting, Node/Bun API compat, embeddable in Go. CLI distribution.",
   "homepage": "https://github.com/i2y/ramune",
   "repository": {
     "type": "git",

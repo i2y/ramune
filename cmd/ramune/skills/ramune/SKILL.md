@@ -1,11 +1,11 @@
 ---
 name: ramune
-description: Use Ramune — a JavaScript/TypeScript runtime powered by JavaScriptCore or QuickJS-NG-on-wazero (no Cgo). Use this skill when the user wants to run JS/TS code, build JS/TS applications, embed a JS engine in Go, transpile TypeScript to Go, create native extension modules, use Ramune CLI, or work with JavaScriptCore from Go. Triggers on "ramune", "run javascript", "run typescript", "JS runtime", "embed JS in Go", "JavaScriptCore", "transpile typescript to go", "native module".
+description: Use Ramune — a JS/TS runtime with soundness-gated AOT native compilation (via `ramune compile --hybrid`), powered by JavaScriptCore, QuickJS-NG-on-wazero, or goja (no Cgo). Use this skill when the user wants to run JS/TS code, compile TS to a standalone binary, auto-extract typed functions into native Go with --hybrid, embed a JS engine in Go, transpile TypeScript to Go, create native extension modules, self-host Cloudflare Workers-style handlers with `ramune serve`, or use the Ramune CLI. Triggers on "ramune", "run javascript", "run typescript", "JS runtime", "embed JS in Go", "JavaScriptCore", "transpile typescript to go", "native module", "--hybrid", "soundness-gated", "AOT native compilation", "self-host workers".
 ---
 
 # ramune
 
-Ramune is a JS/TS runtime and embeddable JS engine for Go. Tri-backend: JavaScriptCore (JIT, macOS/Linux) via purego, qjswasm (pure Go, cross-platform incl. Windows — QuickJS-NG compiled to WebAssembly and driven by wazero) via fastschema/qjs, and goja (pure Go, reflect-based, ~94% ECMAScript) via dop251/goja — no Cgo required for any of them.
+Ramune is a JS/TS runtime with soundness-gated AOT native compilation. `ramune compile --hybrid` walks every user TS file and extracts each function whose signature and body are statically provable to be semantics-equivalent to Go; rejected functions keep running as JS unchanged, so adding --hybrid to an existing compile is never a correctness risk. Tri-backend: JavaScriptCore (JIT, macOS/Linux) via purego, qjswasm (pure Go, cross-platform incl. Windows — QuickJS-NG compiled to WebAssembly and driven by wazero) via fastschema/qjs, and goja (pure Go, reflect-based, ~94% ECMAScript) via dop251/goja — no Cgo required for any of them.
 
 ## CLI
 
@@ -52,6 +52,23 @@ ramune compile app.js --native math.ts --native geometry.ts -o myapp
 ```
 
 Exported functions become available via `require('native:modulename')`. Supports structs with live properties, typed arrays, error handling, and class-like instances.
+
+### Automatic Native Extraction (`--hybrid`)
+
+`ramune compile --hybrid` walks every user TS file reachable from the entry's import graph and extracts functions / pure classes whose signature and body are **statically provable to behave identically in Go**. Rejected functions keep running on the JS floor — so adding --hybrid never changes behaviour; at worst nothing gets extracted.
+
+```bash
+ramune compile app.ts --hybrid -o myapp                  # auto-extract typed hot paths
+ramune compile app.ts --hybrid --hybrid-report -o myapp  # per-function picker report on stderr
+```
+
+**Accepts:** primitive / `T[]` / `Promise<primitive>` signatures; pure classes (primitive fields, constructor-initialized, `this`-method bodies); arithmetic / comparison / `%` / switch / `for` / `while` / `for-of` / template literals / `await`-on-extractable; `Math.*`, `Number.*`, string/array method safelists, callback-driven `map` / `filter` / `forEach` / `some` / `every`; named-interface struct params; same-file `*JSFunc` callback params.
+
+**Rejects:** `reduce` / `find` / `findIndex`, inline object literal params, `Map` / `Set` / `Date` / `RegExp`, `try`/`catch`/`throw`, generics, generators, closure capture beyond params/locals, parameter mutation, class inheritance / static / `#private` / decorators / getters-setters. Full reason-code list in the --hybrid-report output.
+
+**Soundness is proven, speed is not.** Each extracted call pays a fixed JS↔Go bridge cost, so extraction can *regress* when the body does trivial per-call work or marshals a large array on every invocation (see `examples/hybrid/sumSquares` — ~86× slower than plain JS on JSC+JIT). Use --hybrid-report to pick targets, then measure. Biggest wins land on no-JIT backends (qjswasm / goja) where extractable CPU-heavy kernels typically go 10×-350× faster than JS-only.
+
+**vs `--native`:** `--hybrid` is automatic and soundness-gated (narrower per-function surface, no manual-fix failure mode). `--native <file.ts>` transpiles a whole designated file (wider surface including generics / inheritance, but may need hand-fixes). Use --hybrid when "most of my code is plain TS but I have a few typed hot loops"; use --native when "this specific module is all math/data processing and I want all of it in Go".
 
 ### Transpile TypeScript to Go (Experimental)
 

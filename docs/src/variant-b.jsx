@@ -88,21 +88,17 @@ function VariantB() {
 
       {/* Hero */}
       <section style={{ position: "relative", zIndex: 2, padding: "64px 56px 56px", maxWidth: 1280, margin: "0 auto" }}>
-        <a href="#hybrid" onClick={(e) => { e.preventDefault(); smoothScrollTo("#hybrid"); }} style={{
+        <a href="#quickstart" onClick={(e) => { e.preventDefault(); smoothScrollTo("#quickstart"); }} style={{
           display: "inline-flex", alignItems: "center", gap: 10,
-          padding: "5px 12px 5px 6px",
+          padding: "5px 12px",
           background: "#fff", border: `1px solid ${RAMUNE_BLUE}33`,
           borderRadius: 999, fontSize: 12, color: "rgba(10,22,40,.8)",
           marginBottom: 28, marginTop: 8, textDecoration: "none",
           boxShadow: `0 2px 10px -2px ${RAMUNE_BLUE}22`,
         }}>
-          <span style={{
-            background: RAMUNE_BLUE, color: "#fff", padding: "2px 8px",
-            borderRadius: 999, fontWeight: 700, fontSize: 10, letterSpacing: ".04em",
-          }}>NEW</span>
           <span>{tr(
-            "ramune compile --hybrid: soundness-gated extraction of typed functions into native Go",
-            "ramune compile --hybrid: 型付き関数を健全性証明つきで native Go に抽出"
+            "Embed in Go · Self-host Workers · npm CLI",
+            "Go に組み込む · セルフホスト Workers · npm CLI"
           )}</span>
           <span style={{ color: RAMUNE_BLUE }}>→</span>
         </a>
@@ -114,8 +110,8 @@ function VariantB() {
           textWrap: "balance",
         }}>
           {tr(
-            "A JS/TS runtime for Go programs, platforms, and self-hosted Workers.",
-            "Go組み込み、マルチテナント、セルフホストWorkersのためのJS/TSランタイム。"
+            "A JS/TS runtime with soundness-gated AOT native compilation.",
+            "健全性が証明された型付き関数を AOT で native Go にコンパイルする JS/TS ランタイム。"
           )}
         </h1>
         <p style={{
@@ -123,8 +119,8 @@ function VariantB() {
           maxWidth: 760, margin: "0 0 32px", textWrap: "pretty",
         }}>
           {tr(
-            "Three backends behind one API — JSC with JIT on macOS/Linux, pure-Go portability to Windows — plus a compile-time --hybrid mode that extracts typed functions into native Go (biggest wins on the no-JIT pure-Go backends).",
-            "3バックエンドを1つのAPIで。macOS/Linux では JSC+JIT、Windows は純 Go、さらにコンパイル時 --hybrid で型付き関数を native Go に抽出 (no-JIT の純 Go バックエンドで最大の効果)。"
+            "Three backends behind one API — JSC+JIT on macOS/Linux, pure-Go portability to Windows (QuickJS-NG on wazero, goja). Embed in Go, or self-host Cloudflare Workers-style handlers on your own infrastructure.",
+            "3 バックエンドを 1 つの API で。macOS/Linux は JSC+JIT、Windows は純 Go (QuickJS-NG on wazero, goja)。Go に組み込むか、Cloudflare Workers 形式のハンドラを自前インフラでセルフホスト。"
           )}
         </p>
 
@@ -330,8 +326,8 @@ function VariantB() {
             </div>
             <div style={{ fontSize: 13, color: "rgba(10,22,40,.55)", lineHeight: 1.55 }}>
               {tr(
-                "A JS/TS runtime — embed it in Go, or install via npm. Three backends behind one API (JSC+JIT, QuickJS-NG on wazero, goja), compile-time --hybrid extraction, self-hosted Workers-style modules.",
-                "JS/TS ランタイム — Go に組み込むか npm で入れる。3 バックエンド (JSC+JIT / QuickJS-NG on wazero / goja) を 1 つの API で切替、コンパイル時 --hybrid 抽出、セルフホスト Workers 対応。"
+                "A JS/TS runtime with soundness-gated AOT native compilation. Embed it in Go, or install via npm. Three backends behind one API (JSC+JIT, QuickJS-NG on wazero, goja), self-hosted Workers-style modules.",
+                "健全性ゲート付き AOT native コンパイルを備えた JS/TS ランタイム。Go に組み込むか npm で入れる。3 バックエンド (JSC+JIT / QuickJS-NG on wazero / goja) を 1 つの API で、セルフホスト Workers 対応。"
               )}
             </div>
           </div>

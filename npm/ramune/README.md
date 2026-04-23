@@ -1,6 +1,6 @@
 # @ramunejs/cli
 
-JavaScript/TypeScript runtime and embeddable JS engine for Go. This package ships the Ramune CLI via npm.
+A JS/TS runtime with soundness-gated AOT native compilation. Embeddable in Go, self-hostable as Cloudflare Workers-style handlers. This package ships the Ramune CLI via npm.
 
 Project homepage: https://github.com/i2y/ramune
 

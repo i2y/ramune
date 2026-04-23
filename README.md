@@ -4,7 +4,7 @@
 
 # Ramune
 
-> **A JavaScript/TypeScript runtime you embed in Go. Cloudflare Workers-style fetch handlers that run on your own infrastructure.**
+> **A JS/TS runtime with soundness-gated AOT native compilation.** Embed it in Go, or self-host Cloudflare Workers-style handlers on your own infrastructure.
 
 Ramune solves four concrete problems:
 
