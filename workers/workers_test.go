@@ -228,6 +228,112 @@ export default {
 	}
 }
 
+func TestWithFetchFuncRoutesThroughFn(t *testing.T) {
+	rt := newTestRuntime(t)
+
+	var gotURL string
+	fetchFn := func(req *http.Request) (*http.Response, error) {
+		gotURL = req.URL.String()
+		return &http.Response{
+			StatusCode: 200,
+			Header:     http.Header{"X-Routed": []string{"yes"}, "Content-Type": []string{"text/plain"}},
+			Body:       io.NopCloser(strings.NewReader("from-go")),
+		}, nil
+	}
+
+	const module = `
+export default {
+  async fetch(_req, _env) {
+    const r = await fetch("https://upstream.example/hello");
+    return Response.json({
+      body: await r.text(),
+      routed: r.headers.get("x-routed"),
+      status: r.status,
+    });
+  },
+};
+`
+	handler, err := workers.Register(rt, "fetch.ts", module, workers.WithFetchFunc(fetchFn))
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	got := string(body)
+
+	if gotURL != "https://upstream.example/hello" {
+		t.Errorf("fetchFn received URL %q; want upstream.example/hello", gotURL)
+	}
+	for _, want := range []string{`"body":"from-go"`, `"routed":"yes"`, `"status":200`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in body: %s", want, got)
+		}
+	}
+}
+
+func TestAttachPreparedHandlerIsCloser(t *testing.T) {
+	rt := newTestRuntime(t)
+
+	const module = `
+export default {
+  async fetch(_req, env, ctx) {
+    ctx.waitUntil(new Promise(r => setTimeout(r, 50)));
+    return new Response("ok");
+  },
+};
+`
+	handler, err := workers.Register(rt, "close.ts", module,
+		workers.WithWaitUntilTimeout(500*time.Millisecond))
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	closer, ok := handler.(io.Closer)
+	if !ok {
+		t.Fatalf("handler does not implement io.Closer")
+	}
+
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	resp.Body.Close()
+
+	// Close should wait for the waitUntil timer to settle.
+	start := time.Now()
+	if err := closer.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	elapsed := time.Since(start)
+	if elapsed < 40*time.Millisecond {
+		t.Errorf("Close returned too fast (%v); expected to wait for the 50ms waitUntil", elapsed)
+	}
+
+	// After close, new requests should 503.
+	resp2, err := http.Get(srv.URL + "/")
+	if err != nil {
+		t.Fatalf("GET after close: %v", err)
+	}
+	defer resp2.Body.Close()
+	if resp2.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("after close, got status %d; want %d", resp2.StatusCode, http.StatusServiceUnavailable)
+	}
+
+	// Close again should be a no-op.
+	if err := closer.Close(); err != nil {
+		t.Errorf("second Close: %v", err)
+	}
+}
+
 func TestRegisterMissingExport(t *testing.T) {
 	t.Parallel()
 	rt := newTestRuntime(t)

@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/i2y/ramune"
@@ -64,6 +65,16 @@ type Config struct {
 	// DBBackend, when non-nil, provides the SQL engine for env.DB.
 	// See [DBBackend]. Mutually exclusive with SQLitePath.
 	DBBackend DBBackend
+
+	// Fetch, when non-nil, replaces globalThis.fetch for this worker
+	// with a thin JS wrapper that forwards every call through fn.
+	//
+	// Installed AFTER the module has been evaluated, so modules that
+	// capture fetch into a local variable before Fetch is wired up
+	// still see Ramune's default. Intended for platforms — notably
+	// openworkers inside a Firecracker guest — that need per-worker
+	// egress policy independent of the runtime-wide [ramune.WithFetch].
+	Fetch func(*http.Request) (*http.Response, error)
 }
 
 // Option configures Register.
@@ -87,6 +98,16 @@ func WithSecretsPrefix(p string) Option {
 // builders (SECRETS, and, if enabled, DB/KV) are installed.
 func WithExtraEnvJS(js string) Option {
 	return func(c *Config) { c.ExtraEnvJS = js }
+}
+
+// WithFetchFunc installs a per-worker override of globalThis.fetch.
+// The supplied fn receives a populated *http.Request (method,
+// headers, body) and must return a full *http.Response. Intended for
+// platforms that need to route egress through a side channel — e.g.
+// a Firecracker guest forwarding through a host-side proxy over
+// vsock — independent of [ramune.WithFetch]'s runtime-wide hook.
+func WithFetchFunc(fn func(*http.Request) (*http.Response, error)) Option {
+	return func(c *Config) { c.Fetch = fn }
 }
 
 // WithSQLite opens a SQLite database at the given path and installs
@@ -190,6 +211,12 @@ func AttachPrepared(rt *ramune.Runtime, p *Prepared, opts ...Option) (http.Handl
 		}
 	}
 
+	if cfg.Fetch != nil {
+		if err := installPerWorkerFetch(rt, cfg.Fetch); err != nil {
+			return nil, fmt.Errorf("workers: install per-worker fetch: %w", err)
+		}
+	}
+
 	if !mod.HasFetch {
 		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			http.Error(w, "workers: module has no fetch handler", http.StatusNotImplemented)
@@ -204,7 +231,51 @@ func AttachPrepared(rt *ramune.Runtime, p *Prepared, opts ...Option) (http.Handl
 	dispatch := newFetchDispatcher(rt, p.cacheKey, cfg)
 	mux := http.NewServeMux()
 	mux.Handle(route, dispatch)
-	return mux, nil
+	return &workerHandler{mux: mux, dispatch: dispatch, cfg: cfg}, nil
+}
+
+// workerHandler is the http.Handler returned by AttachPrepared. It
+// additionally implements [io.Closer] so callers can drain in-flight
+// requests (including their ctx.waitUntil background promises) before
+// tearing down the worker's Runtime.
+//
+// Close() rejects new requests with 503, waits for every already-
+// accepted request's executor goroutine to finish, and returns
+// success. It does NOT close the Ramune runtime itself — the caller
+// retains ownership of rt.Close().
+type workerHandler struct {
+	mux      *http.ServeMux
+	dispatch *fetchDispatcher
+	cfg      Config
+	closed   atomic.Bool
+}
+
+// ServeHTTP implements http.Handler. Returns 503 once Close has been
+// called; otherwise delegates to the route mux.
+func (h *workerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if h.closed.Load() {
+		http.Error(w, "workers: handler draining", http.StatusServiceUnavailable)
+		return
+	}
+	h.mux.ServeHTTP(w, r)
+}
+
+// Close drains the handler. Safe to call multiple times; subsequent
+// calls are no-ops.
+//
+// Drain budget: WaitUntilTimeout + a 5s buffer for Go-side cleanup.
+// Callers who want a strict bound should structure their shutdown
+// around their own context and call rt.Close when it expires.
+func (h *workerHandler) Close() error {
+	if !h.closed.CompareAndSwap(false, true) {
+		return nil
+	}
+	budget := h.cfg.WaitUntilTimeout
+	if budget <= 0 {
+		budget = 30 * time.Second
+	}
+	budget += 5 * time.Second
+	return h.dispatch.wait(budget)
 }
 
 func defaultConfig() Config {

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/i2y/ramune"
 	"github.com/i2y/ramune/internal/tsgo/core"
@@ -189,60 +190,96 @@ func (s *requestState) flush() {
 	}
 }
 
+// fetchDispatcher is the http.Handler returned by newFetchDispatcher.
+// It tracks executor goroutines so that AttachPrepared's close hook
+// can wait for in-flight requests AND their ctx.waitUntil background
+// promises before releasing the worker.
+type fetchDispatcher struct {
+	rt          *ramune.Runtime
+	cacheKey    string
+	cfg         Config
+	waitUntilMs int64
+	executors   sync.WaitGroup
+}
+
 // newFetchDispatcher returns an http.Handler that runs the cached
 // Workers module's fetch() for every incoming request.
-func newFetchDispatcher(rt *ramune.Runtime, cacheKey string, cfg Config) http.HandlerFunc {
-	waitUntilMs := int64(0)
+func newFetchDispatcher(rt *ramune.Runtime, cacheKey string, cfg Config) *fetchDispatcher {
+	waitMs := int64(0)
 	if cfg.WaitUntilTimeout > 0 {
-		waitUntilMs = cfg.WaitUntilTimeout.Milliseconds()
+		waitMs = cfg.WaitUntilTimeout.Milliseconds()
 	}
+	return &fetchDispatcher{
+		rt:          rt,
+		cacheKey:    cacheKey,
+		cfg:         cfg,
+		waitUntilMs: waitMs,
+	}
+}
 
-	return func(w http.ResponseWriter, r *http.Request) {
-		reqID := nextRequestID.Add(1)
-		flusher, _ := w.(http.Flusher)
-		state := &requestState{
-			w:        w,
-			r:        r,
-			flusher:  flusher,
-			signalCh: make(chan struct{}),
-		}
-		requestRegistry.Store(reqID, state)
-		defer requestRegistry.Delete(reqID)
+func (d *fetchDispatcher) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	reqID := nextRequestID.Add(1)
+	flusher, _ := w.(http.Flusher)
+	state := &requestState{
+		w:        w,
+		r:        r,
+		flusher:  flusher,
+		signalCh: make(chan struct{}),
+	}
+	requestRegistry.Store(reqID, state)
+	defer requestRegistry.Delete(reqID)
 
-		errCh := make(chan error, 1)
-		go func() {
-			defer func() {
-				if rec := recover(); rec != nil {
-					errCh <- fmt.Errorf("workers fetch panic: %v", rec)
-					state.signal() // release the HTTP handler even on panic
-				}
-			}()
-			code := buildFetchCode(reqID, r, cacheKey, waitUntilMs)
-			_, err := rt.EvalAsync(code)
-			errCh <- err
-			// Ensure the HTTP handler always returns, even if the JS
-			// side forgot to detach (shouldn't happen, but be safe).
-			state.signal()
+	errCh := make(chan error, 1)
+	d.executors.Add(1)
+	go func() {
+		defer d.executors.Done()
+		defer func() {
+			if rec := recover(); rec != nil {
+				errCh <- fmt.Errorf("workers fetch panic: %v", rec)
+				state.signal() // release the HTTP handler even on panic
+			}
 		}()
+		code := buildFetchCode(reqID, r, d.cacheKey, d.waitUntilMs)
+		_, err := d.rt.EvalAsync(code)
+		errCh <- err
+		// Ensure the HTTP handler always returns, even if the JS
+		// side forgot to detach (shouldn't happen, but be safe).
+		state.signal()
+	}()
 
-		select {
-		case <-state.signalCh:
-			// Response has been written — the JS executor may still be
-			// draining ctx.waitUntil promises. Return control to Go
-			// so the HTTP handler can unblock the net/http pool.
-			return
-		case err := <-errCh:
-			if err == nil {
-				return
-			}
-			state.statusMu.Lock()
-			started := state.started
-			state.statusMu.Unlock()
-			if !started {
-				http.Error(w, "workers: "+err.Error(), http.StatusInternalServerError)
-			}
+	select {
+	case <-state.signalCh:
+		// Response has been written — the JS executor may still be
+		// draining ctx.waitUntil promises. Return control to Go
+		// so the HTTP handler can unblock the net/http pool.
+		return
+	case err := <-errCh:
+		if err == nil {
 			return
 		}
+		state.statusMu.Lock()
+		started := state.started
+		state.statusMu.Unlock()
+		if !started {
+			http.Error(w, "workers: "+err.Error(), http.StatusInternalServerError)
+		}
+		return
+	}
+}
+
+// wait blocks until every executor goroutine (HTTP request + its
+// background ctx.waitUntil drain) has returned, or timeout elapses.
+func (d *fetchDispatcher) wait(timeout time.Duration) error {
+	done := make(chan struct{})
+	go func() {
+		d.executors.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-time.After(timeout):
+		return fmt.Errorf("workers: drain timed out after %v with executor(s) still running", timeout)
 	}
 }
 
