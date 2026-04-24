@@ -143,6 +143,7 @@ func (r *Runtime) RunEventLoopFor(timeout time.Duration) error {
 			return err
 		}
 		if !pending {
+			r.fireOnReady()
 			return nil
 		}
 		if time.Now().After(deadline) {
@@ -310,6 +311,7 @@ func (r *Runtime) RunEventLoopWithContext(ctx context.Context) error {
 			return err
 		}
 		if !pending {
+			r.fireOnReady()
 			return nil
 		}
 

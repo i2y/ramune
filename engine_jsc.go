@@ -210,6 +210,12 @@ type Runtime struct {
 	unprotectQueue []uintptr       // legacy: drained at safe points
 	protectedPtrs  map[uintptr]int // ref-counted protected ptrs, cleaned on Close()
 
+	// OnReady hook: fn is invoked once when the event loop first
+	// observes no pending work during a RunEventLoop[For] call.
+	onReadyMu   sync.Mutex
+	onReadyFn   func()
+	onReadyDone bool
+
 	closeOnce sync.Once
 	closed    atomic.Bool
 }

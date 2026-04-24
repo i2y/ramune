@@ -66,6 +66,12 @@ type Runtime struct {
 	// doesn't walk the global object on every conversion.
 	uint8ArrayCtor *qjs.Value
 
+	// OnReady hook: fn is invoked once when the event loop first
+	// observes no pending work during a RunEventLoop[For] call.
+	onReadyMu   sync.Mutex
+	onReadyFn   func()
+	onReadyDone bool
+
 	closeOnce sync.Once
 	closed    atomic.Bool
 }

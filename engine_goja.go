@@ -130,6 +130,12 @@ type Runtime struct {
 	stderr             io.Writer
 	poolHandleFn       uintptr // unused in goja but kept to preserve cross-backend Runtime shape
 
+	// OnReady hook: fn is invoked once when the event loop first
+	// observes no pending work during a RunEventLoop[For] call.
+	onReadyMu   sync.Mutex
+	onReadyFn   func()
+	onReadyDone bool
+
 	closeOnce sync.Once
 	closed    atomic.Bool
 }
