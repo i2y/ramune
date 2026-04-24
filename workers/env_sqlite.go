@@ -88,6 +88,35 @@ func installSQLiteBinds(rt *ramune.Runtime, cfg *Config) error {
 	return installDBBackend(rt, &sqliteSQLBackend{db: db})
 }
 
+// OpenSQLiteKV opens (or reuses) the shared SQLite connection at path
+// and returns a [KVBackend] backed by it. The __ramune_kv table is
+// created on first open.
+//
+// Intended for tools that need direct access to the same KV store the
+// runtime uses — management CLIs, migrations, benchmarks. For the
+// runtime path, [WithSQLite] is still the right knob.
+func OpenSQLiteKV(path string) (KVBackend, error) {
+	db, err := openSharedDB(path)
+	if err != nil {
+		return nil, err
+	}
+	return &sqliteKV{db: db}, nil
+}
+
+// OpenSQLiteDB opens (or reuses) the shared SQLite connection at path
+// and returns a [DBBackend] backed by it. No schema is pre-installed;
+// the caller's SQL is responsible.
+//
+// Intended for openworkers-style platforms that want to wire D1
+// bindings at per-database SQLite files independent of the KV path.
+func OpenSQLiteDB(path string) (DBBackend, error) {
+	db, err := openSharedDB(path)
+	if err != nil {
+		return nil, err
+	}
+	return &sqliteSQLBackend{db: db}, nil
+}
+
 // sqliteKV is the KVBackend implementation backed by the shared
 // __ramune_kv table.
 type sqliteKV struct {
