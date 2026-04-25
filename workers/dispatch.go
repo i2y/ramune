@@ -323,18 +323,38 @@ const fetchDispatchJS = `
 				if (__respBody && typeof __respBody.getReader === "function") {
 					__writeWorkerResponseStart(__rid, __response.status || 200, JSON.stringify(__rh));
 					var __reader = __respBody.getReader();
-					var __dec = new TextDecoder();
 					while (true) {
 						var __read = await __reader.read();
 						if (__read.done) break;
-						var __text = typeof __read.value === "string"
-							? __read.value
-							: __dec.decode(__read.value, {stream: true});
-						if (__text) __writeWorkerResponseChunk(__rid, __text);
+						if (typeof __read.value === "string") {
+							if (__read.value) __writeWorkerResponseChunk(__rid, __read.value);
+						} else if (__read.value && __read.value.length) {
+							// Binary chunk: encode as base64 with marker so
+							// __writeWorkerResponseChunk can reconstruct the
+							// raw bytes (TextDecoder would lossy-convert).
+							var __cs = "";
+							for (var __ci = 0; __ci < __read.value.length; __ci++) {
+								__cs += String.fromCharCode(__read.value[__ci]);
+							}
+							var __cb64 = (typeof btoa === "function" ? btoa(__cs) : Buffer.from(__cs, "binary").toString("base64"));
+							__writeWorkerResponseChunk(__rid, "__bytes_b64__:" + __cb64);
+						}
 					}
 				} else {
 					var __rb = "";
-					if (typeof __response.text === "function") {
+					// If Response was constructed with Uint8Array / ArrayBuffer /
+					// ArrayBufferView, _bodyBytes carries the raw bytes. Re-encode
+					// as base64 with a marker prefix so the Go callback can
+					// recover bytes byte-for-byte; without this binary GET
+					// responses (images, gzip, ...) lose data through JS string
+					// coercion.
+					if (__response._bodyBytes != null) {
+						var __bs = "";
+						for (var __bi = 0; __bi < __response._bodyBytes.length; __bi++) {
+							__bs += String.fromCharCode(__response._bodyBytes[__bi]);
+						}
+						__rb = "__bytes_b64__:" + (typeof btoa === "function" ? btoa(__bs) : Buffer.from(__bs, "binary").toString("base64"));
+					} else if (typeof __response.text === "function") {
 						__rb = await __response.text();
 					} else if (__respBody != null) {
 						__rb = String(__respBody);

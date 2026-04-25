@@ -85,9 +85,11 @@ func (s *bunServerState) handleSingleRequest(r *Runtime, req pendingHTTPReq) {
 
 	// Build arguments as JSC values and call the handler function directly.
 	// This avoids JS source parsing and compilation per request.
+	bodyEnc, bodyB64 := encodeBodyForJS(req.Body)
 	methodJS, _ := r.goToJS(req.Method)
 	urlJS, _ := r.goToJS(req.URL)
-	bodyJS, _ := r.goToJS(req.Body)
+	bodyJS, _ := r.goToJS(bodyEnc)
+	bodyB64JS := r.jsValueMakeBoolean(r.ctx, bodyB64)
 
 	// Parse pre-marshaled headers JSON to a JS object.
 	hdCode := r.jsStringCreateWithUTF8CString("(" + req.HeadersJSON + ")")
@@ -101,15 +103,19 @@ func (s *bunServerState) handleSingleRequest(r *Runtime, req pendingHTTPReq) {
 	if s.wsEnabled && s.handleFn != 0 {
 		reqIDJS := r.jsValueMakeNumber(r.ctx, float64(req.ID))
 		fnObj := r.jsValueToObject(r.ctx, s.handleFn, 0)
-		args := []uintptr{reqIDJS, methodJS, urlJS, bodyJS, headersJS}
+		args := []uintptr{reqIDJS, methodJS, urlJS, bodyJS, headersJS, bodyB64JS}
 		result = r.jsObjectCallAsFunction(r.ctx, fnObj, 0, uint64(len(args)), args, 0)
 	} else if s.handleFastFn != 0 {
 		fnObj := r.jsValueToObject(r.ctx, s.handleFastFn, 0)
-		args := []uintptr{methodJS, urlJS, bodyJS, headersJS}
+		args := []uintptr{methodJS, urlJS, bodyJS, headersJS, bodyB64JS}
 		result = r.jsObjectCallAsFunction(r.ctx, fnObj, 0, uint64(len(args)), args, 0)
 	} else {
 		// Fallback to eval (first request before cache is ready).
-		code := `__bunHandleFast("` + escJS(req.Method) + `","` + escJS(req.URL) + `","` + escJS(req.Body) + `",` + req.HeadersJSON + `)`
+		b64Flag := "false"
+		if bodyB64 {
+			b64Flag = "true"
+		}
+		code := `__bunHandleFast("` + escJS(req.Method) + `","` + escJS(req.URL) + `","` + escJS(bodyEnc) + `",` + req.HeadersJSON + `,` + b64Flag + `)`
 		jsStr := r.jsStringCreateWithUTF8CString(code)
 		result = r.jsEvaluateScript(r.ctx, jsStr, 0, 0, 0, 0)
 		r.jsStringRelease(jsStr)

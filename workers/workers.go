@@ -66,6 +66,12 @@ type Config struct {
 	// See [DBBackend]. Mutually exclusive with SQLitePath.
 	DBBackend DBBackend
 
+	// BlobBackend, when non-nil, services env.<bucket> object-storage
+	// bindings. See [BlobBackend]. The host is responsible for telling
+	// the worker which bindings exist; this Config field just enables
+	// the dispatch path.
+	BlobBackend BlobBackend
+
 	// Fetch, when non-nil, replaces globalThis.fetch for this worker
 	// with a thin JS wrapper that forwards every call through fn.
 	//

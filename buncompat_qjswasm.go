@@ -33,11 +33,16 @@ func (s *bunServerState) ensureHandlerCached(r *Runtime) {}
 // route through __bunHandle so the JS side can set req._reqId — server.upgrade(req)
 // needs it to identify the pending upgrade; __bunHandleFast omits that arg.
 func (s *bunServerState) handleSingleRequest(r *Runtime, req pendingHTTPReq) {
+	bodyEnc, bodyB64 := encodeBodyForJS(req.Body)
+	b64Flag := "false"
+	if bodyB64 {
+		b64Flag = "true"
+	}
 	var code string
 	if s.wsEnabled {
-		code = `__bunHandle(` + strconv.Itoa(req.ID) + `,"` + escJS(req.Method) + `","` + escJS(req.URL) + `","` + escJS(req.Body) + `",` + req.HeadersJSON + `)`
+		code = `__bunHandle(` + strconv.Itoa(req.ID) + `,"` + escJS(req.Method) + `","` + escJS(req.URL) + `","` + escJS(bodyEnc) + `",` + req.HeadersJSON + `,` + b64Flag + `)`
 	} else {
-		code = `__bunHandleFast("` + escJS(req.Method) + `","` + escJS(req.URL) + `","` + escJS(req.Body) + `",` + req.HeadersJSON + `)`
+		code = `__bunHandleFast("` + escJS(req.Method) + `","` + escJS(req.URL) + `","` + escJS(bodyEnc) + `",` + req.HeadersJSON + `,` + b64Flag + `)`
 	}
 	result, err := r.qjsCtx.Eval("<bun>", qjs.Code(code))
 	if err != nil {

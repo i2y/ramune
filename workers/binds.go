@@ -1,6 +1,7 @@
 package workers
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -72,6 +73,11 @@ func installBindings(rt *ramune.Runtime, cfg *Config) error {
 			return fmt.Errorf("workers: install DB backend: %w", err)
 		}
 	}
+	if cfg.BlobBackend != nil {
+		if err := installBlobBackend(rt, cfg.BlobBackend); err != nil {
+			return fmt.Errorf("workers: install Blob backend: %w", err)
+		}
+	}
 	if cfg.ExtraEnvJS != "" {
 		if err := rt.Exec(cfg.ExtraEnvJS); err != nil {
 			return fmt.Errorf("workers: install extra env JS: %w", err)
@@ -94,16 +100,21 @@ func registerRequestBinds(rt *ramune.Runtime) error {
 	if err := regFunc(rt, "__readGoRequestBody", func(args []any) (any, error) {
 		state, err := stateFromArgs(args, "__readGoRequestBody")
 		if err != nil {
-			return "", err
+			return nil, err
 		}
 		if state.r.Body == nil {
-			return "", nil
+			return nil, nil
 		}
 		data, err := io.ReadAll(state.r.Body)
 		if err != nil {
-			return "", fmt.Errorf("__readGoRequestBody: %w", err)
+			return nil, fmt.Errorf("__readGoRequestBody: %w", err)
 		}
-		return string(data), nil
+		// Return raw bytes — Ramune marshals []byte to a JS Uint8Array.
+		// The dispatch JS hands this directly to the Request constructor,
+		// whose BodyInit branch covers Uint8Array. Returning a string
+		// here would force the body through UTF-8 decoding and corrupt
+		// any non-text payload (image upload, gzip, ...).
+		return data, nil
 	}); err != nil {
 		return err
 	}
@@ -154,7 +165,7 @@ func registerResponseBinds(rt *ramune.Runtime) error {
 		}
 		applyHeaders(state, stringArg(args, 2))
 		state.writeHeader(intArg(args, 1, 200))
-		if body := stringArg(args, 3); body != "" {
+		if body := decodeWorkerBody(argAt(args, 3)); body != "" {
 			state.writeBody(body)
 		}
 		return nil, nil
@@ -180,12 +191,42 @@ func registerResponseBinds(rt *ramune.Runtime) error {
 		if err != nil {
 			return nil, err
 		}
-		if text := stringArg(args, 1); text != "" {
+		if text := decodeWorkerBody(argAt(args, 1)); text != "" {
 			state.writeBody(text)
 			state.flush()
 		}
 		return nil, nil
 	})
+}
+
+// decodeWorkerBody normalizes a body argument from JS into a Go
+// string of raw bytes. Two shapes cross the boundary:
+//
+//   - regular string (text body, including ASCII-only UTF-8)
+//   - "__bytes_b64__:<base64>" (binary body; the dispatch JS uses
+//     this prefix when Response was constructed with Uint8Array,
+//     ArrayBuffer, or ArrayBufferView so byte fidelity is preserved
+//     through the string-typed callback signature)
+//
+// Anything else — including a raw []byte some future JS callsite
+// might send — falls back to fmt.Sprint, matching how stringArg
+// behaves today. Empty / missing -> empty string.
+func decodeWorkerBody(v any) string {
+	if v == nil {
+		return ""
+	}
+	if s, ok := v.(string); ok {
+		if strings.HasPrefix(s, "__bytes_b64__:") {
+			if b, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(s, "__bytes_b64__:")); err == nil {
+				return string(b)
+			}
+		}
+		return s
+	}
+	if b, ok := v.([]byte); ok {
+		return string(b)
+	}
+	return ""
 }
 
 // applyHeaders parses a JSON header map and sets it on the response.

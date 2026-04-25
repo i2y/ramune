@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/flate"
 	"compress/gzip"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -556,10 +557,31 @@ func asyncRespKey(reqID int) string {
 	return "__resp" + strconv.Itoa(reqID)
 }
 
+// encodeBodyForJS prepares an HTTP request body string for safe
+// transport into a JS string literal. The Go->JS path goes through
+// JSStringCreateWithUTF8CString (or equivalents in qjswasm / goja),
+// so any non-UTF-8 byte sequence corrupts the string. We pass non-
+// printable ASCII control bytes (apart from tab / CR / LF) and any
+// 0x80+ byte through base64 instead; the JS side detects the b64
+// flag and decodes back into a Uint8Array Request body.
+func encodeBodyForJS(body string) (encoded string, isB64 bool) {
+	if body == "" {
+		return "", false
+	}
+	for i := 0; i < len(body); i++ {
+		c := body[i]
+		if (c < 0x20 && c != '\t' && c != '\n' && c != '\r') || c >= 0x80 {
+			return base64.StdEncoding.EncodeToString([]byte(body)), true
+		}
+	}
+	return body, false
+}
+
 // parseHTTPResponse parses the response string from JS handler.
 // Formats:
 //   - "__stream__:ID\nstatus\nheadersJSON" — streaming response
 //   - "__file__:/path\nstatus\nheadersJSON" — static file response
+//   - "__bytes_b64__:<base64>\nstatus\nheadersJSON" — buffered response with binary body
 //   - "status\nheadersJSON\nbody" — normal buffered response
 func parseHTTPResponse(raw string) httpResponse {
 	// Streaming response.
@@ -570,6 +592,30 @@ func parseHTTPResponse(raw string) httpResponse {
 			idStr := strings.TrimPrefix(parts[0], "__stream__:")
 			if n, err := strconv.Atoi(idStr); err == nil {
 				resp.StreamID = n
+			}
+		}
+		if len(parts) >= 2 {
+			if n, err := strconv.Atoi(parts[1]); err == nil {
+				resp.Status = n
+			}
+		}
+		if len(parts) >= 3 && parts[2] != "" {
+			json.Unmarshal([]byte(parts[2]), &resp.Headers)
+		}
+		return resp
+	}
+
+	// Binary buffered response: body bytes carried as base64 because
+	// the inline-string wire format cannot transport arbitrary bytes
+	// through JS UTF-8 string semantics. Decode straight back into the
+	// httpResponse.Body string (Go strings are byte-equivalent).
+	if strings.HasPrefix(raw, "__bytes_b64__:") {
+		parts := strings.SplitN(raw, "\n", 3)
+		resp := httpResponse{Status: 200}
+		if len(parts) >= 1 {
+			b64 := strings.TrimPrefix(parts[0], "__bytes_b64__:")
+			if body, err := base64.StdEncoding.DecodeString(b64); err == nil {
+				resp.Body = string(body)
 			}
 		}
 		if len(parts) >= 2 {
@@ -728,18 +774,39 @@ func bunCompatJSSource() string {
 		if (r._fileObj && r._fileObj._path) {
 			return '__file__:' + r._fileObj._path + '\n' + s + '\n' + JSON.stringify(hd);
 		}
+		// Binary body: emit __bytes_b64__: prefix so the host can
+		// recover bytes byte-for-byte (the buffered-string wire format
+		// can only carry valid UTF-8 text).
+		if (r._bodyBytes != null) {
+			var bs = '';
+			for (var i = 0; i < r._bodyBytes.length; i++) bs += String.fromCharCode(r._bodyBytes[i]);
+			var b64 = (typeof btoa === 'function') ? btoa(bs) : Buffer.from(bs, 'binary').toString('base64');
+			return '__bytes_b64__:' + b64 + '\n' + s + '\n' + JSON.stringify(hd);
+		}
 		var b = '';
 		if (typeof r.body === 'string') b = r.body;
 		else if (r._body) b = r._body;
 		return s + '\n' + JSON.stringify(hd) + '\n' + b;
 	};
 
+	// Decode a base64 marker-prefixed body string (set by the Go side
+	// when the incoming request body is not valid UTF-8 text). Returns
+	// either the original body parameter or a Uint8Array.
+	function __decodeIncomingBody(body, isB64) {
+		if (!isB64 || !body) return body;
+		var bin = (typeof atob === 'function') ? atob(body) : Buffer.from(body, 'base64').toString('binary');
+		var bytes = new Uint8Array(bin.length);
+		for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i) & 0xff;
+		return bytes;
+	}
+
 	// Fast path for HTTP-only requests (no WebSocket overhead).
-	globalThis.__bunHandleFast = function(method, url, body, headers) {
+	globalThis.__bunHandleFast = function(method, url, body, headers, bodyIsB64) {
 		var h = globalThis.__bunFetchHandler;
 		if (!h) return '503\n\n';
+		var bodyArg = __decodeIncomingBody(body, bodyIsB64);
 		var r = h(new Request('http://localhost' + url, {
-			method: method, body: body || undefined, headers: headers
+			method: method, body: bodyArg || undefined, headers: headers
 		}));
 		if (r && typeof r.then === 'function') {
 			globalThis.__bunPendingPromise = r;
@@ -749,11 +816,12 @@ func bunCompatJSSource() string {
 	};
 
 	// WebSocket-aware path — passes server and reqId for upgrades.
-	globalThis.__bunHandle = function(reqId, method, url, body, headers) {
+	globalThis.__bunHandle = function(reqId, method, url, body, headers, bodyIsB64) {
 		var h = globalThis.__bunFetchHandler;
 		if (!h) return '503\n\n';
+		var bodyArg = __decodeIncomingBody(body, bodyIsB64);
 		var req = new Request('http://localhost' + url, {
-			method: method, body: body || undefined, headers: headers
+			method: method, body: bodyArg || undefined, headers: headers
 		});
 		req._reqId = reqId;
 		var r = h(req, globalThis.__bunServerObj);
@@ -985,18 +1053,49 @@ func bunCompatJSSource() string {
 		return pump();
 	}
 	function __bodyText(obj) {
+		if (obj._bodyBytes != null) {
+			obj.bodyUsed = true;
+			return Promise.resolve(new TextDecoder().decode(obj._bodyBytes));
+		}
 		if (obj._body !== null) { obj.bodyUsed = true; return Promise.resolve(obj._body); }
 		if (obj.bodyUsed) return Promise.reject(new TypeError('Body already consumed'));
 		obj.bodyUsed = true;
 		return __readStreamAsText(obj._stream);
 	}
 	function __bodyJSON(obj) {
+		if (obj._bodyBytes != null) {
+			obj.bodyUsed = true;
+			try { return Promise.resolve(JSON.parse(new TextDecoder().decode(obj._bodyBytes))); }
+			catch(e) { return Promise.reject(e); }
+		}
 		if (obj._body !== null) { obj.bodyUsed = true; try { return Promise.resolve(JSON.parse(obj._body)); } catch(e) { return Promise.reject(e); } }
 		return __bodyText(obj).then(function(t) { return JSON.parse(t); });
 	}
 	function __bodyArrayBuffer(obj) {
+		if (obj._bodyBytes != null) {
+			obj.bodyUsed = true;
+			var b = obj._bodyBytes;
+			return Promise.resolve(b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength));
+		}
 		if (obj._body !== null) { obj.bodyUsed = true; return Promise.resolve(new TextEncoder().encode(obj._body).buffer); }
 		return __bodyText(obj).then(function(t) { return new TextEncoder().encode(t).buffer; });
+	}
+	// __coerceBody normalizes a body input to either a string (_body)
+	// or a Uint8Array (_bodyBytes). Returns {body, bytes} where exactly
+	// one is non-null. Centralizes the spec's BodyInit handling for
+	// Request and Response constructors.
+	function __coerceBody(body) {
+		if (body == null) return { body: '', bytes: null };
+		if (typeof body === 'string') return { body: body, bytes: null };
+		if (body instanceof Uint8Array) return { body: null, bytes: body };
+		if (body instanceof ArrayBuffer) return { body: null, bytes: new Uint8Array(body) };
+		if (ArrayBuffer.isView(body)) {
+			return { body: null, bytes: new Uint8Array(body.buffer, body.byteOffset, body.byteLength) };
+		}
+		// Fallback: stringify (covers FormData / URLSearchParams via their
+		// own toString or Object); preserves prior behavior for non-binary
+		// inputs that did not match the typed-array branches.
+		return { body: String(body), bytes: null };
 	}
 
 	// Request/Response Web API polyfills for frameworks like Hono.
@@ -1010,24 +1109,33 @@ func bunCompatJSSource() string {
 			if (opts.body instanceof ReadableStream) {
 				this._stream = opts.body;
 				this._body = null;
+				this._bodyBytes = null;
 			} else {
-				this._body = opts.body != null ? String(opts.body) : '';
+				var c = __coerceBody(opts.body);
+				this._body = c.body;
+				this._bodyBytes = c.bytes;
 				this._stream = null;
 			}
 		};
 		Object.defineProperty(Request.prototype, 'body', { get: function() {
 			if (this._stream) return this._stream;
-			var text = this._body || '';
-			if (!text) return null;
+			var bytes = this._bodyBytes;
+			if (bytes == null && this._body) bytes = new TextEncoder().encode(this._body);
+			if (!bytes || bytes.length === 0) return null;
 			this._stream = new ReadableStream({
-				start: function(c) { c.enqueue(new TextEncoder().encode(text)); c.close(); }
+				start: function(c) { c.enqueue(bytes); c.close(); }
 			});
 			return this._stream;
 		}});
 		Request.prototype.text = function() { return __bodyText(this); };
 		Request.prototype.json = function() { return __bodyJSON(this); };
 		Request.prototype.arrayBuffer = function() { return __bodyArrayBuffer(this); };
-		Request.prototype.clone = function() { return new Request(this.url, {method: this.method, body: this._body, headers: this.headers}); };
+		Request.prototype.clone = function() {
+			var cloned = new Request(this.url, {method: this.method, headers: this.headers});
+			if (this._bodyBytes != null) cloned._bodyBytes = this._bodyBytes.slice();
+			else cloned._body = this._body;
+			return cloned;
+		};
 	}
 
 	if (typeof Response === 'undefined') {
@@ -1041,28 +1149,36 @@ func bunCompatJSSource() string {
 			if (body instanceof ReadableStream) {
 				this._stream = body;
 				this._body = null;
+				this._bodyBytes = null;
 			} else if (body && typeof body === 'object' && body._path) {
 				// Bun.file() object — preserve for static file serving.
 				this._fileObj = body;
 				this._body = null;
+				this._bodyBytes = null;
 				this._stream = null;
 			} else {
-				this._body = body != null ? String(body) : '';
+				var c = __coerceBody(body);
+				this._body = c.body;
+				this._bodyBytes = c.bytes;
 				this._stream = null;
 			}
 		};
 		Object.defineProperty(Response.prototype, 'body', { get: function() {
 			if (this._stream) return this._stream;
-			var text = this._body || '';
+			var bytes = this._bodyBytes;
+			if (bytes == null) bytes = new TextEncoder().encode(this._body || '');
 			this._stream = new ReadableStream({
-				start: function(c) { if (text) c.enqueue(new TextEncoder().encode(text)); c.close(); }
+				start: function(c) { if (bytes.length) c.enqueue(bytes); c.close(); }
 			});
 			return this._stream;
 		}});
 		Response.prototype.text = function() { return __bodyText(this); };
 		Response.prototype.json = function() { return __bodyJSON(this); };
 		Response.prototype.arrayBuffer = function() { return __bodyArrayBuffer(this); };
-		Response.prototype.clone = function() { return new Response(this._body, {status: this.status, headers: this.headers}); };
+		Response.prototype.clone = function() {
+			var src = this._bodyBytes != null ? this._bodyBytes.slice() : this._body;
+			return new Response(src, {status: this.status, headers: this.headers});
+		};
 		Response.json = function(data, opts) {
 			opts = opts || {};
 			return new Response(JSON.stringify(data), {

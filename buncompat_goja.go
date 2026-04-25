@@ -79,7 +79,7 @@ func (s *bunServerState) ensureHandlerCached(r *Runtime) {
 	for _, m := range commonHTTPMethods {
 		r.bunMethodValCache[m] = r.vm.ToValue(m)
 	}
-	r.bunCallArgs = make([]goja.Value, 4)
+	r.bunCallArgs = make([]goja.Value, 5)
 }
 
 func (s *bunServerState) handleSingleRequest(r *Runtime, req pendingHTTPReq) {
@@ -87,6 +87,7 @@ func (s *bunServerState) handleSingleRequest(r *Runtime, req pendingHTTPReq) {
 
 	var result goja.Value
 	var err error
+	bodyEnc, bodyB64 := encodeBodyForJS(req.Body)
 	if r.bunHandleFastFn != nil {
 		methodVal, ok := r.bunMethodValCache[req.Method]
 		if !ok {
@@ -100,13 +101,18 @@ func (s *bunServerState) handleSingleRequest(r *Runtime, req pendingHTTPReq) {
 		}
 		r.bunCallArgs[0] = methodVal
 		r.bunCallArgs[1] = r.vm.ToValue(req.URL)
-		r.bunCallArgs[2] = r.vm.ToValue(req.Body)
+		r.bunCallArgs[2] = r.vm.ToValue(bodyEnc)
 		r.bunCallArgs[3] = headersVal
+		r.bunCallArgs[4] = r.vm.ToValue(bodyB64)
 		result, err = r.safeCallable(r.bunHandleFastFn, goja.Undefined(), r.bunCallArgs...)
 	} else {
 		// Reached only if ensureHandlerCached found no __bunHandleFast global
 		// (e.g. the user has not called Ramune.serve yet but requests arrived).
-		code := `__bunHandleFast("` + escJS(req.Method) + `","` + escJS(req.URL) + `","` + escJS(req.Body) + `",` + req.HeadersJSON + `)`
+		b64Flag := "false"
+		if bodyB64 {
+			b64Flag = "true"
+		}
+		code := `__bunHandleFast("` + escJS(req.Method) + `","` + escJS(req.URL) + `","` + escJS(bodyEnc) + `",` + req.HeadersJSON + `,` + b64Flag + `)`
 		result, err = r.safeRunString(code)
 	}
 	if err != nil {
