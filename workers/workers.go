@@ -72,6 +72,14 @@ type Config struct {
 	// the dispatch path.
 	BlobBackend BlobBackend
 
+	// ExtraCrons is a list of additional cron expressions that should
+	// fire the module's scheduled handler. Used by the host
+	// (chinotto.toml's [[workers]].crons, etc.) to declare schedules
+	// without requiring the worker to embed a single `cron` string in
+	// its source. If the module also exports a non-empty `cron` field,
+	// that schedule is registered first and these are appended.
+	ExtraCrons []string
+
 	// Fetch, when non-nil, replaces globalThis.fetch for this worker
 	// with a thin JS wrapper that forwards every call through fn.
 	//
@@ -104,6 +112,15 @@ func WithSecretsPrefix(p string) Option {
 // builders (SECRETS, and, if enabled, DB/KV) are installed.
 func WithExtraEnvJS(js string) Option {
 	return func(c *Config) { c.ExtraEnvJS = js }
+}
+
+// WithCrons appends one or more cron expressions that fire the
+// module's scheduled handler. Combined with any `cron` field the
+// module exports.
+func WithCrons(exprs ...string) Option {
+	return func(c *Config) {
+		c.ExtraCrons = append(c.ExtraCrons, exprs...)
+	}
 }
 
 // WithFetchFunc installs a per-worker override of globalThis.fetch.
@@ -214,6 +231,13 @@ func AttachPrepared(rt *ramune.Runtime, p *Prepared, opts ...Option) (http.Handl
 	if mod.HasScheduled && mod.Cron != "" {
 		if err := registerScheduled(rt, p.cacheKey, mod.Cron); err != nil {
 			return nil, fmt.Errorf("workers: register scheduled: %w", err)
+		}
+	}
+	if mod.HasScheduled && len(cfg.ExtraCrons) > 0 {
+		for i, expr := range cfg.ExtraCrons {
+			if err := registerScheduledWithID(rt, p.cacheKey, expr, fmt.Sprintf("workers:%s:extra:%d", p.cacheKey, i)); err != nil {
+				return nil, fmt.Errorf("workers: register extra cron[%d] %q: %w", i, expr, err)
+			}
 		}
 	}
 

@@ -419,9 +419,18 @@ func fullRequestURL(r *http.Request) string {
 // registerScheduled installs a Ramune cron handler that runs the
 // scheduled export. It relies on Ramune's built-in cron (installed by
 // NodeCompat/default). If cron is unavailable the caller gets a clear
-// error at Register time.
+// error at Register time. The default ID is "workers:<cacheKey>";
+// callers that need to attach additional crons (host-supplied
+// schedules from a TOML manifest) use [registerScheduledWithID] to
+// avoid colliding on the cron-manager registry.
 func registerScheduled(rt *ramune.Runtime, cacheKey, expr string) error {
-	id := "workers:" + cacheKey
+	return registerScheduledWithID(rt, cacheKey, expr, "workers:"+cacheKey)
+}
+
+// registerScheduledWithID is like [registerScheduled] but uses an
+// explicit Ramune.cron registration ID so a single worker can declare
+// multiple cron triggers without name collisions.
+func registerScheduledWithID(rt *ramune.Runtime, cacheKey, expr, id string) error {
 	js := fmt.Sprintf(
 		`(function(){
 			if (!globalThis.Ramune || typeof globalThis.Ramune.cron !== "function") {
