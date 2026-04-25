@@ -1225,6 +1225,7 @@ Named after [Ramune](https://en.wikipedia.org/wiki/Ramune), a Japanese carbonate
 
 ## Related Projects
 
+- **[Chinotto](https://github.com/i2y/chinotto)** — Self-host Cloudflare Workers + Workflows + Cron platform built on Ramune's env framework. Chinotto plugs concrete backends (Pebble KV, filesystem blob, Romancy durable workflows) into Ramune's `KVBackend` / `BlobBackend` / scheduled-handler interfaces and wraps the result with a daemon (HTTP router, sandbox subprocess, TOML manifest, ops CLI).
 - **[Soda](https://github.com/i2y/soda)** — A drop-in Ramune-backed replacement for PocketBase's JSVM plugin. Lets PocketBase hooks be written as Workers-style `export default { fetch }` modules.
 - **[Dark](https://github.com/i2y/dark)** — Go SSR web framework (Preact/React templates, htmx, Islands hydration) built on `net/http`. Uses Ramune internally for SSR, and ships as a native desktop app via WebView with Go↔JS bindings.
 
