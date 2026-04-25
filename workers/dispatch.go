@@ -446,15 +446,21 @@ func registerScheduledWithID(rt *ramune.Runtime, cacheKey, expr, id string) erro
 					passThroughOnException: function(){}
 				};
 				var __event = { scheduledTime: Date.now(), cron: %q };
+				var __failed = false;
 				try {
 					await __wk.scheduled(__event, __env, __ctx);
 				} catch (e) {
+					__failed = true;
 					console.error("workers: scheduled handler threw:", e);
+				}
+				if (typeof globalThis.__workers_observe_cron === "function") {
+					try { globalThis.__workers_observe_cron(%q, __failed); }
+					catch (_e) { /* observer must never break the scheduler */ }
 				}
 				if (__pending.length) await Promise.allSettled(__pending);
 			});
 		})();`,
-		id, expr, cacheKey, expr,
+		id, expr, cacheKey, expr, expr,
 	)
 	return rt.Exec(js)
 }
