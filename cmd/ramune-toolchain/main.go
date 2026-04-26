@@ -16,6 +16,7 @@ import (
 	"regexp"
 	goruntime "runtime"
 	"runtime/debug"
+	"sort"
 	"strings"
 
 	"github.com/evanw/esbuild/pkg/api"
@@ -896,8 +897,26 @@ go 1.26
 
 	absOutput, _ := filepath.Abs(output)
 	goBuildArgs := []string{"build", "-o", absOutput}
-	if buildTags != "" {
-		goBuildArgs = append(goBuildArgs, "-tags", buildTags)
+	// Default to nowebview so the embedded JS runtime doesn't pull
+	// glaze → purego → libdl/libpthread/libc into ELF NEEDED. Apps that
+	// genuinely need the WebView surface can opt back in by passing
+	// `--tags webview` (which we honour by dropping nowebview).
+	tagSet := map[string]bool{"nowebview": true}
+	for _, t := range strings.Split(buildTags, ",") {
+		if t = strings.TrimSpace(t); t != "" {
+			tagSet[t] = true
+		}
+	}
+	if tagSet["webview"] {
+		delete(tagSet, "nowebview")
+	}
+	mergedTags := make([]string, 0, len(tagSet))
+	for t := range tagSet {
+		mergedTags = append(mergedTags, t)
+	}
+	sort.Strings(mergedTags)
+	if len(mergedTags) > 0 {
+		goBuildArgs = append(goBuildArgs, "-tags", strings.Join(mergedTags, ","))
 	}
 	goBuildArgs = append(goBuildArgs, ".")
 	buildCmd := exec.Command("go", goBuildArgs...)
