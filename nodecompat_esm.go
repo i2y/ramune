@@ -61,9 +61,10 @@ func transformSource(filename, source string, commonJS bool) (string, error) {
 		}
 	}
 	r, err := tsgotranspile.Transpile(source, tsgotranspile.Options{
-		FileName: feedName,
-		Target:   tsgoTarget(),
-		Module:   module,
+		FileName:               feedName,
+		Target:                 tsgoTarget(),
+		Module:                 module,
+		ExperimentalDecorators: true,
 	})
 	if err != nil {
 		return "", fmt.Errorf("transform %s: %w", filepath.Base(filename), err)
@@ -99,6 +100,10 @@ func resolveFileModule(resolved string) (string, error) {
 }
 
 func resolveNodeModule(mod, baseDir string) (string, error) {
+	// Some packages (e.g., vscode-languageserver) require their own root with
+	// a trailing slash (`require('vscode-languageserver-protocol/')`). Node's
+	// resolver treats that the same as no slash; mirror that here.
+	mod = strings.TrimRight(mod, "/")
 	pkgName, subpath := splitModulePath(mod)
 	dir := baseDir
 	for {
@@ -268,8 +273,10 @@ func (r *Runtime) goLoadModuleFunc() GoFunc {
 		isESM := isESMSource(absPath, source)
 
 		// One tsgo pass covers both TS type-stripping and ESM->CJS conversion.
+		// require() is a CJS context, so any TS file loaded here must emit CJS
+		// regardless of whether the source happens to use ESM syntax.
 		if isTS || isESM {
-			source, err = transformSource(absPath, source, isESM)
+			source, err = transformSource(absPath, source, isTS || isESM)
 			if err != nil {
 				return nil, err
 			}

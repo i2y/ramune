@@ -433,6 +433,18 @@ func runCmd(args []string) {
 			filename, filename[:strings.LastIndex(filename, "/")]))
 	}
 
+	// Provide process.argv: ["ramune", <script>, ...remaining args].
+	{
+		scriptArgs := []string{}
+		if fs.NArg() > 1 {
+			scriptArgs = fs.Args()[1:]
+		}
+		argv := []string{"ramune", filename}
+		argv = append(argv, scriptArgs...)
+		jsArgv, _ := json.Marshal(argv)
+		rt.Exec(fmt.Sprintf(`if(typeof process!=='undefined')process.argv=%s;`, string(jsArgv)))
+	}
+
 	if typeCheck && isTypeScript(filename) {
 		execToolchain("check-single", []string{filename})
 	}
@@ -546,7 +558,15 @@ func runCmd(args []string) {
 			os.Exit(1)
 		}
 	} else {
-		if err := rt.Exec(string(code)); err != nil {
+		// Wrap the entry's CJS output in an IIFE so its top-level
+		// `let`/`const` declarations are function-scoped instead of
+		// landing in the realm's global lexical environment. Without
+		// this, the JSC eval-retry-on-NULL path can trip "Can't create
+		// duplicate variable" when re-parsing the same source. Globals
+		// like `exports`, `require`, `module` remain visible via lexical
+		// lookup — the IIFE is just a scope barrier for the user code.
+		wrapped := "(function(){" + string(code) + "\n})();"
+		if err := rt.Exec(wrapped); err != nil {
 			fmt.Fprintf(os.Stderr, "%v\n", err)
 			os.Exit(1)
 		}
@@ -975,9 +995,10 @@ func isTypeScript(filename string) bool {
 // / `module.exports = …` directly, so no post-processing is needed.
 func transformTypeScript(filename string, code []byte) ([]byte, error) {
 	r, err := tsgotranspile.Transpile(string(code), tsgotranspile.Options{
-		FileName: filepath.Base(filename),
-		Target:   tsgoTarget(),
-		Module:   core.ModuleKindCommonJS,
+		FileName:               filepath.Base(filename),
+		Target:                 tsgoTarget(),
+		Module:                 core.ModuleKindCommonJS,
+		ExperimentalDecorators: true,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("TypeScript %s: %w", filepath.Base(filename), err)

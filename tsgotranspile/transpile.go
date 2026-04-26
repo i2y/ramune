@@ -121,6 +121,11 @@ func (t *Transpiler) Transpile(source string, opts Options) (Result, error) {
 		OutDir:             outDir,
 		SkipLibCheck:       core.TSTrue,
 		AllowJs:            core.TSTrue,
+		// Per-file emit: each Transpile call sees only one source file, so
+		// const enums must be materialized as regular enums for cross-file
+		// access to work. Without this, `export const enum X { Y = 1 }`
+		// produces no runtime exports and consumers see undefined.
+		PreserveConstEnums: core.TSTrue,
 	}
 	if opts.RemoveComments {
 		co.RemoveComments = core.TSTrue

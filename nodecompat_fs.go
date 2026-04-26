@@ -83,16 +83,19 @@ func goReaddir(args []any) (any, error) {
 	}
 	if withFileTypes {
 		type dirent struct {
-			Name   string `json:"name"`
-			IsDir  bool   `json:"isDirectory"`
-			IsFile bool   `json:"isFile"`
+			Name      string `json:"name"`
+			IsDir     bool   `json:"isDirectory"`
+			IsFile    bool   `json:"isFile"`
+			IsSymlink bool   `json:"isSymbolicLink"`
 		}
 		var result []dirent
 		for _, e := range entries {
+			isSymlink := e.Type()&os.ModeSymlink != 0
 			result = append(result, dirent{
-				Name:   e.Name(),
-				IsDir:  e.IsDir(),
-				IsFile: !e.IsDir(),
+				Name:      e.Name(),
+				IsDir:     e.IsDir(),
+				IsFile:    !e.IsDir() && !isSymlink,
+				IsSymlink: isSymlink,
 			})
 		}
 		out, _ := json.Marshal(result)
@@ -118,11 +121,14 @@ func goStat(args []any) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	isSymlink := info.Mode()&os.ModeSymlink != 0
 	result := map[string]any{
-		"isFile":      !info.IsDir(),
-		"isDirectory": info.IsDir(),
-		"size":        info.Size(),
-		"mtimeMs":     float64(info.ModTime().UnixMilli()),
+		"isFile":         info.Mode().IsRegular(),
+		"isDirectory":    info.IsDir(),
+		"isSymbolicLink": isSymlink,
+		"size":           info.Size(),
+		"mtimeMs":        float64(info.ModTime().UnixMilli()),
+		"mode":           int(info.Mode().Perm()),
 	}
 	out, _ := json.Marshal(result)
 	return string(out), nil
@@ -157,7 +163,11 @@ func goRealpath(args []any) (any, error) {
 	if !ok {
 		return nil, fmt.Errorf("realpathSync: path must be string")
 	}
-	resolved, err := filepath.EvalSymlinks(path)
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return nil, err
+	}
+	resolved, err := filepath.EvalSymlinks(abs)
 	if err != nil {
 		return nil, err
 	}

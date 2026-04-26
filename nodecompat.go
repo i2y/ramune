@@ -440,8 +440,15 @@ func nodeCompatJSSource() string {
 				return entries.map(function(e) {
 					return {
 						name: e.name,
+						parentPath: String(p),
+						path: String(p),
 						isFile: function() { return e.isFile; },
-						isDirectory: function() { return e.isDirectory; }
+						isDirectory: function() { return e.isDirectory; },
+						isSymbolicLink: function() { return !!e.isSymbolicLink; },
+						isBlockDevice: function() { return false; },
+						isCharacterDevice: function() { return false; },
+						isFIFO: function() { return false; },
+						isSocket: function() { return false; }
 					};
 				});
 			}
@@ -454,9 +461,22 @@ func nodeCompatJSSource() string {
 				return {
 					isFile: function() { return s.isFile; },
 					isDirectory: function() { return s.isDirectory; },
+					isSymbolicLink: function() { return !!s.isSymbolicLink; },
+					isBlockDevice: function() { return false; },
+					isCharacterDevice: function() { return false; },
+					isFIFO: function() { return false; },
+					isSocket: function() { return false; },
 					size: s.size,
 					mtimeMs: s.mtimeMs,
-					mtime: new Date(s.mtimeMs)
+					mtime: new Date(s.mtimeMs),
+					atimeMs: s.mtimeMs,
+					atime: new Date(s.mtimeMs),
+					ctimeMs: s.mtimeMs,
+					ctime: new Date(s.mtimeMs),
+					birthtimeMs: s.mtimeMs,
+					birthtime: new Date(s.mtimeMs),
+					mode: s.mode || 0o644,
+					nlink: 1, uid: 0, gid: 0, rdev: 0, blksize: 4096, blocks: 0, dev: 0, ino: 0
 				};
 			} catch(e) {
 				var err = new Error('ENOENT: no such file or directory: ' + p);
@@ -466,10 +486,18 @@ func nodeCompatJSSource() string {
 		},
 		lstatSync: function(p) { return this.statSync(p); },
 		unlinkSync: function(p) { __go_rm(String(p), 'false'); },
-		realpathSync: function(p) { return __go_realpath(String(p)); },
+		realpathSync: (function() {
+			var f = function(p) { return __go_realpath(String(p)); };
+			f.native = f;
+			return f;
+		})(),
 		accessSync: function(p) { __go_access(String(p)); },
 		copyFileSync: function(src, dest) { __go_copy_file(String(src), String(dest)); },
 		rmSync: function(p, opts) {
+			var recursive = (opts && opts.recursive) ? 'true' : 'false';
+			__go_rm(String(p), recursive);
+		},
+		rmdirSync: function(p, opts) {
 			var recursive = (opts && opts.recursive) ? 'true' : 'false';
 			__go_rm(String(p), recursive);
 		},
@@ -508,6 +536,24 @@ func nodeCompatJSSource() string {
 		cpSync: function(src, dest) {
 			__go_cp_sync(String(src), String(dest));
 		}
+	};
+	// fs.constants mirrors os.constants.fs (same numeric flags).
+	fs.constants = {
+		O_RDONLY: 0, O_WRONLY: 1, O_RDWR: 2,
+		O_CREAT: 0x200, O_EXCL: 0x800, O_NOCTTY: 0x20000,
+		O_TRUNC: 0x400, O_APPEND: 0x8, O_DIRECTORY: 0x100000,
+		O_NOFOLLOW: 0x100, O_SYNC: 0x80, O_DSYNC: 0x400000,
+		O_SYMLINK: 0x200000, O_NONBLOCK: 4,
+		S_IFMT: 0xf000, S_IFREG: 0x8000, S_IFDIR: 0x4000,
+		S_IFCHR: 0x2000, S_IFBLK: 0x6000, S_IFIFO: 0x1000,
+		S_IFLNK: 0xa000, S_IFSOCK: 0xc000,
+		S_IRWXU: 0o700, S_IRUSR: 0o400, S_IWUSR: 0o200, S_IXUSR: 0o100,
+		S_IRWXG: 0o70,  S_IRGRP: 0o40,  S_IWGRP: 0o20,  S_IXGRP: 0o10,
+		S_IRWXO: 0o7,   S_IROTH: 0o4,   S_IWOTH: 0o2,   S_IXOTH: 0o1,
+		F_OK: 0, R_OK: 4, W_OK: 2, X_OK: 1,
+		UV_FS_COPYFILE_EXCL: 1, COPYFILE_EXCL: 1,
+		UV_FS_COPYFILE_FICLONE: 2, COPYFILE_FICLONE: 2,
+		UV_FS_COPYFILE_FICLONE_FORCE: 4, COPYFILE_FICLONE_FORCE: 4
 	};
 	// Async callback versions — wrap sync operations in setTimeout(cb, 0).
 	fs.readFile = function(path, opts, cb) {
@@ -729,6 +775,7 @@ func nodeCompatJSSource() string {
 	p.version = 'v20.0.0';
 	p.versions = { node: '20.0.0' };
 	p.argv = [];
+	p.execArgv = [];
 	p.exit = function(code) {
 		if (code !== undefined && code !== null) p._exitCode = code;
 		p.emit('exit', p._exitCode);
@@ -1440,7 +1487,24 @@ func nodeCompatJSSource() string {
 		constants: {
 			signals: __SIGNALS__,
 			errno: {},
-			priority: { PRIORITY_LOW: 19, PRIORITY_BELOW_NORMAL: 10, PRIORITY_NORMAL: 0, PRIORITY_ABOVE_NORMAL: -7, PRIORITY_HIGH: -14, PRIORITY_HIGHEST: -20 }
+			priority: { PRIORITY_LOW: 19, PRIORITY_BELOW_NORMAL: 10, PRIORITY_NORMAL: 0, PRIORITY_ABOVE_NORMAL: -7, PRIORITY_HIGH: -14, PRIORITY_HIGHEST: -20 },
+			fs: {
+				O_RDONLY: 0, O_WRONLY: 1, O_RDWR: 2,
+				O_CREAT: 0x200, O_EXCL: 0x800, O_NOCTTY: 0x20000,
+				O_TRUNC: 0x400, O_APPEND: 0x8, O_DIRECTORY: 0x100000,
+				O_NOFOLLOW: 0x100, O_SYNC: 0x80, O_DSYNC: 0x400000,
+				O_SYMLINK: 0x200000, O_NONBLOCK: 4,
+				S_IFMT: 0xf000, S_IFREG: 0x8000, S_IFDIR: 0x4000,
+				S_IFCHR: 0x2000, S_IFBLK: 0x6000, S_IFIFO: 0x1000,
+				S_IFLNK: 0xa000, S_IFSOCK: 0xc000,
+				S_IRWXU: 0o700, S_IRUSR: 0o400, S_IWUSR: 0o200, S_IXUSR: 0o100,
+				S_IRWXG: 0o70,  S_IRGRP: 0o40,  S_IWGRP: 0o20,  S_IXGRP: 0o10,
+				S_IRWXO: 0o7,   S_IROTH: 0o4,   S_IWOTH: 0o2,   S_IXOTH: 0o1,
+				F_OK: 0, R_OK: 4, W_OK: 2, X_OK: 1,
+				UV_FS_COPYFILE_EXCL: 1, COPYFILE_EXCL: 1,
+				UV_FS_COPYFILE_FICLONE: 2, COPYFILE_FICLONE: 2,
+				UV_FS_COPYFILE_FICLONE_FORCE: 4, COPYFILE_FICLONE_FORCE: 4
+			}
 		}
 	};
 
