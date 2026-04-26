@@ -254,9 +254,9 @@ func installBlobBackend(rt *ramune.Runtime, b BlobBackend) error {
 			size = int64(len(body))
 		}
 		out := map[string]any{
-			"key":     info.Key,
-			"size":    float64(size),
-			"etag":    etag,
+			"key":      info.Key,
+			"size":     float64(size),
+			"etag":     etag,
 			"body_b64": base64.StdEncoding.EncodeToString(body),
 		}
 		if !info.Uploaded.IsZero() {
