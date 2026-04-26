@@ -89,7 +89,7 @@ func (t *Transpiler) emitFunctionDeclaration(node *ast.Node) {
 
 	funcName := nodeText(name)
 	goName := goVarName(funcName)
-	if isExported(node) {
+	if isExported(node) || t.forceExportedFuncs {
 		goName = goExportedName(funcName)
 	}
 

@@ -31,22 +31,24 @@ func TranspileNodes(ck *checker.Checker, nodes []*ast.Node, pkgName string) (str
 		localTypeNames:     make(map[string]bool),
 		samePackageExports: make(map[string]bool),
 		arrayCallbackIdx:   -1,
+		// Picker-extracted helpers must be Go-exported so the
+		// reflect-based DiscoverExportedFuncs in cmd/ramune-toolchain
+		// can find them when wiring the native module bridge. Without
+		// this, every extracted function emits as lowercase and the
+		// hybrid module ends up unregistered at runtime.
+		forceExportedFuncs: true,
 	}
 	t.tm = newTypeMapper(ck)
 
-	// Pre-scan: same-package exports let emitIdentifier route recursive and
-	// peer calls through the PascalCase Go name. Register TS-exported
-	// functions and class names; unexported helpers stay package-local
-	// in Go.
+	// Pre-scan: every extracted top-level function and class becomes an
+	// exported Go symbol (forceExportedFuncs above), so emitIdentifier
+	// must route intra-file references through the PascalCase name too.
 	for _, n := range nodes {
 		if n == nil {
 			continue
 		}
 		switch n.Kind {
 		case ast.KindFunctionDeclaration:
-			if !isExported(n) {
-				continue
-			}
 			fd := n.AsFunctionDeclaration()
 			if fd == nil || fd.Name() == nil || fd.Name().Kind != ast.KindIdentifier {
 				continue

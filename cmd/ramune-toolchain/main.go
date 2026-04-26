@@ -734,7 +734,12 @@ func compileCmd(args []string) {
 				fmt.Fprintf(os.Stderr, "error creating hybrid dir: %v\n", err)
 				os.Exit(1)
 			}
-			if err := os.WriteFile(filepath.Join(pkgDir, pkgAlias+".go"), []byte(res.GoSource), 0o644); err != nil {
+			// Fixed file name avoids `_test.go` / `_<GOOS>.go` /
+			// `_<GOARCH>.go` suffixes that the Go toolchain would treat
+			// as build-constrained — e.g. a TS file called cross-test.ts
+			// would otherwise produce nativehybrid_cross_test.go and get
+			// excluded from the build as a test file.
+			if err := os.WriteFile(filepath.Join(pkgDir, "module.go"), []byte(res.GoSource), 0o644); err != nil {
 				fmt.Fprintf(os.Stderr, "error writing hybrid module: %v\n", err)
 				os.Exit(1)
 			}
@@ -776,7 +781,7 @@ func compileCmd(args []string) {
 			fmt.Fprintf(os.Stderr, "native transpile error (%s): %v\n", nf, err)
 			os.Exit(1)
 		}
-		if err := os.WriteFile(filepath.Join(pkgDir, baseName+".go"), []byte(result.GoSource), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(pkgDir, "module.go"), []byte(result.GoSource), 0o644); err != nil {
 			fmt.Fprintf(os.Stderr, "error writing native module: %v\n", err)
 			os.Exit(1)
 		}

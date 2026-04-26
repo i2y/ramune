@@ -75,6 +75,12 @@ type Transpiler struct {
 	// samePackageExports tracks names imported from the same Go package.
 	// These need goExportedName() instead of goVarName() in emitIdentifier.
 	samePackageExports map[string]bool
+	// forceExportedFuncs makes every emitted top-level function a Go
+	// exported (PascalCase) symbol, regardless of whether the source TS
+	// used `export`. The composer/picker path uses this so that
+	// gotranspiler.DiscoverExportedFuncs (reflect-based) can see the
+	// extracted helpers when registering the native module bridge.
+	forceExportedFuncs bool
 	// goAnyVars tracks variables that are any at Go level even though
 	// the TS checker says they have a concrete type (e.g., from []any indexing).
 	goAnyVars map[string]bool
