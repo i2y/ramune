@@ -231,6 +231,8 @@ Options: `--http` (Ramune.serve event loop), `--minify` (esbuild minification). 
 
 > **Note:** The compiled binary loads JavaScriptCore dynamically at runtime. The target machine must have JSC available (macOS: built-in, Linux: `libjavascriptcoregtk`). Use `-tags qjswasm` for cross-platform builds.
 
+**Fully static / glibc-free output.** `ramune compile` defaults to `-tags nowebview`, which keeps `glaze` / `purego` out of the embed surface so the generated binary has no `libdl` / `libpthread` / `libc` ELF NEEDED entries. Combined with `-tags qjswasm`, the result runs unmodified on `alpine` (musl) and `FROM scratch` containers. Pass `--tags webview` to opt back in when you need the WebView surface; the toolchain merges it back and drops `nowebview` automatically.
+
 ### Native Extension Modules (Experimental)
 
 > **Note:** This workflow uses the built-in TypeScript-to-Go transpiler under the hood and inherits its experimental status. Simple typed functions (primitives, structs, typed slices) work reliably; generics, decorators, and deep class inheritance may produce Go code that needs manual fixes.
