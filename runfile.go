@@ -12,11 +12,18 @@ import (
 	"github.com/i2y/ramune/tsgotranspile"
 )
 
-// RunFileOptions tunes RunFile / EvalScript. The zero value is fine.
+// RunFileOptions tunes RunFile. The zero value is fine.
 type RunFileOptions struct {
-	// Argv overrides process.argv for the duration of the script. The first
-	// element is conventionally the runner name; if omitted RunFile prepends
-	// "ramune".
+	// Argv supplies the script arguments visible as process.argv inside the
+	// script. RunFile follows Node.js convention: process.argv is always set
+	// to [runner, scriptPath, ...Argv], so callers should pass only the
+	// script-side args. If Argv[0] is exactly "ramune", RunFile treats Argv
+	// as a fully-formed process.argv and uses it verbatim instead.
+	//
+	// Examples (script path "/abs/foo.ts"):
+	//   Argv: nil                    -> process.argv = ["ramune", "/abs/foo.ts"]
+	//   Argv: []string{"--flag"}     -> process.argv = ["ramune", "/abs/foo.ts", "--flag"]
+	//   Argv: []string{"ramune","X"} -> process.argv = ["ramune", "X"]   (verbatim)
 	Argv []string
 }
 
@@ -29,10 +36,20 @@ type RunFileOptions struct {
 // it directly so esbuild's bundler can resolve sibling imports the same
 // way the CLI does.
 //
+// rt is expected to have been built with NodeCompat() — RunFile relies on
+// the Node-compat layer for require()/process/__filename/__dirname. Without
+// it, process.argv is silently skipped and require() in the loaded source
+// will fail. WithFetch() is similarly recommended if the script does network
+// I/O.
+//
+// RunFile drives the event loop to completion before returning, so any
+// timeout from rt.RunEventLoop (30s default for non-server scripts) is
+// surfaced to the caller as the return value.
+//
 // Use this when embedding Ramune as a library and you need to run a TS
 // entrypoint that pulls in its own dependency graph (e.g. pyright-internal
 // reached via vendored `./src/...` imports). For a JS string with no
-// imports, `Runtime.Exec` is enough.
+// imports, Runtime.Exec is enough.
 func RunFile(rt *Runtime, path string, opts RunFileOptions) error {
 	abs := path
 	if !filepath.IsAbs(abs) {
@@ -71,17 +88,13 @@ func RunFile(rt *Runtime, path string, opts RunFileOptions) error {
 	if err := rt.Exec(string(code)); err != nil {
 		return err
 	}
-	rt.RunEventLoop()
-	return nil
+	return rt.RunEventLoop()
 }
 
 // setRunGlobals installs __filename / __dirname / process.argv on rt
 // matching the `ramune run` CLI's preamble.
 func setRunGlobals(rt *Runtime, abs string, argv []string) error {
-	dir := abs
-	if i := strings.LastIndex(abs, string(os.PathSeparator)); i >= 0 {
-		dir = abs[:i]
-	}
+	dir := filepath.Dir(abs)
 	if err := rt.Exec(fmt.Sprintf(`globalThis.__filename = %q; globalThis.__dirname = %q;`, abs, dir)); err != nil {
 		return err
 	}
