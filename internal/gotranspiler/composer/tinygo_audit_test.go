@@ -175,6 +175,81 @@ export function inlineUnion(d: "yes" | "no"): boolean {
 	runTinyGoAudit(t, "literal_union", src)
 }
 
+// TestTinyGoAudit_MapStringPrimitive covers `Map<string, T>` —
+// `new Map`, `m.set/get/has/delete`, and `m.size` all lower to
+// idiomatic Go map ops; `m.get(k)` returns `*T` so a `?? default`
+// caller routes through the existing nullable path.
+func TestTinyGoAudit_MapStringPrimitive(t *testing.T) {
+	if _, err := exec.LookPath("tinygo"); err != nil {
+		t.Skip("tinygo not on PATH")
+	}
+	src := `
+export function tally(words: string[]): number {
+  const m = new Map<string, number>();
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i];
+    const cur = m.get(w) ?? 0;
+    m.set(w, cur + 1);
+  }
+  return m.size;
+}
+export function knownIds(ids: string[]): number {
+  const seen = new Map<string, number>();
+  for (let i = 0; i < ids.length; i++) seen.set(ids[i], 1);
+  return seen.size;
+}
+`
+	runTinyGoAudit(t, "map_string_primitive", src)
+}
+
+// TestTinyGoAudit_ArrayReduce covers `xs.reduce(cb, seed)` where cb is a
+// *JSFunc parameter. Emit lowers to a for-range IIFE with the seed-typed
+// accumulator on the Go stack. Both the receiver and callback signatures
+// stay primitive so the round-trip through *JSFunc.Call stays sound.
+func TestTinyGoAudit_ArrayReduce(t *testing.T) {
+	if _, err := exec.LookPath("tinygo"); err != nil {
+		t.Skip("tinygo not on PATH")
+	}
+	src := `
+export function totalize(xs: number[], cb: (acc: number, el: number) => number): number {
+  return xs.reduce(cb, 0);
+}
+export function joinedLen(xs: number[], cb: (acc: number, el: number) => number, seed: number): number {
+  return xs.reduce(cb, seed);
+}
+`
+	runTinyGoAudit(t, "array_reduce", src)
+}
+
+// TestTinyGoAudit_SetPrimitive covers `Set<T>` — `new Set`, add/has/
+// delete/clear, and `s.size`. Each method lowers to map[T]struct{} ops;
+// `s.add(v)` returns the receiver (chainable JS shape) and `s.delete(v)`
+// returns the deletion-occurred bool.
+func TestTinyGoAudit_SetPrimitive(t *testing.T) {
+	if _, err := exec.LookPath("tinygo"); err != nil {
+		t.Skip("tinygo not on PATH")
+	}
+	src := `
+export function distinctCount(xs: number[]): number {
+  const s = new Set<number>();
+  for (let i = 0; i < xs.length; i++) s.add(xs[i]);
+  return s.size;
+}
+export function hasAny(xs: string[], probe: string): boolean {
+  const s = new Set<string>();
+  for (let i = 0; i < xs.length; i++) s.add(xs[i]);
+  return s.has(probe);
+}
+export function evictLast(xs: number[]): number {
+  const s = new Set<number>();
+  for (let i = 0; i < xs.length; i++) s.add(xs[i]);
+  if (xs.length > 0) s.delete(xs[xs.length - 1]);
+  return s.size;
+}
+`
+	runTinyGoAudit(t, "set_primitive", src)
+}
+
 // TestTinyGoAudit_StaticMethods covers `class C { static foo(...) }` —
 // emitter renders each static as a package-level `func C_Foo(...)` and
 // rewrites `C.foo(args)` call sites to match. Instance members on the

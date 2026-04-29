@@ -169,6 +169,14 @@ type bodyCtx struct {
 	// `Util.double(x)` resolve to a known function symbol — the emitter
 	// renders these as package-level `func ClassName_MethodName(...)`.
 	staticMethods map[string]map[string]bool
+	// freshArrayLocals is the subset of localNames whose initializer is a
+	// (possibly wrapped) array literal — i.e. the slice header was minted
+	// inside this function and cannot alias a caller-owned array. Mutating
+	// methods (push) accept these receivers; aliased locals like `const a
+	// = paramArr` reject because Go's `append` only sees the local's slice
+	// header, so JS-style "mutation visible to caller" semantics break
+	// silently when the underlying array reallocates.
+	freshArrayLocals map[string]bool
 }
 
 // checkBody walks a block/statement subtree and returns a non-nil Reason if
@@ -285,13 +293,21 @@ func checkBody(node *ast.Node, ctx *bodyCtx) *Reason {
 		}
 		return requireBoolCondition(ds.Expression, ctx)
 
-	case ast.KindBreakStatement, ast.KindContinueStatement, ast.KindEmptyStatement:
-		if node.AsBreakStatement() != nil && node.AsBreakStatement().Label != nil {
+	case ast.KindBreakStatement:
+		// AsBreakStatement / AsContinueStatement are *not* nil-safe across
+		// kinds — they unconditionally type-assert nodeData. Dispatch by
+		// Kind first so a `break` inside an extractable function doesn't
+		// crash the picker on the subsequent AsContinueStatement call.
+		if bs := node.AsBreakStatement(); bs != nil && bs.Label != nil {
 			return &Reason{Code: reasonLabeledStmt, Detail: "labeled break"}
 		}
-		if node.AsContinueStatement() != nil && node.AsContinueStatement().Label != nil {
+		return nil
+	case ast.KindContinueStatement:
+		if cs := node.AsContinueStatement(); cs != nil && cs.Label != nil {
 			return &Reason{Code: reasonLabeledStmt, Detail: "labeled continue"}
 		}
+		return nil
+	case ast.KindEmptyStatement:
 		return nil
 
 	case ast.KindVariableDeclaration:
@@ -327,6 +343,12 @@ func checkVarDecl(node *ast.Node, ctx *bodyCtx) *Reason {
 	// rejected anyway, and this keeps the walker from misclassifying later refs
 	// as captures.
 	ctx.localNames[name] = true
+	if isFreshArrayLiteral(vd.Initializer) {
+		if ctx.freshArrayLocals == nil {
+			ctx.freshArrayLocals = map[string]bool{}
+		}
+		ctx.freshArrayLocals[name] = true
+	}
 
 	if ctx.ck != nil {
 		if t := ctx.ck.GetTypeAtLocation(vd.Name()); t != nil {
@@ -339,6 +361,18 @@ func checkVarDecl(node *ast.Node, ctx *bodyCtx) *Reason {
 		return checkExpr(vd.Initializer, ctx)
 	}
 	return nil
+}
+
+// isFreshArrayLiteral reports whether init is an array literal, possibly
+// wrapped in `()` / `as` / `satisfies` / type assertion. Marker for the
+// receiver-of-push gate: a freshly-minted slice cannot alias a caller-owned
+// array, so mutating methods are sound.
+func isFreshArrayLiteral(init *ast.Node) bool {
+	if init == nil {
+		return false
+	}
+	inner := ast.SkipOuterExpressions(init, ast.OEKParentheses|ast.OEKTypeAssertions|ast.OEKSatisfies)
+	return inner != nil && inner.Kind == ast.KindArrayLiteralExpression
 }
 
 // checkExpr classifies an expression node. Returns nil on accept, a Reason on
@@ -452,7 +486,10 @@ func checkExpr(node *ast.Node, ctx *bodyCtx) *Reason {
 	case ast.KindElementAccessExpression:
 		return checkElementAccess(node, ctx)
 	case ast.KindNewExpression:
-		return &Reason{Code: reasonUnhandledKind, Detail: "new expression not supported"}
+		if r := checkNewMapOrSetExpression(node, ctx); r == nil {
+			return nil
+		}
+		return &Reason{Code: reasonUnhandledKind, Detail: "new expression not supported (only `new Map<K, V>()` and `new Set<T>()` are accepted today)"}
 	case ast.KindArrayLiteralExpression:
 		return checkArrayLiteral(node, ctx)
 	case ast.KindObjectLiteralExpression:
@@ -617,6 +654,20 @@ func checkPropertyAccess(node *ast.Node, ctx *bodyCtx) *Reason {
 
 	if propName == "length" {
 		return rejectNonLengthableReceiver(pa.Expression, ctx)
+	}
+
+	// `m.size` on a Map<K, V> or Set<T> — emit lowers to `len(m)`.
+	// Limited to the typed-collection case so the same identifier on a
+	// non-Map/Set receiver still goes through the named-interface
+	// field gate below.
+	if propName == "size" && ctx.ck != nil {
+		t := ctx.ck.GetTypeAtLocation(pa.Expression)
+		if k, v := mapKeyValueType(ctx.ck, t); k != nil && v != nil {
+			return checkExpr(pa.Expression, ctx)
+		}
+		if setElementType(ctx.ck, t) != nil {
+			return checkExpr(pa.Expression, ctx)
+		}
 	}
 
 	// Named-interface field access: receiver type must be an extractable
@@ -869,9 +920,74 @@ func checkArrayLiteral(node *ast.Node, ctx *bodyCtx) *Reason {
 	}
 	if ctx.ck != nil {
 		t := ctx.ck.GetTypeAtLocation(node)
+		// An empty literal (`[]`) infers as `never[]`, which is not
+		// extractable — reach for the binding's declared type instead so
+		// `const out: number[] = []` lowers cleanly. The emitter's
+		// `declContext` fallback in expr.go:emitArrayLiteral writes
+		// `[]float64{}` from the same annotation. Cases without a host
+		// annotation (like `return []` from a function with declared
+		// return) keep the `never[]` lookup so they reject loudly, since
+		// the emitter doesn't propagate function return types into
+		// array-literal emit.
+		if len(arr.Elements.Nodes) == 0 {
+			if ann := annotatedTypeOfHost(ctx.ck, node); ann != nil {
+				t = ann
+			}
+		}
 		if r := isExtractableType(ctx.ck, t); r != nil {
 			return &Reason{Code: r.Code, Detail: "array literal: " + r.Detail}
 		}
+	}
+	return nil
+}
+
+// annotatedTypeOfHost walks past parenthesis/`as`/`satisfies`/type-assertion
+// wrappers and returns the declared type of the nearest binding (variable,
+// class property, parameter) or cast target. Returns nil when the closest
+// host has no type annotation — without one the picker cannot guess element
+// types for empty literals or `null`-only initializers.
+func annotatedTypeOfHost(ck *checker.Checker, node *ast.Node) *checker.Type {
+	if ck == nil || node == nil {
+		return nil
+	}
+	cur := node.Parent
+	for cur != nil {
+		switch cur.Kind {
+		case ast.KindParenthesizedExpression:
+			cur = cur.Parent
+			continue
+		case ast.KindAsExpression:
+			if expr := cur.AsAsExpression(); expr != nil && expr.Type != nil {
+				return ck.GetTypeFromTypeNode(expr.Type)
+			}
+			return nil
+		case ast.KindSatisfiesExpression:
+			if expr := cur.AsSatisfiesExpression(); expr != nil && expr.Type != nil {
+				return ck.GetTypeFromTypeNode(expr.Type)
+			}
+			return nil
+		case ast.KindTypeAssertionExpression:
+			if expr := cur.AsTypeAssertion(); expr != nil && expr.Type != nil {
+				return ck.GetTypeFromTypeNode(expr.Type)
+			}
+			return nil
+		case ast.KindVariableDeclaration:
+			if vd := cur.AsVariableDeclaration(); vd != nil && vd.Type != nil {
+				return ck.GetTypeFromTypeNode(vd.Type)
+			}
+			return nil
+		case ast.KindPropertyDeclaration:
+			if pd := cur.AsPropertyDeclaration(); pd != nil && pd.Type != nil {
+				return ck.GetTypeFromTypeNode(pd.Type)
+			}
+			return nil
+		case ast.KindParameter:
+			if p := cur.AsParameterDeclaration(); p != nil && p.Type != nil {
+				return ck.GetTypeFromTypeNode(p.Type)
+			}
+			return nil
+		}
+		return nil
 	}
 	return nil
 }
@@ -1034,6 +1150,13 @@ var stringSafeMethods = map[string]bool{
 	"replaceAll": true,
 	"slice":      true, "substring": true,
 	"padStart": true, "padEnd": true,
+	// charAt/charCodeAt lower to byte indexing in expr.go — sound for ASCII
+	// inputs (byte-equal to JS UTF-16 code units in the 0–127 range). For
+	// multi-byte UTF-8, both sides emit consistent rune-encoded strings, so
+	// equality comparisons still work; only the per-call return value
+	// diverges from JS UTF-16 semantics. Document via reject text only,
+	// not a runtime check, to keep the hot path branch-free.
+	"charAt": true, "charCodeAt": true,
 }
 
 // arraySafeMethods lists instance methods on arrays of primitives. These
@@ -1050,6 +1173,18 @@ var arraySafeMethods = map[string]bool{
 	"join": true, "slice": true, "concat": true, "reverse": true,
 }
 
+// arrayMutateSafeMethods lists in-place mutators that survive Go's slice
+// semantics only when the receiver is a freshly-allocated local. Aliasing
+// patterns (`const out = paramArr; out.push(1)`) are unsound because Go's
+// `append` may reallocate, breaking JS-style "mutation visible to caller"
+// semantics. checkArrayMethodCall enforces the receiver-shape gate on
+// every method named here. Currently push only — pop/shift/unshift would
+// add value-return shapes the existing emitter handles too, but the
+// realworld extraction need so far is push-only.
+var arrayMutateSafeMethods = map[string]bool{
+	"push": true,
+}
+
 // arrayCallbackSafeMethods is the admitted subset of callback-taking array
 // instance methods. Membership check only; per-method return-type policy
 // lives in callbackReturnPolicy so additions stay mechanical.
@@ -1060,7 +1195,9 @@ var arraySafeMethods = map[string]bool{
 // so the legacy `jsarray.Find{,Index}` int-return / `(T, bool)` shape
 // never reaches the build.
 //
-// Deferred: `reduce` (accumulator type inference).
+// `reduce` is the only 2-arg callback method admitted: the seed value
+// and the (acc, el) callback shape are validated separately in
+// checkArrayCallbackMethodCall so the existing 1-arg gate stays terse.
 var arrayCallbackSafeMethods = map[string]bool{
 	"map":       true,
 	"filter":    true,
@@ -1069,6 +1206,7 @@ var arrayCallbackSafeMethods = map[string]bool{
 	"every":     true,
 	"find":      true,
 	"findIndex": true,
+	"reduce":    true,
 }
 
 // checkThisMethodCall accepts `this.<method>(...)` when <method> is declared
@@ -1093,6 +1231,106 @@ func checkThisMethodCall(callee *ast.Node, ctx *bodyCtx) *Reason {
 	return &Reason{Code: reasonDynamicCallee, Detail: "`this." + name + "` is not a same-class method"}
 }
 
+// mapSafeMethods are the JS Map.prototype operations the picker accepts on
+// a typed Map receiver. The emitter lowers each to idiomatic Go map ops
+// (set→m[k]=v, get→nullable IIFE, has→ok-IIFE, delete→delete(m,k),
+// clear→m=make(...)). `size` is handled separately by checkPropertyAccess
+// because it's a property not a method call.
+var mapSafeMethods = map[string]bool{
+	"set":    true,
+	"get":    true,
+	"has":    true,
+	"delete": true,
+	"clear":  true,
+}
+
+// setSafeMethods are the JS Set.prototype operations the picker accepts on
+// a typed Set receiver. Emitter lowers add/has/delete to map[T]struct{}
+// ops; clear ranges and deletes. `size` is handled by checkPropertyAccess.
+var setSafeMethods = map[string]bool{
+	"add":    true,
+	"has":    true,
+	"delete": true,
+	"clear":  true,
+}
+
+// checkNewMapOrSetExpression accepts `new Map<K, V>()` and `new Set<T>()`
+// (both no-argument). The deeper type-extractability gate runs through
+// isExtractableType, which already restricts Map-K to string + V to
+// primitive and Set-T to primitive.
+func checkNewMapOrSetExpression(node *ast.Node, ctx *bodyCtx) *Reason {
+	ne := node.AsNewExpression()
+	if ne == nil || ne.Expression == nil {
+		return &Reason{Code: reasonUnhandledKind, Detail: "nil new expression"}
+	}
+	if ne.Expression.Kind != ast.KindIdentifier {
+		return &Reason{Code: reasonUnhandledKind, Detail: "new receiver is not a bare identifier"}
+	}
+	name := ne.Expression.AsIdentifier().Text
+	if name != "Map" && name != "Set" {
+		return &Reason{Code: reasonUnhandledKind, Detail: "only `new Map<K, V>()` and `new Set<T>()` are accepted"}
+	}
+	if ne.Arguments != nil && len(ne.Arguments.Nodes) > 0 {
+		return &Reason{Code: reasonUnhandledKind, Detail: "new " + name + "() with constructor args not yet accepted"}
+	}
+	if ctx.ck != nil {
+		t := ctx.ck.GetTypeAtLocation(node)
+		if r := isExtractableType(ctx.ck, t); r != nil {
+			return &Reason{Code: r.Code, Detail: "new " + name + ": " + r.Detail}
+		}
+	}
+	return nil
+}
+
+// checkMapMethodCall accepts `m.set/get/has/delete/clear(args)` when m is
+// a typed Map. Returns nil on accept; non-nil so the caller can fall back
+// to the next builtin check.
+func checkMapMethodCall(pa *ast.PropertyAccessExpression, ctx *bodyCtx) *Reason {
+	if pa.Name() == nil || pa.Name().Kind != ast.KindIdentifier {
+		return &Reason{Code: reasonBuiltinCall, Detail: "non-identifier method"}
+	}
+	method := pa.Name().AsIdentifier().Text
+	if !mapSafeMethods[method] {
+		return &Reason{Code: reasonBuiltinCall, Detail: "." + method + " not in map safelist"}
+	}
+	if ctx.ck == nil {
+		return &Reason{Code: reasonUnhandledKind, Detail: "no checker for map receiver"}
+	}
+	t := ctx.ck.GetTypeAtLocation(pa.Expression)
+	k, v := mapKeyValueType(ctx.ck, t)
+	if k == nil || v == nil {
+		return &Reason{Code: reasonObjectType, Detail: "receiver is not Map<K, V>"}
+	}
+	if r := checkExpr(pa.Expression, ctx); r != nil {
+		return r
+	}
+	return nil
+}
+
+// checkSetMethodCall accepts `s.add/has/delete/clear(args)` when s is a
+// typed Set. Mirrors checkMapMethodCall; the receiver type is gated to
+// `Set<T>` so the emitter knows to lower to `map[T]struct{}` operations.
+func checkSetMethodCall(pa *ast.PropertyAccessExpression, ctx *bodyCtx) *Reason {
+	if pa.Name() == nil || pa.Name().Kind != ast.KindIdentifier {
+		return &Reason{Code: reasonBuiltinCall, Detail: "non-identifier method"}
+	}
+	method := pa.Name().AsIdentifier().Text
+	if !setSafeMethods[method] {
+		return &Reason{Code: reasonBuiltinCall, Detail: "." + method + " not in set safelist"}
+	}
+	if ctx.ck == nil {
+		return &Reason{Code: reasonUnhandledKind, Detail: "no checker for set receiver"}
+	}
+	t := ctx.ck.GetTypeAtLocation(pa.Expression)
+	if setElementType(ctx.ck, t) == nil {
+		return &Reason{Code: reasonObjectType, Detail: "receiver is not Set<T>"}
+	}
+	if r := checkExpr(pa.Expression, ctx); r != nil {
+		return r
+	}
+	return nil
+}
+
 func checkBuiltinCallee(callee *ast.Node, ctx *bodyCtx) *Reason {
 	pa := callee.AsPropertyAccessExpression()
 	if pa == nil || pa.Expression == nil {
@@ -1102,6 +1340,12 @@ func checkBuiltinCallee(callee *ast.Node, ctx *bodyCtx) *Reason {
 		return &Reason{Code: reasonDynamicCallee, Detail: "non-identifier method"}
 	}
 	if r := checkStaticMethodCall(pa, ctx); r == nil {
+		return nil
+	}
+	if r := checkMapMethodCall(pa, ctx); r == nil {
+		return nil
+	}
+	if r := checkSetMethodCall(pa, ctx); r == nil {
 		return nil
 	}
 	if r := checkMathCall(pa, ctx); r == nil {
@@ -1203,6 +1447,22 @@ func checkArrayMethodCall(pa *ast.PropertyAccessExpression, ctx *bodyCtx) *Reaso
 		// rules through the generic builtin path, so route here.
 		return checkArrayMethodReceiver(pa, ctx)
 	}
+	if arrayMutateSafeMethods[method] {
+		// Receiver must be a local identifier whose declaration's
+		// initializer was a fresh array literal — no aliasing through
+		// parameters or chained expressions. The literal-init guard
+		// keeps Go's `append` reallocation behavior from silently
+		// breaking the caller's slice header.
+		expr := pa.Expression
+		if expr == nil || expr.Kind != ast.KindIdentifier {
+			return &Reason{Code: reasonObjectType, Detail: "." + method + " receiver must be a local identifier (try: assign to `const out: T[] = []` first, then call .push on the local)"}
+		}
+		recv := expr.AsIdentifier().Text
+		if !ctx.freshArrayLocals[recv] {
+			return &Reason{Code: reasonObjectType, Detail: "." + method + " receiver `" + recv + "` is not a fresh-literal-initialized local (try: declare with `const " + recv + ": T[] = []` so Go's append cannot alias a parameter slice)"}
+		}
+		return checkArrayMethodReceiver(pa, ctx)
+	}
 	if !arraySafeMethods[method] {
 		return &Reason{Code: reasonBuiltinCall, Detail: "." + method + " not in array safelist"}
 	}
@@ -1235,6 +1495,9 @@ func checkArrayCallbackMethodCall(ce *ast.CallExpression, pa *ast.PropertyAccess
 	method := pa.Name().AsIdentifier().Text
 	if !arrayCallbackSafeMethods[method] {
 		return nil
+	}
+	if method == "reduce" {
+		return checkArrayReduceCall(ce, ctx)
 	}
 	if ce.Arguments == nil || len(ce.Arguments.Nodes) != 1 {
 		return &Reason{Code: reasonBuiltinCall, Detail: "." + method + " requires exactly one callback argument"}
@@ -1283,4 +1546,72 @@ func checkArrayCallbackMethodCall(ce *ast.CallExpression, pa *ast.PropertyAccess
 		return &Reason{Code: reasonBuiltinCall, Detail: "." + method + " callback must declare exactly one parameter"}
 	}
 	return nil
+}
+
+// checkArrayReduceCall validates `xs.reduce(cb, seed)` where cb is a
+// 2-param `(acc, el) => acc` *JSFunc. Soundness budget: acc and the
+// callback's return must share a primitive base so the emitter's
+// `__acc = __v.(T)` round-trip is well-typed; seed must be extractable
+// and the seed expression must clear the body walker so spread / closure
+// / await operands don't sneak in through the second slot.
+func checkArrayReduceCall(ce *ast.CallExpression, ctx *bodyCtx) *Reason {
+	if ce.Arguments == nil || len(ce.Arguments.Nodes) != 2 {
+		return &Reason{Code: reasonBuiltinCall, Detail: ".reduce requires (callback, initialValue)"}
+	}
+	cb := ce.Arguments.Nodes[0]
+	if cb.Kind != ast.KindIdentifier {
+		return &Reason{Code: reasonFuncLiteral, Detail: ".reduce callback must be a bare parameter identifier (try: take the callback as `cb: (acc: T, el: U) => T` and pass `xs.reduce(cb, seed)`)"}
+	}
+	name := cb.AsIdentifier().Text
+	if !ctx.jsFuncParamNames[name] {
+		return &Reason{Code: reasonDynamicCallee, Detail: ".reduce callback `" + name + "` is not a *JSFunc parameter of the enclosing function"}
+	}
+	seed := ce.Arguments.Nodes[1]
+	if r := checkExpr(seed, ctx); r != nil {
+		return r
+	}
+	if ctx.ck == nil {
+		return nil
+	}
+	cbType := ctx.ck.GetTypeAtLocation(cb)
+	if cbType == nil {
+		return &Reason{Code: reasonBuiltinCall, Detail: ".reduce callback has no checker type"}
+	}
+	sigs := ctx.ck.GetSignaturesOfType(cbType, checker.SignatureKindCall)
+	if len(sigs) == 0 {
+		return &Reason{Code: reasonBuiltinCall, Detail: ".reduce callback has no call signature"}
+	}
+	sig := sigs[0]
+	if len(sig.Parameters()) != 2 {
+		return &Reason{Code: reasonBuiltinCall, Detail: ".reduce callback must declare exactly 2 parameters (acc, el)"}
+	}
+	accType := ctx.ck.GetTypeOfSymbol(sig.Parameters()[0])
+	elType := ctx.ck.GetTypeOfSymbol(sig.Parameters()[1])
+	ret := ctx.ck.GetReturnTypeOfSignature(sig)
+	if r := isExtractableType(ctx.ck, accType); r != nil {
+		return &Reason{Code: r.Code, Detail: ".reduce acc: " + r.Detail}
+	}
+	if r := isExtractableType(ctx.ck, elType); r != nil {
+		return &Reason{Code: r.Code, Detail: ".reduce el: " + r.Detail}
+	}
+	if r := isExtractableType(ctx.ck, ret); r != nil {
+		return &Reason{Code: r.Code, Detail: ".reduce return: " + r.Detail}
+	}
+	if !samePrimitiveBase(accType, ret) {
+		return &Reason{Code: reasonObjectType, Detail: ".reduce callback acc and return must share the same primitive base (try: `(acc: T, el: U) => T` so the seed and the loop body keep one Go type)"}
+	}
+	return nil
+}
+
+// samePrimitiveBase reports whether a and b are the same primitive base
+// (both StringLike / NumberLike / BooleanLike). Used by reduce gating
+// where the accumulator's Go type must match the callback's return.
+func samePrimitiveBase(a, b *checker.Type) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	const mask = checker.TypeFlagsStringLike | checker.TypeFlagsNumberLike | checker.TypeFlagsBooleanLike
+	af := a.Flags() & mask
+	bf := b.Flags() & mask
+	return af != 0 && af == bf
 }

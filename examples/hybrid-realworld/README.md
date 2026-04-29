@@ -6,7 +6,7 @@ Re-run `./measure.sh` after a picker change to see the delta.
 
 ## Latest snapshot (Apr 2026, picker shipped in this commit)
 
-### `lodash_mini.ts` — 9/15 extracted (60%)
+### `lodash_mini.ts` — 16/17 extracted (94%)
 
 Numeric, array and string utilities a project might lift from lodash.
 
@@ -15,15 +15,10 @@ Numeric, array and string utilities a project might lift from lodash.
 | Pure numeric (`sum`, `mean`, `clamp`, `inRange`) | 4 | ✅ extracted |
 | String build/scan (`repeat`, `padStart`, `startsWithAny`, `nonEmpty`-style) | 3 | ✅ extracted |
 | `parseFloat` builtin | 1 | ✅ extracted |
-| Array reshape returning `[]` typed-literal locals (`take`, `drop`, `uniq`, `reverse`) | 4 | ❌ `[object-type] array literal: array element must be primitive` — empty `[]` literal lowers to `[]never`, picker doesn't read the surrounding declared type |
+| `Map<string, number>` build / read / size (`tally`, `distinctCount`) | 2 | ✅ extracted |
+| Array reshape returning `[]` typed-literal locals (`take`, `drop`, `uniq`, `reverse`) | 4 | ✅ extracted — empty `[]` literal now reads the binding's declared type, and `out.push(x)` on a fresh-literal local survives the receiver-shape gate |
+| `s.charAt(i)` palindrome scan | 1 | ✅ extracted — string safelist now covers `charAt` / `charCodeAt` |
 | 2D array shape (`chunk` returns `number[][]`) | 1 | ❌ `[object-type] array element must be primitive` — nested arrays are an explicit non-goal in the current emit |
-| Unsafelisted string method (`s.charAt(i)` in `isPalindrome`) | 1 | ❌ `[builtin-call] builtin call not in safelist` |
-
-The empty-literal rejection is a **near-miss** that a future picker
-pass could fix: when `const out: number[] = []` has a declared type
-on the binding, the picker should infer the element type from the
-binding instead of from the literal. Lifting this alone would push
-lodash_mini's extraction from 60% to ~93%.
 
 ### `zod_lite.ts` — 17/17 extracted (100%)
 

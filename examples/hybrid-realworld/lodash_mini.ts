@@ -103,6 +103,24 @@ export function toFloat(s: string): number {
   return parseFloat(s);
 }
 
+// --- Map (added in the Map<string, T> support patch) ---
+
+export function tally(words: string[]): number {
+  const m = new Map<string, number>();
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i];
+    const cur = m.get(w) ?? 0;
+    m.set(w, cur + 1);
+  }
+  return m.size;
+}
+
+export function distinctCount(xs: string[]): number {
+  const seen = new Map<string, number>();
+  for (let i = 0; i < xs.length; i++) seen.set(xs[i], 1);
+  return seen.size;
+}
+
 export function isPalindrome(s: string): boolean {
   const n = s.length;
   for (let i = 0; i < n / 2; i++) {

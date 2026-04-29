@@ -1032,6 +1032,14 @@ func (t *Transpiler) emitCallExpr(node *ast.Node) {
 		return
 	}
 
+	// `m.set/get/has/delete/clear(args)` where m is a typed Map<K, V>
+	// — picker accepts the call shape, emit lowers to idiomatic Go map
+	// ops. `m.size` (property, not method) is handled by the property
+	// access path.
+	if t.emitMapMethodCallIfApplicable(call) {
+		return
+	}
+
 	// --- 1. Console calls (namespace-driven) ---
 	if t.isConsoleCall(call) {
 		t.emitConsoleCall(call)
@@ -1688,6 +1696,25 @@ func (t *Transpiler) emitPropertyAccess(node *ast.Node) {
 			t.w.write(")")
 		}
 		return
+	}
+
+	// `m.size` on a Map<K, V> or Set<T> — same `len(...)` lowering the
+	// .length branch above does for arrays and strings. Both lower to
+	// Go maps internally, so len() returns the right cardinality.
+	if propName == "size" {
+		if recvType := t.ck.GetTypeAtLocation(prop.Expression); recvType != nil {
+			if recvType.ObjectFlags()&checker.ObjectFlagsReference != 0 {
+				if target := recvType.Target(); target != nil && target.Symbol() != nil {
+					name := target.Symbol().Name
+					if name == "Map" || name == "Set" {
+						t.w.write("float64(len(")
+						t.emitExpr(prop.Expression)
+						t.w.write("))")
+						return
+					}
+				}
+			}
+		}
 	}
 
 	// --- 4. Narrowed types (discriminant check) ---
@@ -2732,6 +2759,19 @@ func (t *Transpiler) emitNewExpr(node *ast.Node) {
 			return
 		}
 
+		// `new Map<K, V>()` → `make(map[K]V)` and `new Set<T>()` →
+		// `make(map[T]struct{})`. The picker only accepts the
+		// extractable forms (Map<string, primitive>, Set<primitive>),
+		// so the goType lookup yields a sound make() argument either
+		// way; the typemapper already lowers Set<T> to the struct{}
+		// shape in goObjectType.
+		if className == "Map" || className == "Set" {
+			t.w.write("make(")
+			t.w.write(t.tm.goType(t.ck.GetTypeAtLocation(node)))
+			t.w.write(")")
+			return
+		}
+
 		// Web API constructors: new Response(...) → web.NewResponse(...)
 		switch className {
 		case "Uint8Array":
@@ -3354,6 +3394,13 @@ func (t *Transpiler) emitArrayMethodCall(call *ast.CallExpression) {
 		t.w.write(")")
 
 	case "reduce":
+		// Hybrid AOT path: bare *JSFunc callback + literal seed → tight
+		// for-range IIFE that keeps the accumulator on Go's stack. The
+		// existing jsarray.Reduce fallback covers callbacks that aren't
+		// extractable (inline arrows, varying acc types, etc.).
+		if t.emitArrayJSFuncCallbackMethod(call, prop, method, arrayElemGoType) {
+			return
+		}
 		t.w.write("jsarray.Reduce(")
 		t.emitExpr(prop.Expression)
 		t.w.write(", ")
@@ -4531,7 +4578,11 @@ func (t *Transpiler) emitRegExpLiteral(node *ast.Node) {
 // jsarray.* helper path. The picker's checkArrayCallbackMethodCall gate
 // guarantees arg[0] is a JSFunc param with a per-method-valid return shape.
 func (t *Transpiler) emitArrayJSFuncCallbackMethod(call *ast.CallExpression, prop *ast.PropertyAccessExpression, method, elemGoType string) bool {
-	if call.Arguments == nil || len(call.Arguments.Nodes) != 1 {
+	expectedArgs := 1
+	if method == "reduce" {
+		expectedArgs = 2
+	}
+	if call.Arguments == nil || len(call.Arguments.Nodes) != expectedArgs {
 		return false
 	}
 	cb := call.Arguments.Nodes[0]
@@ -4571,6 +4622,16 @@ func (t *Transpiler) emitArrayJSFuncCallbackMethod(call *ast.CallExpression, pro
 		t.w.writef("func() float64 { for __i, __x := range %s { __v, __err := %s.Call(__x); if __err != nil { jsrt.Throw(__err) }; if __v.(bool) { return float64(__i) } }; return float64(-1) }()", arrCode, pn)
 	case "find":
 		t.w.writef("func() *%s { for _, __x := range %s { __v, __err := %s.Call(__x); if __err != nil { jsrt.Throw(__err) }; if __v.(bool) { __r := __x; return &__r } }; return nil }()", elemGoType, arrCode, pn)
+	case "reduce":
+		// Picker enforces acc-type == return-type primitive base, so the
+		// callback's return Go type drives the accumulator. Seed expression
+		// is captured separately to preserve its evaluation context.
+		retType := t.jsFuncCallbackReturnType(cb)
+		if retType == "" {
+			retType = "any"
+		}
+		seedCode := t.captureExpr(call.Arguments.Nodes[1])
+		t.w.writef("func() %s { __acc := %s(%s); for _, __x := range %s { __v, __err := %s.Call(__acc, __x); if __err != nil { jsrt.Throw(__err) }; __acc = __v.(%s) }; return __acc }()", retType, retType, seedCode, arrCode, pn, retType)
 	default:
 		return false
 	}
@@ -4623,6 +4684,146 @@ func (t *Transpiler) emitStaticMethodCallIfApplicable(call *ast.CallExpression) 
 	t.emitCallArgs(call.Arguments)
 	t.w.write(")")
 	return true
+}
+
+// emitMapMethodCallIfApplicable lowers Map<K, V> instance method calls
+// to the idiomatic Go map operation. Returns true when handled. The
+// picker (mapSafeMethods + checkMapMethodCall) guarantees the receiver
+// is a typed Map and the method name is one of set/get/has/delete/clear,
+// so the dispatch here can stay shallow.
+func (t *Transpiler) emitMapMethodCallIfApplicable(call *ast.CallExpression) bool {
+	if call == nil || call.Expression == nil || call.Expression.Kind != ast.KindPropertyAccessExpression {
+		return false
+	}
+	pa := call.Expression.AsPropertyAccessExpression()
+	if pa == nil || pa.Name() == nil || pa.Name().Kind != ast.KindIdentifier {
+		return false
+	}
+	if t.ck == nil {
+		return false
+	}
+	recvType := t.ck.GetTypeAtLocation(pa.Expression)
+	if recvType == nil || recvType.ObjectFlags()&checker.ObjectFlagsReference == 0 {
+		return false
+	}
+	target := recvType.Target()
+	if target == nil || target.Symbol() == nil {
+		return false
+	}
+	if target.Symbol().Name == "Set" {
+		return t.emitSetMethodCall(call, pa, recvType)
+	}
+	if target.Symbol().Name != "Map" {
+		return false
+	}
+	args := t.ck.GetTypeArguments(recvType)
+	if len(args) < 2 {
+		return false
+	}
+	valGoType := t.tm.goType(args[1])
+	method := pa.Name().AsIdentifier().Text
+	recv := t.captureExpr(pa.Expression)
+	switch method {
+	case "set":
+		// `m.set(k, v)` is used as a statement in the picker-accepted
+		// shape. Lower to a parenthesised assignment expression so it
+		// also slots into the rare expression context (the IIFE
+		// wrapping returns the same Map ref to mirror JS semantics).
+		t.w.writef("func() map[string]%s { ", valGoType)
+		t.w.writef("%s[", recv)
+		if call.Arguments != nil && len(call.Arguments.Nodes) >= 1 {
+			t.emitExpr(call.Arguments.Nodes[0])
+		}
+		t.w.write("] = ")
+		if call.Arguments != nil && len(call.Arguments.Nodes) >= 2 {
+			t.emitExpr(call.Arguments.Nodes[1])
+		}
+		t.w.writef("; return %s }()", recv)
+		return true
+	case "get":
+		// TS `m.get(k): V | undefined` lowers to `*V`. IIFE: read,
+		// return &v if present, nil otherwise. Caller reads with
+		// nullish coalescing or null check (already extractable).
+		t.w.writef("func() *%s { __v, __ok := %s[", valGoType, recv)
+		if call.Arguments != nil && len(call.Arguments.Nodes) >= 1 {
+			t.emitExpr(call.Arguments.Nodes[0])
+		}
+		t.w.write("]; if !__ok { return nil }; __r := __v; return &__r }()")
+		return true
+	case "has":
+		t.w.writef("func() bool { _, __ok := %s[", recv)
+		if call.Arguments != nil && len(call.Arguments.Nodes) >= 1 {
+			t.emitExpr(call.Arguments.Nodes[0])
+		}
+		t.w.write("]; return __ok }()")
+		return true
+	case "delete":
+		// Capture the key once — splicing the AST expression into both
+		// `_, __ok := m[K]` and `delete(m, K)` would re-evaluate side
+		// effects (`m.delete(counter++)`) twice.
+		key := captureMapKey(t, call)
+		t.w.writef("func() bool { _, __ok := %s[%s]; if __ok { delete(%s, %s) }; return __ok }()", recv, key, recv, key)
+		return true
+	case "clear":
+		t.w.writef("func() { for __k := range %s { delete(%s, __k) } }()", recv, recv)
+		return true
+	}
+	return false
+}
+
+// captureMapKey returns the Go expression for a map/set method's first
+// argument, captured into a string so callers can splice it multiple
+// times without re-evaluating side effects. Empty string when the call
+// has no first argument (the picker should have already rejected, but
+// the emitter stays defensive).
+func captureMapKey(t *Transpiler, call *ast.CallExpression) string {
+	if call.Arguments == nil || len(call.Arguments.Nodes) < 1 {
+		return ""
+	}
+	return t.captureExpr(call.Arguments.Nodes[0])
+}
+
+// emitSetMethodCall lowers Set<T> instance method calls to map[T]struct{}
+// operations. Mirrors emitMapMethodCallIfApplicable's IIFE shape so the
+// emitted expressions plug into both statement and expression positions.
+// The picker (setSafeMethods + checkSetMethodCall) gates the receiver +
+// method, so the dispatch stays shallow.
+func (t *Transpiler) emitSetMethodCall(call *ast.CallExpression, pa *ast.PropertyAccessExpression, recvType *checker.Type) bool {
+	args := t.ck.GetTypeArguments(recvType)
+	if len(args) < 1 {
+		return false
+	}
+	elemGoType := t.tm.goType(args[0])
+	method := pa.Name().AsIdentifier().Text
+	recv := t.captureExpr(pa.Expression)
+	switch method {
+	case "add":
+		// `s.add(v)` returns `s` in JS; mirror with an IIFE that
+		// inserts then returns the receiver. Statement-position
+		// callers ignore the return; expression-position chains
+		// (`s.add(1).add(2)`) continue working unchanged.
+		t.w.writef("func() map[%s]struct{} { %s[", elemGoType, recv)
+		if call.Arguments != nil && len(call.Arguments.Nodes) >= 1 {
+			t.emitExpr(call.Arguments.Nodes[0])
+		}
+		t.w.writef("] = struct{}{}; return %s }()", recv)
+		return true
+	case "has":
+		t.w.writef("func() bool { _, __ok := %s[", recv)
+		if call.Arguments != nil && len(call.Arguments.Nodes) >= 1 {
+			t.emitExpr(call.Arguments.Nodes[0])
+		}
+		t.w.write("]; return __ok }()")
+		return true
+	case "delete":
+		key := captureMapKey(t, call)
+		t.w.writef("func() bool { _, __ok := %s[%s]; if __ok { delete(%s, %s) }; return __ok }()", recv, key, recv, key)
+		return true
+	case "clear":
+		t.w.writef("func() { for __k := range %s { delete(%s, __k) } }()", recv, recv)
+		return true
+	}
+	return false
 }
 
 // emitJSFuncCallIfApplicable lowers `cb(args...)` where `cb` is a parameter

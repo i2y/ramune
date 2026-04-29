@@ -679,17 +679,15 @@ func TestPicker_Rejects_LooseEquality(t *testing.T) {
 }
 
 func TestPicker_Rejects_PropertyAccess(t *testing.T) {
-	// charAt has different byte-vs-char semantics between JS (UTF-16 code unit)
-	// and Go (byte), so the emitter's `string(str[i])` would diverge on
-	// multi-byte characters. Picker must stay conservative.
-	src := `export function first(s: string): string { return s.charAt(0); }`
+	// `at` lowers to a `*string` in Go (returns nil for out-of-bounds to
+	// match TS `string | undefined`), and the picker doesn't yet model
+	// pointer-shaped string returns through the body walker. Still
+	// rejected; charAt has been added to the safelist separately.
+	src := `export function first(s: string): string { return s.at(0)!; }`
 	res := pickOne(t, src)
 	c, _ := byName(res, "first")
 	if c.Extracted {
-		t.Fatalf("expected rejection for unsafelisted method .charAt")
-	}
-	if c.Reason.Code != "builtin-call" {
-		t.Fatalf("expected builtin-call reason for charAt, got %q", c.Reason.Code)
+		t.Fatalf("expected rejection for unsafelisted method .at")
 	}
 }
 
@@ -1002,6 +1000,209 @@ func TestPicker_Rejects_EmptyArrayLiteral(t *testing.T) {
 	}
 	if c.Reason.Code != "object-type" {
 		t.Fatalf("expected object-type, got %q", c.Reason.Code)
+	}
+}
+
+// `[]` infers as `never[]`, so the picker reaches for the binding's declared
+// type instead. Covers the lodash-shaped `const out: number[] = []` pattern
+// that gates `take`/`drop`/`uniq`/`reverse` in the realworld extraction set.
+func TestPicker_Accepts_EmptyArrayLiteralFromTypedLocal(t *testing.T) {
+	src := `
+export function blank(xs: number[]): number[] {
+  const out: number[] = [];
+  return out.concat(xs);
+}
+`
+	res := pickOne(t, src)
+	c, _ := byName(res, "blank")
+	if !c.Extracted {
+		t.Fatalf("expected `blank` extracted; got %+v", c.Reason)
+	}
+}
+
+// `[] as number[]` should also work — the cast carries the contextual type.
+func TestPicker_Accepts_EmptyArrayLiteralFromCast(t *testing.T) {
+	src := `
+export function blank(xs: number[]): number[] {
+  const out = [] as number[];
+  return out.concat(xs);
+}
+`
+	res := pickOne(t, src)
+	c, _ := byName(res, "blank")
+	if !c.Extracted {
+		t.Fatalf("expected `blank` extracted; got %+v", c.Reason)
+	}
+}
+
+// Without a type annotation the literal stays `never[]` and rejects, as
+// before. Guard against accidentally accepting all empty literals.
+func TestPicker_Rejects_EmptyArrayLiteralUntyped(t *testing.T) {
+	src := `
+export function leaky(xs: number[]): number[] {
+  const out = [];
+  return out.concat(xs);
+}
+`
+	res := pickOne(t, src)
+	c, _ := byName(res, "leaky")
+	if c.Extracted {
+		t.Fatalf("expected rejection of untyped empty literal; got extracted")
+	}
+}
+
+// `s.charAt(i)` lowers to byte indexing — accepted for ASCII-shaped string
+// helpers like the lodash `isPalindrome` pattern. Non-ASCII semantics still
+// differ from JS UTF-16 per-call, but equality comparisons survive.
+func TestPicker_Accepts_StringCharAt(t *testing.T) {
+	src := `
+export function isPalindrome(s: string): boolean {
+  const n = s.length;
+  for (let i = 0; i < n / 2; i++) {
+    if (s.charAt(i) !== s.charAt(n - 1 - i)) return false;
+  }
+  return true;
+}
+`
+	res := pickOne(t, src)
+	c, _ := byName(res, "isPalindrome")
+	if !c.Extracted {
+		t.Fatalf("expected `isPalindrome` extracted; got %+v", c.Reason)
+	}
+}
+
+// `out.push(x)` is sound when `out` is a freshly-allocated local. The new
+// safelist entry exercises the lodash-shaped `take`/`drop`/`uniq`/`reverse`
+// pattern. Aliasing through parameters is rejected separately below.
+// `xs.reduce(cb, seed)` with a bare *JSFunc 2-param callback. The seed
+// expression and the callback's acc/return types share a primitive base
+// so the IIFE accumulator stays on a single Go type.
+func TestPicker_Accepts_ReduceWithJSFuncCallback(t *testing.T) {
+	src := `
+export function totalize(xs: number[], cb: (acc: number, el: number) => number): number {
+  return xs.reduce(cb, 0);
+}
+`
+	res := pickOne(t, src)
+	c, _ := byName(res, "totalize")
+	if !c.Extracted {
+		t.Fatalf("expected `totalize` extracted; got %+v", c.Reason)
+	}
+}
+
+// Acc and return must share a primitive base. A callback whose return
+// is a different primitive than acc gets rejected — the emitter would
+// emit `__acc = __v.(string)` against a `__acc float64`, type error.
+func TestPicker_Rejects_ReduceMismatchedAcc(t *testing.T) {
+	src := `
+export function bad(xs: number[], cb: (acc: number, el: number) => string): string {
+  return xs.reduce(cb, "seed");
+}
+`
+	res := pickOne(t, src)
+	c, _ := byName(res, "bad")
+	if c.Extracted {
+		t.Fatalf("expected rejection of mismatched acc/return; got extracted")
+	}
+}
+
+// Inline arrow callback to reduce stays rejected — picker requires a
+// bare *JSFunc parameter so the receiver-of-Call lives outside the
+// extracted body.
+func TestPicker_Rejects_ReduceInlineCallback(t *testing.T) {
+	src := `
+export function inline(xs: number[]): number {
+  return xs.reduce((acc, el) => acc + el, 0);
+}
+`
+	res := pickOne(t, src)
+	c, _ := byName(res, "inline")
+	if c.Extracted {
+		t.Fatalf("expected rejection of inline arrow callback; got extracted")
+	}
+}
+
+// `Set<T>` is now an extractable type; the picker accepts `new Set<T>()`
+// and the add/has/delete/clear/size surface for primitive T.
+func TestPicker_Accepts_SetPrimitive(t *testing.T) {
+	src := `
+export function distinctCount(xs: number[]): number {
+  const s = new Set<number>();
+  for (let i = 0; i < xs.length; i++) s.add(xs[i]);
+  return s.size;
+}
+`
+	res := pickOne(t, src)
+	c, _ := byName(res, "distinctCount")
+	if !c.Extracted {
+		t.Fatalf("expected `distinctCount` extracted; got %+v", c.Reason)
+	}
+}
+
+// Set<T> with a non-primitive element rejects with the same shape gate
+// the Map case uses — keeps Go's map key hashability invariant.
+func TestPicker_Rejects_SetOfStruct(t *testing.T) {
+	src := `
+interface User { name: string; age: number; }
+export function dedup(users: User[]): number {
+  const s = new Set<User>();
+  for (let i = 0; i < users.length; i++) s.add(users[i]);
+  return s.size;
+}
+`
+	res := pickOne(t, src)
+	c, _ := byName(res, "dedup")
+	if c.Extracted {
+		t.Fatalf("expected rejection of Set<User>; got extracted")
+	}
+}
+
+func TestPicker_Accepts_PushOnFreshArrayLocal(t *testing.T) {
+	src := `
+export function take(xs: number[], n: number): number[] {
+  const out: number[] = [];
+  for (let i = 0; i < n && i < xs.length; i++) out.push(xs[i]);
+  return out;
+}
+`
+	res := pickOne(t, src)
+	c, _ := byName(res, "take")
+	if !c.Extracted {
+		t.Fatalf("expected `take` extracted; got %+v", c.Reason)
+	}
+}
+
+// `const a = paramArr; a.push(1)` aliases the parameter slice — Go's
+// `append` may reallocate, so the caller's view of the slice diverges
+// silently from JS semantics. Reject.
+func TestPicker_Rejects_PushOnAliasedParameter(t *testing.T) {
+	src := `
+export function bad(xs: number[]): number[] {
+  const a = xs;
+  a.push(1);
+  return a;
+}
+`
+	res := pickOne(t, src)
+	c, _ := byName(res, "bad")
+	if c.Extracted {
+		t.Fatalf("expected rejection of push on aliased parameter; got extracted")
+	}
+}
+
+// `xs.push(1)` directly on a parameter — same aliasing concern, no local
+// indirection. Must reject.
+func TestPicker_Rejects_PushOnParameterDirectly(t *testing.T) {
+	src := `
+export function worse(xs: number[]): number[] {
+  xs.push(1);
+  return xs;
+}
+`
+	res := pickOne(t, src)
+	c, _ := byName(res, "worse")
+	if c.Extracted {
+		t.Fatalf("expected rejection of push on parameter; got extracted")
 	}
 }
 

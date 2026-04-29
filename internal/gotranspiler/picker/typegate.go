@@ -127,6 +127,32 @@ func isExtractableTypeWith(ck *checker.Checker, t *checker.Type, visited map[*ch
 			}
 			return nil
 		}
+		if k, v := mapKeyValueType(ck, t); k != nil && v != nil {
+			// `Map<string, V>` lowers to `map[string]V` — typemapper
+			// already emits the type, the body walker accepts the
+			// instance methods (set/get/has/delete/size). Restricting
+			// to string keys + primitive values mirrors the same
+			// soundness budget the array case uses: avoids hashing a
+			// Go-incompatible key type and keeps value reads
+			// type-stable.
+			if k.Flags()&checker.TypeFlagsStringLike == 0 {
+				return &Reason{Code: reasonObjectType, Detail: "Map key must be string (try: convert keys with String() / .toString() before insertion)"}
+			}
+			if !isPrimitiveType(v.Flags()) {
+				return &Reason{Code: reasonObjectType, Detail: "Map value must be primitive (nested Maps and struct values not yet accepted)"}
+			}
+			return nil
+		}
+		if elem := setElementType(ck, t); elem != nil {
+			// `Set<T>` lowers to `map[T]struct{}` — same hashability
+			// budget as Map. Restricting T to primitive keeps the key
+			// comparable in Go and avoids the JS-side `===` vs Go
+			// equality divergence for object keys.
+			if !isPrimitiveType(elem.Flags()) {
+				return &Reason{Code: reasonObjectType, Detail: "Set element must be primitive (struct or nested Set values not yet accepted)"}
+			}
+			return nil
+		}
 		if isExtractableObjectTypeWith(ck, t, visited) {
 			return nil
 		}
@@ -293,6 +319,58 @@ func arrayElementType(ck *checker.Checker, t *checker.Type) *checker.Type {
 		return nil
 	}
 	return ck.GetElementTypeOfArrayType(t)
+}
+
+// mapKeyValueType returns (K, V) when t is `Map<K, V>` (the global
+// stdlib reference type), else (nil, nil). Identifies via the target's
+// symbol name `Map` plus a Reference object-flag — same shape the
+// typemapper's reference-type lowering checks before emitting
+// `map[K]V`. A user type literally named `Map` would have no
+// type-args and fail the length check below.
+func mapKeyValueType(ck *checker.Checker, t *checker.Type) (*checker.Type, *checker.Type) {
+	if ck == nil || t == nil {
+		return nil, nil
+	}
+	if t.ObjectFlags()&checker.ObjectFlagsReference == 0 {
+		return nil, nil
+	}
+	target := t.Target()
+	if target == nil || target.Symbol() == nil {
+		return nil, nil
+	}
+	if target.Symbol().Name != "Map" {
+		return nil, nil
+	}
+	args := ck.GetTypeArguments(t)
+	if len(args) < 2 {
+		return nil, nil
+	}
+	return args[0], args[1]
+}
+
+// setElementType returns T when t is the global `Set<T>`, else nil.
+// Mirrors mapKeyValueType — the typemapper already lowers `Set<T>` to
+// `map[T]struct{}` in goObjectType, so the picker just needs the same
+// detection shape to gate the body walker on accepted Set methods.
+func setElementType(ck *checker.Checker, t *checker.Type) *checker.Type {
+	if ck == nil || t == nil {
+		return nil
+	}
+	if t.ObjectFlags()&checker.ObjectFlagsReference == 0 {
+		return nil
+	}
+	target := t.Target()
+	if target == nil || target.Symbol() == nil {
+		return nil
+	}
+	if target.Symbol().Name != "Set" {
+		return nil
+	}
+	args := ck.GetTypeArguments(t)
+	if len(args) < 1 {
+		return nil
+	}
+	return args[0]
 }
 
 // isJSFuncParamType returns nil when t is a "plain" callable type suitable
