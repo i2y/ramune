@@ -284,6 +284,46 @@ function VariantB() {
               "picker は意味等価性を証明するだけで、速度は保証しない。qjswasm (JIT 無し) では fib のような再帰カーネルがここでは 92× とほぼネイティブ相当。JSC+JIT では JIT が既に整数型付き JS を最適化しているので、hybrid はピンポイントで使う — 整数 modulo 支配の countPrimes は 60× 遅化、1000 要素配列引数の sumSquares は marshal コストが支配して 103× 遅化する。基本的には再帰 / ループ系でプリミティブ引数のカーネルを抽出し、配列引数 API や呼出頻度の高いメソッドは JS フロアに残す。--hybrid-report で抽出結果を確認して必ず計測する。"
             )}
           </p>
+
+          <div style={{ marginTop: 36 }}>
+            <BenchChart
+              title={tr("Fibonacci(40) wall-clock vs Bun / Node — Apple M4 Max, hyperfine (bench/run.sh)", "Fibonacci(40) wall-clock vs Bun / Node — Apple M4 Max, hyperfine (bench/run.sh)")}
+              bars={[
+                { l: "node fib.js", v: 535, label: "535 ms" },
+                { l: "bun run fib.js", v: 364, label: "364 ms" },
+                { l: "compile (JS)", v: 358, label: "358 ms" },
+                { l: "compile --hybrid", v: 243, label: "243 ms", hi: true, badge: "1.5×" },
+              ]} max={550}
+            />
+            <p style={{ fontSize: 13, color: "rgba(10,22,40,.55)", maxWidth: 760, margin: "20px 0 0", lineHeight: 1.6 }}>
+              {tr(
+                "Wall-clock CLI bench against the Bun and Node binaries on the same source — fib(40) recursive numerics. ramune compile --hybrid lands at 243 ms vs 358 ms for the JS-only compile, 364 ms for Bun, 535 ms for Node. Compute-only (subtract ~16 ms binary startup): 227 ms vs 357 ms (Bun) and 519 ms (Node) — Bun's startup advantage from the Zig launcher fades once the workload dominates. The extracted Go is what the picker emits verbatim; this is the same win available to any TS app whose hot kernel is recursive or loop-heavy with primitive arguments.",
+                "同じソースから Bun / Node とコンパイル済バイナリを比較する wall-clock ベンチ — fib(40) 再帰数値計算。ramune compile --hybrid は 243 ms、JS-only compile は 358 ms、Bun は 364 ms、Node は 535 ms。バイナリ起動 ~16 ms を差し引いた compute-only: hybrid 227 ms、Bun 357 ms、Node 519 ms — Bun の Zig launcher による起動の優位は計算時間が支配する局面では消える。抽出される Go コードは picker が emit するものと同一であり、再帰 / ループ系で primitive 引数の hot kernel を持つ任意の TS アプリでこの効果が得られる。"
+              )}
+            </p>
+          </div>
+
+          <div style={{ marginTop: 36, paddingTop: 24, borderTop: "1px solid rgba(10,22,40,.06)" }}>
+            <div style={{
+              fontSize: 11, fontFamily: "JetBrains Mono, monospace",
+              color: RAMUNE_BLUE, fontWeight: 600, letterSpacing: ".08em",
+              textTransform: "uppercase", marginBottom: 14,
+            }}>{tr("TinyGo standalone WASM · ramune compile --target wasm-wasi", "TinyGo 単一 WASM · ramune compile --target wasm-wasi")}</div>
+            <p style={{ fontSize: 13, color: "rgba(10,22,40,.55)", maxWidth: 760, margin: "0 0 16px", lineHeight: 1.6 }}>
+              {tr(
+                "The same picker pipeline can target TinyGo instead of go, producing a self-contained WASI reactor (.wasm, ~110-320 KB) of the extracted Go alone — no JS runtime, no ramune host bundled. Numerics-only signatures get //go:wasmexport wrappers callable from any wasm host (wazero, wasmtime, browser-via-wasi-shim) after _initialize. Verified: add(2.5, 3.25)=5.75 and fib(10)=55 callable from a Go host through wazero's ExportedFunction lookup.",
+                "同じ picker パイプラインで go の代わりに TinyGo をターゲットにすると、抽出された Go だけで完結する単一 WASI reactor (.wasm、~110-320 KB) が生成できる — JS ランタイムも ramune ホストもバンドルしない。数値型のみのシグネチャには //go:wasmexport ラッパーが付き、wazero / wasmtime / browser-via-wasi-shim など任意の WASM ホストから _initialize 後に呼び出せる。検証済み: wazero の ExportedFunction 経由で add(2.5, 3.25)=5.75 と fib(10)=55 が動作。"
+              )}
+            </p>
+            <CodeBlock
+              tabs={[
+                { name: "CLI", code: `$ ${sy.k("ramune")} compile ${sy.s("--target wasm-wasi")} ${sy.s("-o")} app.wasm app.ts
+${sy.c("# → 320 KB self-contained WASI reactor, no JS runtime")}
+${sy.c("# → exports (call after _initialize):")}
+${sy.c("#     fib(float64) float64")}` },
+              ]}
+            />
+          </div>
         </div>
       </section>
 
@@ -333,6 +373,31 @@ function VariantB() {
           </div>
           <div style={{ flex: 1 }}/>
           <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 18 }}>
+            <div>
+              <div style={{
+                fontSize: 10.5, fontFamily: "JetBrains Mono, monospace",
+                color: "rgba(10,22,40,.5)", letterSpacing: ".12em",
+                textTransform: "uppercase", fontWeight: 600,
+                textAlign: "right", marginBottom: 8,
+              }}>
+                {tr("Built on Ramune", "Ramune ベース")}
+              </div>
+              <div style={{
+                fontSize: 12, color: "rgba(10,22,40,.65)", lineHeight: 1.9,
+                fontFamily: "JetBrains Mono, monospace", textAlign: "right",
+              }}>
+                {[
+                  { name: "Dark", url: "https://github.com/i2y/dark", tag: tr("Go SSR · Preact · htmx · WebView","Go SSR · Preact · htmx · WebView") },
+                ].map((c) => (
+                  <div key={c.name}>
+                    <span style={{ color: "rgba(10,22,40,.35)" }}>{c.tag} · </span>
+                    <a href={c.url} target="_blank" rel="noopener" style={{
+                      color: "rgba(10,22,40,.8)", textDecoration: "none", fontWeight: 500,
+                    }}>{c.name} ↗</a>
+                  </div>
+                ))}
+              </div>
+            </div>
             <div>
               <div style={{
                 fontSize: 10.5, fontFamily: "JetBrains Mono, monospace",

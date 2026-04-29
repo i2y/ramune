@@ -6,6 +6,8 @@
 
 > **A JS/TS runtime with soundness-gated AOT native compilation.** Embed it in Go, or self-host Cloudflare Workers-style handlers on your own infrastructure.
 
+📖 **Docs site:** [i2y.github.io/ramune](https://i2y.github.io/ramune/)
+
 Ramune solves four concrete problems:
 
 - **"I'm building a Go service and I want my users to write custom logic in JS/TS."** Until now the options were [`goja`](https://github.com/dop251/goja) (ES2017-ish, reflection-based) or [`otto`](https://github.com/robertkrimen/otto) (an order of magnitude slower). Ramune is a drop-in with the same `import`-once ergonomics, choosing between JIT-accelerated JSC, pure-Go QuickJS-NG on wazero, or goja — all behind one API.
@@ -322,6 +324,29 @@ Runnable examples with bench numbers:
 - [`examples/hybrid-multifile/`](examples/hybrid-multifile/) — kernels split across `lib/math.ts` / `lib/format.ts` imported by the entry, demonstrating cross-file extraction.
 
 Pair with `--tags qjswasm` / `--tags goja` to pick the backend that the compiled binary will embed; hybrid's biggest wins show up on the no-JIT backends (qjswasm is typically 10×-350× faster on extractable kernels vs JS-only when the JIT is out of play).
+
+On JSC + JIT, the hybrid binary is the **fastest single-process JS/TS runtime on the box** for compute-bound TS — Bun included. Apple M4 Max, `bench/run.sh` Fib(40):
+
+| Binary | Total (ms) | Startup (ms) | Compute (ms) |
+|---|---|---|---|
+| `./fib_hybrid` (`compile --hybrid`) | **243** | 16 | **227** |
+| `./fib_jsc` (`compile`, JS) | 358 | 16 | 342 |
+| `bun run fib.js` | 364 | 6 | 357 |
+| `node fib.js` | 535 | 17 | 519 |
+
+Compute-only, hybrid AOT is 1.5× faster than JSC and 2.3× faster than V8 (Node) on the same source. Bun's startup advantage (Zig launcher) doesn't help once compute dominates.
+
+### TinyGo standalone WASM (`--target wasm-wasi`)
+
+```bash
+ramune compile --target wasm-wasi -o app.wasm app.ts
+```
+
+Compiles picker-extracted Go (`--hybrid-backend tinygo` is implied) via TinyGo to a WASI reactor module — no JS runtime, no ramune host bundled. The artifact is a single `.wasm` (~110-320 KB) callable from any wasm host (wazero, wasmtime, browser-via-wasi-shim) after `_initialize`.
+
+Numerics-only function signatures (`float64`/`int*`/`bool` params and return) get explicit `//go:wasmexport` wrappers; functions with `string` / `[]T` / `*T` / `jsbridge.Func` params are compiled into the artifact but not exposed via the WASI export ABI (a CLI warning lists which were skipped). Requires [`tinygo`](https://tinygo.org/getting-started/install/) on `PATH`.
+
+Verified: `add(2.5, 3.25) = 5.75`, `fib(10) = 55` callable from a Go host via `wazero.Runtime.InstantiateWithConfig` + `mod.ExportedFunction("add").Call(ctx, ...)`.
 
 ### Transpile TypeScript to Go (Experimental)
 
