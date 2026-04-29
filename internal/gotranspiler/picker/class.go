@@ -89,7 +89,7 @@ func IsClassExtractable(node *ast.Node, ck *checker.Checker, topLevelFuncs map[s
 			switch member.Kind {
 			case ast.KindPropertyDeclaration:
 				if isStatic {
-					return false, Reason{Code: reasonClassStatic, Detail: "static field not supported (only static methods)"}
+					return false, Reason{Code: reasonClassStatic, Detail: "static field not supported — only static methods (try: replace with a top-level `const` outside the class)"}
 				}
 				mname := member.Name()
 				if mname == nil {

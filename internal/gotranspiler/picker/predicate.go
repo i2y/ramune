@@ -37,7 +37,7 @@ func IsFunctionExtractable(node *ast.Node, ck *checker.Checker, topLevelFuncs ma
 		return false, Reason{Code: reasonUnnamed, Detail: "function has no name"}
 	}
 	if fd.TypeParameters != nil && len(fd.TypeParameters.Nodes) > 0 {
-		return false, Reason{Code: reasonGenericFunc, Detail: "function has type parameters"}
+		return false, Reason{Code: reasonGenericFunc, Detail: "function has type parameters (try: define non-generic specialisations for the concrete types you call this with)"}
 	}
 	if fd.AsteriskToken != nil {
 		return false, Reason{Code: reasonGeneratorFunc, Detail: "generator function"}
@@ -96,7 +96,7 @@ func checkCallableSignature(ck *checker.Checker, node *ast.Node, params *ast.Par
 	}
 	sig := sigs[0]
 	if ck.HasEffectiveRestParameter(sig) {
-		return nil, nil, &Reason{Code: reasonRestParam, Detail: label + "rest parameter not supported"}
+		return nil, nil, &Reason{Code: reasonRestParam, Detail: label + "rest parameter not supported (try: take a typed array `xs: T[]` and have callers pass `[...args]`)"}
 	}
 	if params != nil {
 		for _, p := range params.Nodes {
@@ -438,7 +438,7 @@ func checkExpr(node *ast.Node, ctx *bodyCtx) *Reason {
 	case ast.KindAwaitExpression:
 		return checkAwaitExpr(node, ctx)
 	case ast.KindArrowFunction, ast.KindFunctionExpression, ast.KindClassExpression:
-		return &Reason{Code: reasonFuncLiteral, Detail: "inline function/class literal"}
+		return &Reason{Code: reasonFuncLiteral, Detail: "inline function/class literal (try: hoist the body into a top-level `function` and pass it by name)"}
 	case ast.KindRegularExpressionLiteral:
 		return &Reason{Code: reasonRegex, Detail: "regex literal"}
 	case ast.KindSpreadElement:
@@ -1241,7 +1241,7 @@ func checkArrayCallbackMethodCall(ce *ast.CallExpression, pa *ast.PropertyAccess
 	}
 	arg := ce.Arguments.Nodes[0]
 	if arg.Kind != ast.KindIdentifier {
-		return &Reason{Code: reasonFuncLiteral, Detail: "." + method + " callback must be a bare parameter identifier (inline functions not supported)"}
+		return &Reason{Code: reasonFuncLiteral, Detail: "." + method + " callback must be a bare parameter identifier (try: take the callback as a parameter `cb: (x: T) => U` and pass `xs." + method + "(cb)`)"}
 	}
 	name := arg.AsIdentifier().Text
 	if !ctx.jsFuncParamNames[name] {

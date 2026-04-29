@@ -78,16 +78,16 @@ func isExtractableTypeWith(ck *checker.Checker, t *checker.Type, visited map[*ch
 		return &Reason{Code: reasonUnknownType, Detail: "type is `unknown`"}
 	}
 	if flags&checker.TypeFlagsTypeParameter != 0 {
-		return &Reason{Code: reasonGenericType, Detail: "type is a generic parameter"}
+		return &Reason{Code: reasonGenericType, Detail: "type is a generic parameter (try: wrap in a non-generic helper for the concrete type you actually use)"}
 	}
 	if flags&checker.TypeFlagsBigIntLike != 0 {
-		return &Reason{Code: reasonBigInt, Detail: "bigint not supported"}
+		return &Reason{Code: reasonBigInt, Detail: "bigint not supported (try: use number / float64 if the value range fits)"}
 	}
 	if flags&checker.TypeFlagsESSymbolLike != 0 {
 		return &Reason{Code: reasonSymbol, Detail: "symbol not supported"}
 	}
 	if flags&checker.TypeFlagsIntersection != 0 {
-		return &Reason{Code: reasonIntersection, Detail: "intersection type"}
+		return &Reason{Code: reasonIntersection, Detail: "intersection type (try: define a named interface that flattens both members' fields)"}
 	}
 	if isPrimitiveOrVoid(flags) {
 		return nil
@@ -115,7 +115,7 @@ func isExtractableTypeWith(ck *checker.Checker, t *checker.Type, visited map[*ch
 				return nil
 			}
 		}
-		return &Reason{Code: reasonUnionType, Detail: "union type not supported"}
+		return &Reason{Code: reasonUnionType, Detail: "union type not supported (try: T | null / T | undefined / uniform-primitive literal unions are accepted; for `string | number` etc., split into separately-typed functions)"}
 	}
 	if flags&checker.TypeFlagsObject != 0 {
 		if elem := arrayElementType(ck, t); elem != nil {
@@ -123,7 +123,7 @@ func isExtractableTypeWith(ck *checker.Checker, t *checker.Type, visited map[*ch
 			// single-level `arr[i]` pattern sound; nested arrays would need
 			// access-pattern support the walker does not yet have.
 			if !isPrimitiveType(elem.Flags()) {
-				return &Reason{Code: reasonObjectType, Detail: "array element must be primitive"}
+				return &Reason{Code: reasonObjectType, Detail: "array element must be primitive (try: empty `[]` literals lose their type — push instead of declaring an empty literal, or use `Array.from({length: n}, ...)`; nested arrays are unsupported)"}
 			}
 			return nil
 		}
@@ -138,7 +138,7 @@ func isExtractableTypeWith(ck *checker.Checker, t *checker.Type, visited map[*ch
 			// the float64 zero value at runtime.
 			return &Reason{Code: reasonObjectType, Detail: "Promise<T> only allowed as function return type"}
 		}
-		return &Reason{Code: reasonObjectType, Detail: "object/reference type not supported"}
+		return &Reason{Code: reasonObjectType, Detail: "object/reference type not supported (try: extract anonymous `{...}` into a named `interface`; `Map<K,V>` / `Set<T>` / tuples not yet accepted)"}
 	}
 	return &Reason{Code: reasonUnhandledKind, Detail: "unclassified type"}
 }
