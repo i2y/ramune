@@ -63,7 +63,7 @@ JSValue QJS_ThrowInternalError(JSContext *ctx, const char *fmt)
  * Wall-clock execution timeout for sandboxed JS. Returns 1 to abort the
  * current JS invocation (QuickJS-NG raises an InternalError "interrupted").
  * The TimeoutArgs storage is owned by the QJSRuntime that installed the
- * handler and is freed in QJS_Free — do NOT free here, or repeated firings
+ * handler and is freed in QJS_Free; do NOT free here, or repeated firings
  * (the handler stays registered after returning 1) will dereference freed
  * memory.
  */

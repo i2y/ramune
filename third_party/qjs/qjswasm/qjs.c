@@ -18,16 +18,16 @@ QJSRuntime *New_QJS(
     size_t max_execution_time,
     size_t gc_threshold)
 {
-  JSRuntime *runtime;
-  JSContext *ctx;
+  JSRuntime *runtime = NULL;
+  JSContext *ctx = NULL;
   TimeoutArgs *timeout_args = NULL;
+  QJSRuntime *qjs = NULL;
 
 #ifdef QJS_DEBUG_RUNTIME_ADDRESS
   randomize_address_space();
 #endif
 
   runtime = JS_NewRuntime();
-
   if (!runtime)
     return NULL;
 
@@ -43,12 +43,11 @@ QJSRuntime *New_QJS(
   if (max_execution_time > 0)
   {
     timeout_args = (TimeoutArgs *)malloc(sizeof(TimeoutArgs));
-    if (timeout_args)
-    {
-      timeout_args->start = time(NULL);
-      timeout_args->timeout = (time_t)max_execution_time;
-      JS_SetInterruptHandler(runtime, QJS_TimeoutHandler, timeout_args);
-    }
+    if (!timeout_args)
+      goto fail;
+    timeout_args->start = time(NULL);
+    timeout_args->timeout = (time_t)max_execution_time;
+    JS_SetInterruptHandler(runtime, QJS_TimeoutHandler, timeout_args);
   }
 
   /* setup the the worker context */
@@ -62,35 +61,26 @@ QJSRuntime *New_QJS(
 
   ctx = New_QJSContext(runtime);
   if (!ctx)
-  {
-    if (timeout_args) free(timeout_args);
-    JS_FreeRuntime(runtime);
-    return NULL;
-  }
+    goto fail;
 
   // Initialize QJS_PROXY_VALUE class
   if (init_qjs_proxy_value_class(ctx) < 0)
-  {
-    if (timeout_args) free(timeout_args);
-    JS_FreeContext(ctx);
-    JS_FreeRuntime(runtime);
-    return NULL;
-  }
+    goto fail;
 
-  QJSRuntime *qjs = (QJSRuntime *)malloc(sizeof(QJSRuntime));
+  qjs = (QJSRuntime *)malloc(sizeof(QJSRuntime));
   if (!qjs)
-  {
-    if (timeout_args) free(timeout_args);
-    JS_FreeContext(ctx);
-    JS_FreeRuntime(runtime);
-    return NULL;
-  }
+    goto fail;
 
   qjs->runtime = runtime;
   qjs->context = ctx;
   qjs->timeout_args = timeout_args;
-
   return qjs;
+
+fail:
+  if (timeout_args) free(timeout_args);
+  if (ctx) JS_FreeContext(ctx);
+  JS_FreeRuntime(runtime);
+  return NULL;
 }
 
 void QJS_FreeValue(JSContext *ctx, JSValue val)

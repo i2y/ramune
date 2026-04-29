@@ -81,11 +81,13 @@ type ResourceLimits struct {
 	// MaxExecutionTime caps wall-clock time from Runtime creation. When
 	// exceeded, the engine aborts the running JS invocation with an
 	// "interrupted" InternalError. Granularity is 1 second (the underlying
-	// QuickJS-NG interrupt handler uses time_t); sub-second values are
-	// rounded up to 1 second. Once the timeout fires the runtime should
-	// be considered spent — it will abort future Eval calls instantly
-	// because the start time is fixed at construction. Use a fresh
-	// Runtime per untrusted-code invocation for per-call timeout semantics.
+	// QuickJS-NG interrupt handler uses time_t): values strictly below 1
+	// second are rounded up to 1 second; longer values are truncated to
+	// whole seconds (so 1.999s becomes a 1s budget). Once the timeout
+	// fires the runtime should be considered spent: it will abort future
+	// Eval calls instantly because the start time is fixed at
+	// construction. Create a fresh Runtime per untrusted-code invocation
+	// for per-call timeout semantics.
 	MaxExecutionTime time.Duration
 }
 

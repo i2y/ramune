@@ -113,9 +113,9 @@ func TestQjswasmResourceLimitsMemory(t *testing.T) {
 // while(true){} would hang forever on the engine thread. We bound the wait
 // in a goroutine and t.Skip on timeout so the rest of the test suite is
 // not blocked. The runtime leaks in that case (we cannot Close while
-// Eval is still running on the engine thread) — acceptable because each
-// Runtime owns its own locked OS thread, so other tests creating fresh
-// runtimes are unaffected.
+// Eval is still running on the engine thread); that is acceptable because
+// each Runtime owns its own locked OS thread, so other tests creating
+// fresh runtimes are unaffected.
 func TestQjswasmResourceLimitsExecutionTime(t *testing.T) {
 	r, err := ramune.New(
 		ramune.WithResourceLimits(ramune.ResourceLimits{
