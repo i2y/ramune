@@ -452,6 +452,37 @@ func TestTUI_Markdown_RendersANSI(t *testing.T) {
 	}
 }
 
+// TestTUI_Markdown_RendererCached covers the per-(theme,width) cache
+// that keeps the theme switcher demo from freezing under repeated
+// renders. Calling Ramune.tui.markdown 200 times across 5 themes
+// finishes well under a second when the renderer is memoized; without
+// the cache, glamour rebuilds the chroma lexer registry per call and
+// the loop blows up to multi-seconds.
+func TestTUI_Markdown_RendererCached(t *testing.T) {
+	r := sharedNodeCompat(t)
+	v, err := r.Eval(`(function() {
+		var themes = ['dark', 'light', 'dracula', 'tokyo-night', 'pink'];
+		var src = '# Hello\n\n**bold** *italic*';
+		var t0 = Date.now();
+		for (var i = 0; i < 200; i++) {
+			Ramune.tui.markdown(src, { theme: themes[i % themes.length], width: 60 });
+		}
+		return Date.now() - t0;
+	})()`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ms, err := v.Float64()
+	if err != nil {
+		t.Fatalf("not a number: %v", err)
+	}
+	// 1 second is generous — typical run is ~50ms. If we ever fall
+	// off the cache by accident, this catches it loud.
+	if ms > 1000 {
+		t.Errorf("200 renders took %vms — renderer cache likely broken", ms)
+	}
+}
+
 // TestTUI_ServeSSH_Lifecycle binds an SSH server to an ephemeral port,
 // dials a TCP connection (which will reject due to wish's SSH handshake
 // requirements but proves the listener is up), then stops the server

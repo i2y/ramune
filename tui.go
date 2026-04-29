@@ -1949,6 +1949,16 @@ func goTUIQuit(mgr *tuiManager) func([]any) (any, error) {
 	}
 }
 
+// markdownRendererCache memoizes glamour TermRenderers by (theme, width)
+// so per-frame view() rendering doesn't rebuild the chroma syntax
+// highlighter + theme JSON parser on every key press. Without this the
+// theme switcher demo eventually freezes once GC churn from repeated
+// renderer construction outpaces the JSC dispatch loop.
+var (
+	markdownRendererMu    sync.Mutex
+	markdownRendererCache = map[string]*glamour.TermRenderer{}
+)
+
 // goTUIMarkdown lowers a markdown string to an ANSI-styled terminal
 // rendering via glamour. opts: { theme: 'dark'|'light'|'notty'|'ascii'|
 // 'auto'|'pink'|'dracula'|'tokyo-night', width: int }. Defaults to
@@ -1970,18 +1980,30 @@ func goTUIMarkdown(args []any) (any, error) {
 			}
 		}
 	}
+	r, err := getOrCreateMarkdownRenderer(theme, width)
+	if err != nil {
+		return nil, err
+	}
+	out, err := r.Render(text)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func getOrCreateMarkdownRenderer(theme string, width int) (*glamour.TermRenderer, error) {
+	key := theme + "|" + fmt.Sprintf("%d", width)
+	markdownRendererMu.Lock()
+	defer markdownRendererMu.Unlock()
+	if r, ok := markdownRendererCache[key]; ok {
+		return r, nil
+	}
 	var styleOpt glamour.TermRendererOption
 	switch theme {
 	case "auto":
 		styleOpt = glamour.WithAutoStyle()
-	case "dark":
-		styleOpt = glamour.WithStandardStyle("dark")
-	case "light":
-		styleOpt = glamour.WithStandardStyle("light")
-	case "notty":
-		styleOpt = glamour.WithStandardStyle("notty")
-	case "ascii":
-		styleOpt = glamour.WithStandardStyle("ascii")
+	case "dark", "light", "notty", "ascii":
+		styleOpt = glamour.WithStandardStyle(theme)
 	default:
 		// Pass through to glamour's named-style loader so Charm's
 		// extras (pink, dracula, tokyo-night, etc.) work without us
@@ -1992,11 +2014,8 @@ func goTUIMarkdown(args []any) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	out, err := r.Render(text)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
+	markdownRendererCache[key] = r
+	return r, nil
 }
 
 // goTUIStyle wraps Lipgloss into a one-shot styling helper. Userland
