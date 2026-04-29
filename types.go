@@ -3,6 +3,7 @@ package ramune
 import (
 	"encoding/json"
 	"io"
+	"time"
 )
 
 // GoFunc is a Go function that can be called from JavaScript.
@@ -66,8 +67,8 @@ func WithTickManager(m TickManager) Option {
 
 // ResourceLimits caps the resources a Runtime may consume. Only qjswasm
 // honors these today (mapping to QuickJS-NG's JS_SetMemoryLimit /
-// JS_SetMaxStackSize / JS_SetGCThreshold); other backends silently ignore
-// them. Zero means "unlimited" (backend default).
+// JS_SetMaxStackSize / JS_SetGCThreshold / JS_SetInterruptHandler); other
+// backends silently ignore them. Zero means "unlimited" (backend default).
 type ResourceLimits struct {
 	// MaxMemoryBytes caps total JS heap in bytes. When exceeded, the engine
 	// aborts the current operation with an OOM-like error.
@@ -77,6 +78,15 @@ type ResourceLimits struct {
 	MaxStackBytes int64
 	// GCThresholdBytes tunes when the GC kicks in. Lower = more aggressive.
 	GCThresholdBytes int64
+	// MaxExecutionTime caps wall-clock time from Runtime creation. When
+	// exceeded, the engine aborts the running JS invocation with an
+	// "interrupted" InternalError. Granularity is 1 second (the underlying
+	// QuickJS-NG interrupt handler uses time_t); sub-second values are
+	// rounded up to 1 second. Once the timeout fires the runtime should
+	// be considered spent — it will abort future Eval calls instantly
+	// because the start time is fixed at construction. Use a fresh
+	// Runtime per untrusted-code invocation for per-call timeout semantics.
+	MaxExecutionTime time.Duration
 }
 
 // WithResourceLimits caps runtime resources. See ResourceLimits for the

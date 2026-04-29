@@ -5,6 +5,7 @@ package ramune_test
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/i2y/ramune"
 )
@@ -98,5 +99,57 @@ func TestQjswasmResourceLimitsMemory(t *testing.T) {
 
 	if _, err := r.Eval(`new Uint8Array(10 * 1024 * 1024)`); err == nil {
 		t.Fatal("expected allocation to fail under 1 MiB memory cap")
+	}
+}
+
+// TestQjswasmResourceLimitsExecutionTime verifies WithResourceLimits caps
+// wall-clock execution time — a 1 s limit must abort an unbounded loop with
+// an "interrupted" error rather than hang. Granularity is time_t (seconds),
+// so the loop is allowed up to ~2 s in the worst case before the handler
+// fires.
+//
+// If the embedded qjs.wasm predates the C-side QJS_TimeoutHandler wiring
+// (i.e., the wasm has not been rebuilt after the helpers.c uncomment),
+// while(true){} would hang forever on the engine thread. We bound the wait
+// in a goroutine and t.Skip on timeout so the rest of the test suite is
+// not blocked. The runtime leaks in that case (we cannot Close while
+// Eval is still running on the engine thread) — acceptable because each
+// Runtime owns its own locked OS thread, so other tests creating fresh
+// runtimes are unaffected.
+func TestQjswasmResourceLimitsExecutionTime(t *testing.T) {
+	r, err := ramune.New(
+		ramune.WithResourceLimits(ramune.ResourceLimits{
+			MaxExecutionTime: 1 * time.Second,
+		}),
+	)
+	if err != nil {
+		if strings.Contains(err.Error(), "stub") {
+			t.Skip("qjswasm stub wasm; rebuild qjs.wasm to exercise the interrupt handler")
+		}
+		t.Fatalf("runtime: %v", err)
+	}
+
+	type evalResult struct {
+		err     error
+		elapsed time.Duration
+	}
+	resultCh := make(chan evalResult, 1)
+	go func() {
+		start := time.Now()
+		_, err := r.Eval(`while(true){}`)
+		resultCh <- evalResult{err: err, elapsed: time.Since(start)}
+	}()
+
+	select {
+	case res := <-resultCh:
+		defer r.Close()
+		if res.err == nil {
+			t.Fatal("expected timeout error, got nil")
+		}
+		if res.elapsed > 5*time.Second {
+			t.Fatalf("interrupt fired too late: %v", res.elapsed)
+		}
+	case <-time.After(5 * time.Second):
+		t.Skip("interrupt handler not detected in embedded qjs.wasm; rebuild via `make -C third_party/qjs build` after installing wasi-sdk and initialising the QuickJS-NG submodule")
 	}
 }

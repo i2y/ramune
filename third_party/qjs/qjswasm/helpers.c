@@ -59,25 +59,28 @@ JSValue QJS_ThrowInternalError(JSContext *ctx, const char *fmt)
     return JS_ThrowInternalError(ctx, "%s", fmt);
 }
 
-// int QJS_TimeoutHandler(JSRuntime *rt, void *opaque)
-// {
-//     TimeoutArgs *ts = (TimeoutArgs *)opaque;
-//     time_t timeout = ts->timeout;
-//     time_t start = ts->start;
-//     if (timeout <= 0)
-//     {
-//         return 0;
-//     }
-
-//     time_t now = time(NULL);
-//     if (now - start > timeout)
-//     {
-//         free(ts);
-//         return 1;
-//     }
-
-//     return 0;
-// }
+/*
+ * Wall-clock execution timeout for sandboxed JS. Returns 1 to abort the
+ * current JS invocation (QuickJS-NG raises an InternalError "interrupted").
+ * The TimeoutArgs storage is owned by the QJSRuntime that installed the
+ * handler and is freed in QJS_Free — do NOT free here, or repeated firings
+ * (the handler stays registered after returning 1) will dereference freed
+ * memory.
+ */
+int QJS_TimeoutHandler(JSRuntime *rt, void *opaque)
+{
+    TimeoutArgs *ts = (TimeoutArgs *)opaque;
+    if (ts == NULL || ts->timeout <= 0)
+    {
+        return 0;
+    }
+    time_t now = time(NULL);
+    if (now - ts->start > ts->timeout)
+    {
+        return 1;
+    }
+    return 0;
+}
 
 // void SetExecuteTimeout(JSRuntime *rt, time_t timeout)
 // {

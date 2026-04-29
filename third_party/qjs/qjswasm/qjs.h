@@ -52,6 +52,13 @@ typedef struct QJSRuntime
 {
   JSRuntime *runtime;
   JSContext *context;
+  /*
+   * Optional wall-clock timeout state for QJS_TimeoutHandler. Allocated in
+   * New_QJS when max_execution_time > 0 and freed in QJS_Free. The
+   * interrupt handler reads .timeout / .start; do not move or free it
+   * outside QJS_Free or the handler will dereference freed memory.
+   */
+  TimeoutArgs *timeout_args;
 } QJSRuntime;
 
 bool file_exists(const char *path);
@@ -70,6 +77,7 @@ JSRuntime *JS_GetRuntime(JSContext *ctx);
 
 JSValue InvokeFunctionProxy(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv);
 JSValue InvokeAsyncFunctionProxy(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv);
+int QJS_TimeoutHandler(JSRuntime *rt, void *opaque);
 // void SetInterruptHandler(JSRuntime *rt, void *handlerArgs);
 // void SetExecuteTimeout(JSRuntime *rt, time_t timeout);
 

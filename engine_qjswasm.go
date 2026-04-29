@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/i2y/ramune/third_party/qjs"
 )
@@ -419,6 +420,13 @@ func buildQJSOption(cfg *config) qjs.Option {
 		opt.MemoryLimit = clampToInt(l.MaxMemoryBytes)
 		opt.MaxStackSize = clampToInt(l.MaxStackBytes)
 		opt.GCThreshold = clampToInt(l.GCThresholdBytes)
+		if l.MaxExecutionTime > 0 {
+			secs := int64(l.MaxExecutionTime / time.Second)
+			if secs == 0 {
+				secs = 1
+			}
+			opt.MaxExecutionTime = clampToInt(secs)
+		}
 	}
 
 	return opt

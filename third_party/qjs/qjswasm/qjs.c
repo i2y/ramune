@@ -20,6 +20,7 @@ QJSRuntime *New_QJS(
 {
   JSRuntime *runtime;
   JSContext *ctx;
+  TimeoutArgs *timeout_args = NULL;
 
 #ifdef QJS_DEBUG_RUNTIME_ADDRESS
   randomize_address_space();
@@ -39,6 +40,17 @@ QJSRuntime *New_QJS(
   if (max_stack_size > 0)
     JS_SetMaxStackSize(runtime, max_stack_size);
 
+  if (max_execution_time > 0)
+  {
+    timeout_args = (TimeoutArgs *)malloc(sizeof(TimeoutArgs));
+    if (timeout_args)
+    {
+      timeout_args->start = time(NULL);
+      timeout_args->timeout = (time_t)max_execution_time;
+      JS_SetInterruptHandler(runtime, QJS_TimeoutHandler, timeout_args);
+    }
+  }
+
   /* setup the the worker context */
   js_std_set_worker_new_context_func(New_QJSContext);
   /* initialize the standard objects */
@@ -51,6 +63,7 @@ QJSRuntime *New_QJS(
   ctx = New_QJSContext(runtime);
   if (!ctx)
   {
+    if (timeout_args) free(timeout_args);
     JS_FreeRuntime(runtime);
     return NULL;
   }
@@ -58,6 +71,7 @@ QJSRuntime *New_QJS(
   // Initialize QJS_PROXY_VALUE class
   if (init_qjs_proxy_value_class(ctx) < 0)
   {
+    if (timeout_args) free(timeout_args);
     JS_FreeContext(ctx);
     JS_FreeRuntime(runtime);
     return NULL;
@@ -66,6 +80,7 @@ QJSRuntime *New_QJS(
   QJSRuntime *qjs = (QJSRuntime *)malloc(sizeof(QJSRuntime));
   if (!qjs)
   {
+    if (timeout_args) free(timeout_args);
     JS_FreeContext(ctx);
     JS_FreeRuntime(runtime);
     return NULL;
@@ -73,6 +88,7 @@ QJSRuntime *New_QJS(
 
   qjs->runtime = runtime;
   qjs->context = ctx;
+  qjs->timeout_args = timeout_args;
 
   return qjs;
 }
@@ -84,8 +100,21 @@ void QJS_FreeValue(JSContext *ctx, JSValue val)
 
 void QJS_Free(QJSRuntime *qjs)
 {
+  /*
+   * Disable the interrupt handler before tearing down the runtime so any
+   * cleanup-time JS_RunGC / finalizer triggered call does not dereference
+   * the timeout args we are about to free.
+   */
+  if (qjs->timeout_args)
+  {
+    JS_SetInterruptHandler(qjs->runtime, NULL, NULL);
+  }
   JS_FreeContext(qjs->context);
   JS_FreeRuntime(qjs->runtime);
+  if (qjs->timeout_args)
+  {
+    free(qjs->timeout_args);
+  }
   free(qjs);
 }
 
