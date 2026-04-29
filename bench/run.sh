@@ -9,12 +9,24 @@
 cd "$(dirname "$0")"
 
 RAMUNE="../ramune"
+HYBRID_FIB="./fib_hybrid"
+JSC_FIB="./fib_jsc"
 
 # Build if needed.
 if [ ! -f "$RAMUNE" ]; then
     echo "Building ramune..."
     cd .. && make build-cli && cd bench
 fi
+
+# Pre-build two binaries from fib.ts so the Fib(40) section can isolate
+# AOT-extraction wins from raw `compile` startup cost: fib_jsc keeps the
+# function in JS (no --hybrid flag), fib_hybrid extracts it as native Go.
+# The picker swap is a postlude, so fib.ts uses setTimeout(0) to defer
+# the call past the shim install — without that, the JS local binding
+# wins and hybrid is silently no-op.
+echo "Building hybrid-AOT and JSC fib binaries..."
+"$RAMUNE" compile -o "$JSC_FIB" fib.ts >/dev/null 2>&1 || JSC_FIB=""
+"$RAMUNE" compile --hybrid -o "$HYBRID_FIB" fib.ts >/dev/null 2>&1 || HYBRID_FIB=""
 
 # Check dependencies.
 for cmd in hyperfine node bun; do
@@ -39,12 +51,15 @@ hyperfine --warmup 2 --min-runs 10 \
     2>&1 | grep -E "Time|Summary|times"
 
 echo ""
-echo "=== 2. Fibonacci(35) (CPU) ==="
-hyperfine --warmup 1 --min-runs 5 \
-    "$RAMUNE run fib.js" \
-    "node fib.js" \
-    "bun run fib.js" \
-    2>&1 | grep -E "Time|Summary|times"
+echo "=== 2. Fibonacci(40) (CPU) ==="
+fib_cmds=("$RAMUNE run fib.js" "node fib.js" "bun run fib.js")
+if [ -n "$JSC_FIB" ] && [ -f "$JSC_FIB" ]; then
+    fib_cmds+=("$JSC_FIB")
+fi
+if [ -n "$HYBRID_FIB" ] && [ -f "$HYBRID_FIB" ]; then
+    fib_cmds+=("$HYBRID_FIB")
+fi
+hyperfine --warmup 1 --min-runs 5 "${fib_cmds[@]}" 2>&1 | grep -E "Time|Summary|times"
 
 echo ""
 echo "=== 3. JSON 10K objects ==="

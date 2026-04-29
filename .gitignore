@@ -3,6 +3,8 @@
 /ramune-toolchain
 /ramune-qjsw
 /ramune-goja
+/bench/fib_jsc
+/bench/fib_hybrid
 *.exe
 *.exe~
 *.dll
