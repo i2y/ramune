@@ -130,7 +130,15 @@ func composeAll(files []*ast.SourceFile, ck *checker.Checker, opts Options) (*Re
 		}
 	}
 
-	pickerOpts := picker.Options{TopLevelFuncs: globalFuncs}
+	// Cross-file static-method registry. Pre-collected across every user
+	// file before any per-file Pick runs, so a function in file B can
+	// resolve `Class.method(...)` against a class declared later in file
+	// A regardless of compose order.
+	globalStaticMethods := map[string]map[string]bool{}
+	for _, sf := range files {
+		picker.PreCollectStaticMethods(sf, globalStaticMethods)
+	}
+	pickerOpts := picker.Options{TopLevelFuncs: globalFuncs, StaticMethods: globalStaticMethods}
 	merged := &picker.Result{File: files[0].FileName()}
 	var allNodes []*ast.Node
 	var allFuncNames []string

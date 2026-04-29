@@ -175,6 +175,33 @@ export function inlineUnion(d: "yes" | "no"): boolean {
 	runTinyGoAudit(t, "literal_union", src)
 }
 
+// TestTinyGoAudit_StaticMethods covers `class C { static foo(...) }` —
+// emitter renders each static as a package-level `func C_Foo(...)` and
+// rewrites `C.foo(args)` call sites to match. Instance members on the
+// same class still emit as Go struct methods.
+func TestTinyGoAudit_StaticMethods(t *testing.T) {
+	if _, err := exec.LookPath("tinygo"); err != nil {
+		t.Skip("tinygo not on PATH")
+	}
+	src := `
+export class Util {
+  static double(x: number): number { return x * 2; }
+  static clamp(v: number, lo: number, hi: number): number {
+    if (v < lo) return lo;
+    if (v > hi) return hi;
+    return v;
+  }
+}
+export function callDouble(n: number): number {
+  return Util.double(n);
+}
+export function callClamp(v: number): number {
+  return Util.clamp(v, 0, 100);
+}
+`
+	runTinyGoAudit(t, "static_methods", src)
+}
+
 // TestTinyGoAudit_NestedStruct covers named interfaces whose fields are
 // themselves named structs. Earlier the picker rejected these (assuming
 // the emit would fall back to jsrt.Obj reflection); the typed nested

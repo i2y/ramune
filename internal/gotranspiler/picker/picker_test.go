@@ -494,6 +494,79 @@ export function getX(o: Outer): number { return o.inner.x; }
 	}
 }
 
+func TestPicker_Accepts_StaticMethods(t *testing.T) {
+	// Static methods lower to package-level `Class_Method` functions;
+	// `Class.method(args)` calls re-route to that name. Instance fields
+	// on the same class still pass the field-extractability check.
+	src := `
+export class Util {
+  static double(x: number): number { return x * 2; }
+}
+export function f(n: number): number { return Util.double(n); }
+`
+	res := pickOne(t, src)
+	c, _ := byName(res, "Util")
+	if !c.Extracted {
+		t.Fatalf("expected `Util` extracted; got %+v", c.Reason)
+	}
+	c, _ = byName(res, "f")
+	if !c.Extracted {
+		t.Fatalf("expected `f` extracted; got %+v", c.Reason)
+	}
+}
+
+func TestPicker_Accepts_StaticMethodForwardReference(t *testing.T) {
+	// Function declared BEFORE its referenced class — only works if the
+	// pre-pass populates the registry independently of source order.
+	src := `
+export function caller(n: number): number { return Util.double(n); }
+export class Util {
+  static double(x: number): number { return x * 2; }
+}
+`
+	res := pickOne(t, src)
+	c, _ := byName(res, "caller")
+	if !c.Extracted {
+		t.Fatalf("expected `caller` extracted (forward ref); got %+v", c.Reason)
+	}
+	c, _ = byName(res, "Util")
+	if !c.Extracted {
+		t.Fatalf("expected `Util` extracted; got %+v", c.Reason)
+	}
+}
+
+func TestPicker_Rejects_StaticField(t *testing.T) {
+	src := `
+export class C {
+  static count: number = 0;
+}
+`
+	res := pickOne(t, src)
+	c, _ := byName(res, "C")
+	if c.Extracted {
+		t.Fatalf("expected rejection for static field")
+	}
+	if c.Reason.Code != "class-static" {
+		t.Fatalf("expected class-static, got %q", c.Reason.Code)
+	}
+}
+
+func TestPicker_Rejects_StaticMethodReferencingThis(t *testing.T) {
+	// Static method bodies must not reference `this` — the body walker
+	// should reject the `this.x` access since inMethod is false for
+	// static contexts.
+	src := `
+export class C {
+  static get(): number { return this.x; }
+}
+`
+	res := pickOne(t, src)
+	c, _ := byName(res, "C")
+	if c.Extracted {
+		t.Fatalf("expected rejection for static method using `this`")
+	}
+}
+
 func TestPicker_Rejects_RecursiveInterface(t *testing.T) {
 	// Mutually-recursive interfaces would emit Go that fails with
 	// "invalid recursive type" (no pointer indirection in the field

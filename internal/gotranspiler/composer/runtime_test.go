@@ -784,6 +784,45 @@ export function describe(n: number): number { return fib(n) * 2; }
 	}
 }
 
+// TestHybrid_MultiFile_StaticMethod confirms that the StaticMethods
+// registry is shared across Pick calls in a multi-file compose: a class
+// declared in kernel.ts is callable as `Util.foo()` from app.ts.
+func TestHybrid_MultiFile_StaticMethod(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "kernel.ts"), []byte(`
+export class Util {
+  static double(x: number): number { return x * 2; }
+}
+`), 0o644); err != nil {
+		t.Fatalf("kernel: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "app.ts"), []byte(`
+import { Util } from "./kernel";
+export function callDouble(n: number): number { return Util.double(n); }
+`), 0o644); err != nil {
+		t.Fatalf("app: %v", err)
+	}
+
+	res, err := composer.ComposeFile(filepath.Join(dir, "app.ts"), composer.Options{})
+	if err != nil {
+		t.Fatalf("compose: %v", err)
+	}
+	extracted := map[string]bool{}
+	for _, c := range res.PickerResult.Candidates {
+		if c.Extracted {
+			extracted[c.Name] = true
+		}
+	}
+	for _, want := range []string{"Util", "callDouble"} {
+		if !extracted[want] {
+			t.Fatalf("expected %q extracted across multi-file compose, got %+v", want, res.PickerResult.Candidates)
+		}
+	}
+	if !strings.Contains(res.GoSource, "Util_Double(") {
+		t.Fatalf("expected `Util_Double(` call in emitted Go:\n%s", res.GoSource)
+	}
+}
+
 func TestHybrid_NamedInterfaceParam_RoundTrip(t *testing.T) {
 	src := `
 interface Rect { width: number; height: number; }

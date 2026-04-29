@@ -1023,6 +1023,15 @@ func (t *Transpiler) emitCallExpr(node *ast.Node) {
 
 	// DEBUG: trace
 
+	// `Class.method(args)` where Class is an extracted class lowers to
+	// the package-level form emitStaticMethod produces (`Class_Method`).
+	// Emitter-side guard: instance methods can't be called this way in
+	// valid TS, so the picker accepts the form only when method is in
+	// the static registry.
+	if t.emitStaticMethodCallIfApplicable(call) {
+		return
+	}
+
 	// --- 1. Console calls (namespace-driven) ---
 	if t.isConsoleCall(call) {
 		t.emitConsoleCall(call)
@@ -4584,6 +4593,36 @@ func (t *Transpiler) jsFuncCallbackReturnType(cb *ast.Node) string {
 		return ""
 	}
 	return t.tm.goReturnType(t.ck.GetReturnTypeOfSignature(sigs[0]))
+}
+
+// emitStaticMethodCallIfApplicable lowers `Class.method(args...)` to
+// `Class_Method(args...)` when Class is a known extracted class. Returns
+// true when handled. The caller's existing dispatch covers everything
+// else (Math, Number, instance methods, dynamic fallbacks).
+func (t *Transpiler) emitStaticMethodCallIfApplicable(call *ast.CallExpression) bool {
+	if call == nil || call.Expression == nil {
+		return false
+	}
+	if call.Expression.Kind != ast.KindPropertyAccessExpression {
+		return false
+	}
+	pa := call.Expression.AsPropertyAccessExpression()
+	if pa == nil || pa.Expression == nil || pa.Expression.Kind != ast.KindIdentifier {
+		return false
+	}
+	className := pa.Expression.AsIdentifier().Text
+	goClassName := goTypeName(className)
+	if t.classNames == nil || !t.classNames[goClassName] {
+		return false
+	}
+	if pa.Name() == nil || pa.Name().Kind != ast.KindIdentifier {
+		return false
+	}
+	methodName := pa.Name().AsIdentifier().Text
+	t.w.writef("%s_%s(", goClassName, goExportedName(methodName))
+	t.emitCallArgs(call.Arguments)
+	t.w.write(")")
+	return true
 }
 
 // emitJSFuncCallIfApplicable lowers `cb(args...)` where `cb` is a parameter

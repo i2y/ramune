@@ -13,18 +13,25 @@ import (
 //   - no type parameters (generic classes)
 //   - no heritage clauses (extends / implements)
 //   - no decorators
-//   - no static members (fields, methods, or static blocks)
+//   - no static fields and no static initialization blocks
 //   - no accessors (get/set) and no `#`-private identifiers
 //   - every property declaration is typed and extractable, no optional (`?`)
 //     fields, no initializers (constructor-initialised only)
 //   - constructor body is only `this.<field> = <expr>` statements; <expr> is
 //     body-extractable
-//   - every method has an extractable signature (params + return) and a
-//     body using the same allowlist as free functions, plus `this`,
-//     `this.<field>` (read/write), and `this.<method>(...)` self-calls
+//   - every method (instance or static) has an extractable signature
+//     (params + return) and a body using the same allowlist as free
+//     functions, plus `this`, `this.<field>` (read/write), and
+//     `this.<method>(...)` self-calls (instance methods only — static
+//     methods cannot reference `this` or instance members)
 //
 // Accepts both `export class C { ... }` and bare `class C { ... }`.
-func IsClassExtractable(node *ast.Node, ck *checker.Checker, topLevelFuncs map[string]struct{}) (bool, Reason) {
+//
+// staticMethods (input/output): when non-nil, the picker writes the
+// accepted static method names back keyed under the class's identifier
+// so other extracted functions' bodies can validate `Class.method(...)`
+// calls. nil disables the cross-reference channel.
+func IsClassExtractable(node *ast.Node, ck *checker.Checker, topLevelFuncs map[string]struct{}, staticMethods map[string]map[string]bool) (bool, Reason) {
 	if node == nil || node.Kind != ast.KindClassDeclaration {
 		return false, Reason{Code: reasonUnhandledKind, Detail: "not a class declaration"}
 	}
@@ -59,15 +66,15 @@ func IsClassExtractable(node *ast.Node, ck *checker.Checker, topLevelFuncs map[s
 	// body walker can validate `this.field` / `this.method(...)` references.
 	var fields []*ast.Node
 	var methods []*ast.Node
+	var statics []*ast.Node
 	var constructor *ast.Node
 	thisFields := map[string]bool{}
 	thisMethods := map[string]bool{}
+	staticNames := map[string]bool{}
 
 	if cd.Members != nil {
 		for _, member := range cd.Members.Nodes {
-			if ast.HasSyntacticModifier(member, ast.ModifierFlagsStatic) {
-				return false, Reason{Code: reasonClassStatic, Detail: "static member not supported"}
-			}
+			isStatic := ast.HasSyntacticModifier(member, ast.ModifierFlagsStatic)
 			if ast.HasSyntacticModifier(member, ast.ModifierFlagsAbstract) {
 				return false, Reason{Code: reasonClassHeritage, Detail: "abstract member"}
 			}
@@ -81,6 +88,9 @@ func IsClassExtractable(node *ast.Node, ck *checker.Checker, topLevelFuncs map[s
 
 			switch member.Kind {
 			case ast.KindPropertyDeclaration:
+				if isStatic {
+					return false, Reason{Code: reasonClassStatic, Detail: "static field not supported (only static methods)"}
+				}
 				mname := member.Name()
 				if mname == nil {
 					return false, Reason{Code: reasonUnhandledKind, Detail: "unnamed property"}
@@ -104,9 +114,17 @@ func IsClassExtractable(node *ast.Node, ck *checker.Checker, topLevelFuncs map[s
 				if mname.Kind != ast.KindIdentifier {
 					return false, Reason{Code: reasonUnhandledKind, Detail: "computed method name"}
 				}
-				methods = append(methods, member)
-				thisMethods[mname.AsIdentifier().Text] = true
+				if isStatic {
+					statics = append(statics, member)
+					staticNames[mname.AsIdentifier().Text] = true
+				} else {
+					methods = append(methods, member)
+					thisMethods[mname.AsIdentifier().Text] = true
+				}
 			case ast.KindConstructor:
+				if isStatic {
+					return false, Reason{Code: reasonClassStatic, Detail: "static constructor"}
+				}
 				if constructor != nil {
 					return false, Reason{Code: reasonUnhandledKind, Detail: "overloaded constructor"}
 				}
@@ -154,8 +172,27 @@ func IsClassExtractable(node *ast.Node, ck *checker.Checker, topLevelFuncs map[s
 
 	// Method check: signature + body.
 	for _, m := range methods {
-		if r := checkClassMethod(m, ck, topLevelFuncs, thisFields, thisMethods); r != nil {
+		if r := checkClassMethod(m, ck, topLevelFuncs, thisFields, thisMethods, staticMethods, false); r != nil {
 			return false, *r
+		}
+	}
+	for _, m := range statics {
+		if r := checkClassMethod(m, ck, topLevelFuncs, thisFields, thisMethods, staticMethods, true); r != nil {
+			return false, *r
+		}
+	}
+
+	// Publish accepted static names so other extracted bodies can call
+	// `<ClassName>.<method>(...)` after this point in the same Pick pass.
+	if staticMethods != nil && len(staticNames) > 0 {
+		className := name.AsIdentifier().Text
+		entry := staticMethods[className]
+		if entry == nil {
+			entry = map[string]bool{}
+			staticMethods[className] = entry
+		}
+		for n := range staticNames {
+			entry[n] = true
 		}
 	}
 
@@ -273,27 +310,33 @@ func checkConstructorStatement(stmt *ast.Node, ctx *bodyCtx) *Reason {
 }
 
 // checkClassMethod validates a MethodDeclaration's signature and body.
-// Same rules as a free function, plus `this` / `this.<field>` / `this.<method>`.
-func checkClassMethod(m *ast.Node, ck *checker.Checker, topLevelFuncs map[string]struct{}, thisFields, thisMethods map[string]bool) *Reason {
+// Same rules as a free function, plus `this` / `this.<field>` / `this.<method>`
+// for instance methods. isStatic switches off the `this`-related allowances
+// (static method bodies must not reference `this` or instance members).
+func checkClassMethod(m *ast.Node, ck *checker.Checker, topLevelFuncs map[string]struct{}, thisFields, thisMethods map[string]bool, staticMethods map[string]map[string]bool, isStatic bool) *Reason {
 	md := m.AsMethodDeclaration()
 	if md == nil {
 		return &Reason{Code: reasonUnhandledKind, Detail: "nil method"}
 	}
 	name := m.Name().AsIdentifier().Text
+	label := "method `" + name + "` "
+	if isStatic {
+		label = "static method `" + name + "` "
+	}
 	if md.AsteriskToken != nil {
-		return &Reason{Code: reasonGeneratorFunc, Detail: "generator method `" + name + "`"}
+		return &Reason{Code: reasonGeneratorFunc, Detail: "generator " + label}
 	}
 	if md.TypeParameters != nil && len(md.TypeParameters.Nodes) > 0 {
-		return &Reason{Code: reasonGenericFunc, Detail: "generic method `" + name + "`"}
+		return &Reason{Code: reasonGenericFunc, Detail: "generic " + label}
 	}
 	if md.Body == nil {
-		return &Reason{Code: reasonMissingBody, Detail: "method `" + name + "` has no body (overload / abstract)"}
+		return &Reason{Code: reasonMissingBody, Detail: label + "has no body (overload / abstract)"}
 	}
 	if md.PostfixToken != nil && md.PostfixToken.Kind == ast.KindQuestionToken {
-		return &Reason{Code: reasonUnhandledKind, Detail: "optional method `" + name + "`"}
+		return &Reason{Code: reasonUnhandledKind, Detail: "optional " + label}
 	}
 
-	paramNames, jsFuncParams, reason := checkCallableSignature(ck, m, md.Parameters, "method `"+name+"` ")
+	paramNames, jsFuncParams, reason := checkCallableSignature(ck, m, md.Parameters, label)
 	if reason != nil {
 		return reason
 	}
@@ -303,11 +346,14 @@ func checkClassMethod(m *ast.Node, ck *checker.Checker, topLevelFuncs map[string
 		paramNames:       paramNames,
 		jsFuncParamNames: jsFuncParams,
 		topLevelFuncs:    topLevelFuncs,
+		staticMethods:    staticMethods,
 		localNames:       map[string]bool{},
 		inAsync:          ast.HasSyntacticModifier(m, ast.ModifierFlagsAsync),
-		inMethod:         true,
-		thisFields:       thisFields,
-		thisMethods:      thisMethods,
+	}
+	if !isStatic {
+		ctx.inMethod = true
+		ctx.thisFields = thisFields
+		ctx.thisMethods = thisMethods
 	}
 	return checkBody(md.Body, ctx)
 }

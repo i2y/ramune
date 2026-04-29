@@ -70,6 +70,11 @@ type Options struct {
 	// accepted. When nil (single-file default), Pick collects the set from
 	// sf's own top-level.
 	TopLevelFuncs map[string]struct{}
+	// StaticMethods, if non-nil, is mutated in-place: each accepted class
+	// writes its static method names back keyed under the class name.
+	// Multi-file callers can share one map across Pick calls so a static
+	// method declared in one file is callable from another.
+	StaticMethods map[string]map[string]bool
 }
 
 // Pick walks the top-level statements of sf and classifies each
@@ -99,6 +104,23 @@ func Pick(sf *ast.SourceFile, ck *checker.Checker, opts Options) Result {
 		}
 	}
 
+	// Cross-class registry. Each accepted class writes its accepted static
+	// method names back here; later bodies (functions or other classes
+	// processed after) can call `<Class>.<method>(...)`.
+	staticMethods := opts.StaticMethods
+	if staticMethods == nil {
+		staticMethods = map[string]map[string]bool{}
+	}
+	// Pre-pass: structurally enumerate top-level classes and stamp their
+	// static method names into the registry before any body walker runs.
+	// Lets a function call `Util.foo(...)` regardless of whether `Util`
+	// appears earlier or later in the file (and, when callers share the
+	// registry, regardless of which file declares it). The pre-pass is
+	// AST-only — no checker calls, no body walks — so the cost is
+	// proportional to the top-level declaration count, well under the
+	// main validation pass it precedes.
+	PreCollectStaticMethods(sf, staticMethods)
+
 	for _, stmt := range sf.Statements.Nodes {
 		switch stmt.Kind {
 		case ast.KindFunctionDeclaration:
@@ -107,7 +129,7 @@ func Pick(sf *ast.SourceFile, ck *checker.Checker, opts Options) Result {
 				continue
 			}
 			name := fd.Name().AsIdentifier().Text
-			ok, reason := IsFunctionExtractable(stmt, ck, topLevelFuncs)
+			ok, reason := IsFunctionExtractable(stmt, ck, topLevelFuncs, staticMethods)
 			r.Candidates = append(r.Candidates, Candidate{
 				Node:      stmt,
 				Name:      name,
@@ -120,7 +142,7 @@ func Pick(sf *ast.SourceFile, ck *checker.Checker, opts Options) Result {
 			if id == nil || id.Kind != ast.KindIdentifier {
 				continue
 			}
-			ok, reason := IsClassExtractable(stmt, ck, topLevelFuncs)
+			ok, reason := IsClassExtractable(stmt, ck, topLevelFuncs, staticMethods)
 			r.Candidates = append(r.Candidates, Candidate{
 				Node:      stmt,
 				Name:      id.AsIdentifier().Text,
@@ -152,6 +174,63 @@ func Pick(sf *ast.SourceFile, ck *checker.Checker, opts Options) Result {
 		}
 	}
 	return r
+}
+
+// PreCollectStaticMethods scans sf's top-level class declarations and
+// records their statically-declared method names into registry, keyed
+// by class name. Multi-file callers can run this against every source
+// file before any Pick call so cross-file `Class.method(...)` resolves
+// regardless of declaration order.
+//
+// The scan is structural — it does not invoke the type checker, walk
+// method bodies, or otherwise validate extractability. A class that
+// turns out to be rejected during the main Pick pass leaves its names
+// in the registry; emit-time the bridge consults the accepted-class
+// set, so a `RejectedClass.foo` reference will surface as a Go
+// compile error rather than silently emit a missing-symbol call.
+func PreCollectStaticMethods(sf *ast.SourceFile, registry map[string]map[string]bool) {
+	if sf == nil || sf.Statements == nil || registry == nil {
+		return
+	}
+	for _, stmt := range sf.Statements.Nodes {
+		if stmt.Kind != ast.KindClassDeclaration {
+			continue
+		}
+		id := stmt.Name()
+		if id == nil || id.Kind != ast.KindIdentifier {
+			continue
+		}
+		cd := stmt.AsClassDeclaration()
+		if cd == nil || cd.Members == nil {
+			continue
+		}
+		var statics []string
+		for _, member := range cd.Members.Nodes {
+			if member.Kind != ast.KindMethodDeclaration {
+				continue
+			}
+			if !ast.HasSyntacticModifier(member, ast.ModifierFlagsStatic) {
+				continue
+			}
+			mname := member.Name()
+			if mname == nil || mname.Kind != ast.KindIdentifier {
+				continue
+			}
+			statics = append(statics, mname.AsIdentifier().Text)
+		}
+		if len(statics) == 0 {
+			continue
+		}
+		className := id.AsIdentifier().Text
+		entry := registry[className]
+		if entry == nil {
+			entry = map[string]bool{}
+			registry[className] = entry
+		}
+		for _, s := range statics {
+			entry[s] = true
+		}
+	}
 }
 
 // ExtractedFunctions returns the names of candidates that were extracted,

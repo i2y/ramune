@@ -24,7 +24,7 @@ import (
 //   - no parameter mutation
 //   - calls only the built-in safelist (Math.*, Number.*, string/array
 //     methods, same-file extractable functions, JSFunc params at call head)
-func IsFunctionExtractable(node *ast.Node, ck *checker.Checker, topLevelFuncs map[string]struct{}) (bool, Reason) {
+func IsFunctionExtractable(node *ast.Node, ck *checker.Checker, topLevelFuncs map[string]struct{}, staticMethods map[string]map[string]bool) (bool, Reason) {
 	if node == nil || node.Kind != ast.KindFunctionDeclaration {
 		return false, Reason{Code: reasonUnhandledKind, Detail: "not a function declaration"}
 	}
@@ -60,6 +60,7 @@ func IsFunctionExtractable(node *ast.Node, ck *checker.Checker, topLevelFuncs ma
 		paramNames:       paramNames,
 		jsFuncParamNames: jsFuncParams,
 		topLevelFuncs:    topLevelFuncs,
+		staticMethods:    staticMethods,
 		localNames:       map[string]bool{},
 		inAsync:          ast.HasSyntacticModifier(node, ast.ModifierFlagsAsync),
 	}
@@ -163,6 +164,11 @@ type bodyCtx struct {
 	inMethod    bool
 	thisFields  map[string]bool
 	thisMethods map[string]bool
+	// staticMethods is a className→methodName registry of accepted static
+	// methods across already-processed classes in this Pick pass. Lets
+	// `Util.double(x)` resolve to a known function symbol — the emitter
+	// renders these as package-level `func ClassName_MethodName(...)`.
+	staticMethods map[string]map[string]bool
 }
 
 // checkBody walks a block/statement subtree and returns a non-nil Reason if
@@ -1095,6 +1101,9 @@ func checkBuiltinCallee(callee *ast.Node, ctx *bodyCtx) *Reason {
 	if pa.Name() == nil || pa.Name().Kind != ast.KindIdentifier {
 		return &Reason{Code: reasonDynamicCallee, Detail: "non-identifier method"}
 	}
+	if r := checkStaticMethodCall(pa, ctx); r == nil {
+		return nil
+	}
 	if r := checkMathCall(pa, ctx); r == nil {
 		return nil
 	}
@@ -1108,6 +1117,29 @@ func checkBuiltinCallee(callee *ast.Node, ctx *bodyCtx) *Reason {
 		return nil
 	}
 	return &Reason{Code: reasonBuiltinCall, Detail: "builtin call not in safelist"}
+}
+
+// checkStaticMethodCall accepts `<Class>.<method>(...)` when Class has a
+// declared, accepted static method named <method> in the current Pick
+// pass. Returns nil on accept; a Reason when the receiver isn't a known
+// class identifier or the method isn't registered.
+func checkStaticMethodCall(pa *ast.PropertyAccessExpression, ctx *bodyCtx) *Reason {
+	if ctx.staticMethods == nil {
+		return &Reason{Code: reasonDynamicCallee, Detail: "no static-method registry"}
+	}
+	if pa.Expression.Kind != ast.KindIdentifier {
+		return &Reason{Code: reasonDynamicCallee, Detail: "static-method receiver is not a class identifier"}
+	}
+	className := pa.Expression.AsIdentifier().Text
+	cls, ok := ctx.staticMethods[className]
+	if !ok {
+		return &Reason{Code: reasonDynamicCallee, Detail: "`" + className + "` is not an extracted class"}
+	}
+	method := pa.Name().AsIdentifier().Text
+	if !cls[method] {
+		return &Reason{Code: reasonDynamicCallee, Detail: "`" + className + "." + method + "` is not an extracted static method"}
+	}
+	return nil
 }
 
 // checkNamespacedConstant returns (nil, true) when recv matches namespace
