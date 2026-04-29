@@ -24,7 +24,7 @@ import (
 //   - no parameter mutation
 //   - calls only the built-in safelist (Math.*, Number.*, string/array
 //     methods, same-file extractable functions, JSFunc params at call head)
-func IsFunctionExtractable(node *ast.Node, ck *checker.Checker, topLevelFuncs map[string]struct{}, staticMethods map[string]map[string]bool, topLevelConsts map[string]struct{}) (bool, Reason) {
+func IsFunctionExtractable(node *ast.Node, ck *checker.Checker, reg *Registry) (bool, Reason) {
 	if node == nil || node.Kind != ast.KindFunctionDeclaration {
 		return false, Reason{Code: reasonUnhandledKind, Detail: "not a function declaration"}
 	}
@@ -59,9 +59,9 @@ func IsFunctionExtractable(node *ast.Node, ck *checker.Checker, topLevelFuncs ma
 		ck:               ck,
 		paramNames:       paramNames,
 		jsFuncParamNames: jsFuncParams,
-		topLevelFuncs:    topLevelFuncs,
-		topLevelConsts:   topLevelConsts,
-		staticMethods:    staticMethods,
+		topLevelFuncs:    reg.Funcs,
+		topLevelConsts:   reg.Consts,
+		staticMethods:    reg.Statics,
 		localNames:       map[string]bool{},
 		inAsync:          ast.HasSyntacticModifier(node, ast.ModifierFlagsAsync),
 	}

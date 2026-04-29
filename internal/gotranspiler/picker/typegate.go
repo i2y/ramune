@@ -311,42 +311,20 @@ func isExtractableObjectTypeWith(ck *checker.Checker, t *checker.Type, visited m
 }
 
 // isExtractableConstInit gates a top-level `const X = <init>` declaration.
-// The initializer must be either a primitive literal (string/number/bool),
-// or a primitive-typed expression the type checker classifies as one of
-// the gateable shapes. The body walker doesn't run on the initializer —
-// it's emit-once at package level — so we only need a coarse type-shape
-// check.
+// The initializer's checker-inferred type must satisfy isExtractableType,
+// which subsumes primitive literals, nullable singles (`T | null`), and
+// uniform-primitive literal unions. The body walker doesn't traverse
+// initializers (emit-once at package level), so a type-shape check on
+// the inferred type is enough.
 func isExtractableConstInit(ck *checker.Checker, init *ast.Node) *Reason {
 	if init == nil {
 		return &Reason{Code: reasonMissingBody, Detail: "const without initializer"}
 	}
-	// Cheap structural fast paths: primitive literals always gate.
-	switch init.Kind {
-	case ast.KindStringLiteral,
-		ast.KindNumericLiteral,
-		ast.KindNoSubstitutionTemplateLiteral,
-		ast.KindTrueKeyword,
-		ast.KindFalseKeyword,
-		ast.KindNullKeyword,
-		ast.KindUndefinedKeyword:
-		return nil
-	}
-	// Anything else: defer to the type checker. If the inferred type is
-	// primitive (or void), the emit path treats it as a Go-side constant.
-	// Non-primitive initializers (object literals, function calls, array
-	// literals) reject — we'd need to either evaluate them at compile
-	// time or thread runtime state, both out of scope for v1.
 	if ck == nil {
 		return &Reason{Code: reasonAnyType, Detail: "no checker"}
 	}
 	t := ck.GetTypeAtLocation(init)
-	if t == nil {
-		return &Reason{Code: reasonAnyType, Detail: "checker returned nil for const init"}
-	}
-	if !isPrimitiveOrVoid(t.Flags()) {
-		return &Reason{Code: reasonObjectType, Detail: "const initializer must be a primitive literal (try: hoist non-primitive setup into a function the picker can extract)"}
-	}
-	return nil
+	return isExtractableType(ck, t)
 }
 
 // arrayElementType returns T when t is `Array<T>` / `ReadonlyArray<T>` /

@@ -66,10 +66,14 @@ type tuiManager struct {
 type tuiSSHServer struct {
 	srv  *ssh.Server
 	done *JSFunc
-	stop chan struct{}
 }
 
 type tuiDoneEvent struct {
+	// done is the JS callback to resolve. sess may be nil for events
+	// that don't belong to a per-connection session (e.g. SSH server
+	// shutdown) — only when sess is set do we mark it exited and
+	// remove it from the manager's session map.
+	done       *JSFunc
 	sess       *tuiSession
 	err        string
 	finalState string
@@ -86,16 +90,19 @@ func (m *tuiManager) ProcessEvents(r *Runtime) {
 		if ev.err != "" {
 			errArg = ev.err
 		}
-		_, _ = ev.sess.done.Call(errArg, ev.finalState, ev.captured)
-		// Mark exited only after the Promise resolves. HasActive must
-		// stay true until the JS-side .then has been queued, otherwise
-		// the event loop bails before the user's continuation runs.
-		ev.sess.mu.Lock()
-		ev.sess.exited = true
-		ev.sess.mu.Unlock()
-		m.mu.Lock()
-		delete(m.sessions, ev.sess.id)
-		m.mu.Unlock()
+		_, _ = ev.done.Call(errArg, ev.finalState, ev.captured)
+		// Mark the session exited only after the Promise resolves so
+		// HasActive stays true until the JS-side .then has been
+		// queued — otherwise the event loop bails before the user's
+		// continuation runs. Server-only events have sess == nil.
+		if ev.sess != nil {
+			ev.sess.mu.Lock()
+			ev.sess.exited = true
+			ev.sess.mu.Unlock()
+			m.mu.Lock()
+			delete(m.sessions, ev.sess.id)
+			m.mu.Unlock()
+		}
 	}
 }
 
@@ -188,7 +195,7 @@ func goTUIServeSSH(rt *Runtime, mgr *tuiManager) func([]any) (any, error) {
 		if err != nil {
 			return nil, fmt.Errorf("tui.serveSSH: %w", err)
 		}
-		ent := &tuiSSHServer{srv: srv, done: doneFn, stop: make(chan struct{})}
+		ent := &tuiSSHServer{srv: srv, done: doneFn}
 		mgr.mu.Lock()
 		mgr.servers[id] = ent
 		mgr.mu.Unlock()
@@ -202,7 +209,7 @@ func goTUIServeSSH(rt *Runtime, mgr *tuiManager) func([]any) (any, error) {
 				errStr = err.Error()
 			}
 			mgr.pending = append(mgr.pending, tuiDoneEvent{
-				sess: &tuiSession{done: doneFn},
+				done: doneFn,
 				err:  errStr,
 			})
 			mgr.mu.Unlock()
@@ -564,6 +571,15 @@ func (r *Runtime) installTUI() error {
 	// returning strings; intrinsic strings ('box','text','stack','spacer')
 	// also resolve to the matching builtin so users can stay HTML-shaped
 	// if they prefer.
+	// styleRest is the shared "render content, splice in remaining
+	// props as Lipgloss style options" helper. Every component below
+	// uses it to forward border / padding / fg / bg / etc. to the
+	// outer Lipgloss wrapper while excluding its own consumed props.
+	function styleRest(content, props, excludeKeys) {
+		var rest = Object.assign({}, props);
+		for (var i = 0; i < excludeKeys.length; i++) delete rest[excludeKeys[i]];
+		return globalThis.Ramune.tui.style(content, rest);
+	}
 	function flattenChildren(children) {
 		var out = [];
 		for (var i = 0; i < children.length; i++) {
@@ -620,11 +636,7 @@ func (r *Runtime) installTUI() error {
 			theme: props.theme,
 			width: props.width,
 		});
-		var outerProps = Object.assign({}, props);
-		delete outerProps.content;
-		delete outerProps.theme;
-		delete outerProps.width;
-		return globalThis.Ramune.tui.style(rendered, outerProps);
+		return styleRest(rendered, props, ['content', 'theme', 'width']);
 	};
 
 	// Spinner frame sets cribbed from Charm's bubbles/spinner. Index by
@@ -674,14 +686,8 @@ func (r *Runtime) installTUI() error {
 		if (start > 0) rows.unshift(globalThis.Ramune.tui.style('  …', { fg: '242' }));
 		if (end < items.length) rows.push(globalThis.Ramune.tui.style('  …', { fg: '242' }));
 		var inner = rows.join('\n');
-		var outerProps = Object.assign({}, props);
 		// Don't double-apply selected/renderItem props on the outer box.
-		delete outerProps.items;
-		delete outerProps.selected;
-		delete outerProps.renderItem;
-		delete outerProps.maxRows;
-		delete outerProps.selectedStyle;
-		return globalThis.Ramune.tui.style(inner, outerProps);
+		return styleRest(inner, props, ['items', 'selected', 'renderItem', 'maxRows', 'selectedStyle']);
 	};
 
 	// Input: stateless render of a value + caret, with optional
@@ -710,12 +716,7 @@ func (r *Runtime) installTUI() error {
 		} else {
 			rendered = value;
 		}
-		var outerProps = Object.assign({}, props);
-		delete outerProps.value;
-		delete outerProps.placeholder;
-		delete outerProps.focused;
-		delete outerProps.cursor;
-		return globalThis.Ramune.tui.style(rendered, outerProps);
+		return styleRest(rendered, props, ['value', 'placeholder', 'focused', 'cursor']);
 	};
 
 	// Progress: bar with optional percent label. value is 0..1.
@@ -743,16 +744,10 @@ func (r *Runtime) installTUI() error {
 		if (props.emptyStyle) emptyStr = globalThis.Ramune.tui.style(emptyStr, props.emptyStyle);
 		var labelStr = label;
 		if (showPercent && props.labelStyle) labelStr = globalThis.Ramune.tui.style(label, props.labelStyle);
-		var outerProps = Object.assign({}, props);
-		delete outerProps.value;
-		delete outerProps.width;
-		delete outerProps.showPercent;
-		delete outerProps.fillChar;
-		delete outerProps.emptyChar;
-		delete outerProps.fillStyle;
-		delete outerProps.emptyStyle;
-		delete outerProps.labelStyle;
-		return globalThis.Ramune.tui.style(fillStr + emptyStr + labelStr, outerProps);
+		return styleRest(fillStr + emptyStr + labelStr, props, [
+			'value', 'width', 'showPercent', 'fillChar', 'emptyChar',
+			'fillStyle', 'emptyStyle', 'labelStyle',
+		]);
 	};
 
 	// Viewport: clip + soft-scroll a long string. Splits on \n,
@@ -783,13 +778,9 @@ func (r *Runtime) installTUI() error {
 			slice[slice.length - 1] =
 				slice[slice.length - 1].replace(/\s+$/, '') + ' ' + globalThis.Ramune.tui.style(hint, { fg: '242' });
 		}
-		var outerProps = Object.assign({}, props);
-		delete outerProps.content;
-		delete outerProps.offset;
-		delete outerProps.height;
-		delete outerProps.width;
-		delete outerProps.scrollHint;
-		return globalThis.Ramune.tui.style(slice.join('\n'), outerProps);
+		return styleRest(slice.join('\n'), props, [
+			'content', 'offset', 'height', 'width', 'scrollHint',
+		]);
 	};
 
 	// Tabs: horizontal label strip with the selected entry highlighted.
@@ -805,13 +796,9 @@ func (r *Runtime) installTUI() error {
 		var rendered = labels.map(function(label, i) {
 			return globalThis.Ramune.tui.style(String(label), i === sel ? activeStyle : tabStyle);
 		}).join(sep);
-		var outerProps = Object.assign({}, props);
-		delete outerProps.labels;
-		delete outerProps.selected;
-		delete outerProps.separator;
-		delete outerProps.tabStyle;
-		delete outerProps.activeStyle;
-		return globalThis.Ramune.tui.style(rendered, outerProps);
+		return styleRest(rendered, props, [
+			'labels', 'selected', 'separator', 'tabStyle', 'activeStyle',
+		]);
 	};
 
 	// Help: keymap renderer mirroring bubbles/help. Two modes — short
@@ -842,13 +829,9 @@ func (r *Runtime) installTUI() error {
 					globalThis.Ramune.tui.style(String(k.desc || ''), descStyle);
 			}).join(sep);
 		}
-		var outerProps = Object.assign({}, props);
-		delete outerProps.keys;
-		delete outerProps.mode;
-		delete outerProps.keyStyle;
-		delete outerProps.descStyle;
-		delete outerProps.sepStyle;
-		return globalThis.Ramune.tui.style(rendered, outerProps);
+		return styleRest(rendered, props, [
+			'keys', 'mode', 'keyStyle', 'descStyle', 'sepStyle',
+		]);
 	};
 
 	// Textarea: multi-line stateless input. value is the full string
@@ -905,13 +888,9 @@ func (r *Runtime) installTUI() error {
 					after;
 			}
 		}
-		var outerProps = Object.assign({}, props);
-		delete outerProps.value;
-		delete outerProps.cursor;
-		delete outerProps.focused;
-		delete outerProps.rows;
-		delete outerProps.cols;
-		return globalThis.Ramune.tui.style(visibleLines.join('\n'), outerProps);
+		return styleRest(visibleLines.join('\n'), props, [
+			'value', 'cursor', 'focused', 'rows', 'cols',
+		]);
 	};
 	globalThis.Ramune.tui.textarea = {
 		init: function(value) {
@@ -1041,10 +1020,7 @@ func (r *Runtime) installTUI() error {
 		var ms = +props.elapsedMs || 0;
 		var fmt = props.format || 'mm:ss.SS';
 		var rendered = formatDuration(ms, fmt);
-		var outerProps = Object.assign({}, props);
-		delete outerProps.elapsedMs;
-		delete outerProps.format;
-		return globalThis.Ramune.tui.style(rendered, outerProps);
+		return styleRest(rendered, props, ['elapsedMs', 'format']);
 	};
 
 	globalThis.Ramune.tui.Timer = function(props) {
@@ -1058,12 +1034,9 @@ func (r *Runtime) installTUI() error {
 		if (props.warningAt != null && ms <= +props.warningAt) {
 			style = Object.assign({}, props, props.warningStyle || { fg: '9', bold: true });
 		}
-		var outerProps = Object.assign({}, style);
-		delete outerProps.remainingMs;
-		delete outerProps.format;
-		delete outerProps.warningAt;
-		delete outerProps.warningStyle;
-		return globalThis.Ramune.tui.style(rendered, outerProps);
+		return styleRest(rendered, style, [
+			'remainingMs', 'format', 'warningAt', 'warningStyle',
+		]);
 	};
 
 	// Stopwatch reducer: counts up. Wall-clock based so missed ticks
@@ -1154,13 +1127,9 @@ func (r *Runtime) installTUI() error {
 		} else {
 			rendered = (page + 1) + ' / ' + total;
 		}
-		var outerProps = Object.assign({}, props);
-		delete outerProps.page;
-		delete outerProps.totalPages;
-		delete outerProps.type;
-		delete outerProps.activeDot;
-		delete outerProps.inactiveDot;
-		return globalThis.Ramune.tui.style(rendered, outerProps);
+		return styleRest(rendered, props, [
+			'page', 'totalPages', 'type', 'activeDot', 'inactiveDot',
+		]);
 	};
 	globalThis.Ramune.tui.paginator = {
 		init: function(perPage, totalItems) {
@@ -1243,17 +1212,10 @@ func (r *Runtime) installTUI() error {
 		var crumb = props.cwd
 			? globalThis.Ramune.tui.style(props.cwd, props.cwdStyle || { fg: '12', bold: true }) + '\n'
 			: '';
-		var outerProps = Object.assign({}, props);
-		delete outerProps.entries;
-		delete outerProps.selected;
-		delete outerProps.showHidden;
-		delete outerProps.maxRows;
-		delete outerProps.cwd;
-		delete outerProps.cwdStyle;
-		delete outerProps.dirIcon;
-		delete outerProps.fileIcon;
-		delete outerProps.selectedStyle;
-		return globalThis.Ramune.tui.style(crumb + rows.join('\n'), outerProps);
+		return styleRest(crumb + rows.join('\n'), props, [
+			'entries', 'selected', 'showHidden', 'maxRows',
+			'cwd', 'cwdStyle', 'dirIcon', 'fileIcon', 'selectedStyle',
+		]);
 	};
 	// Reducer + fs helpers. Synchronous reads are fine for picker
 	// startup and cd — the listings are typically small. For huge
@@ -1389,18 +1351,10 @@ func (r *Runtime) installTUI() error {
 		// inherit the selection background.
 		if (start > 0) lines.splice(2, 0, globalThis.Ramune.tui.style('  ↑ ' + start + ' more', { fg: '242' }));
 		if (end < rows.length) lines.push(globalThis.Ramune.tui.style('  ↓ ' + (rows.length - end) + ' more', { fg: '242' }));
-		var outerProps = Object.assign({}, props);
-		delete outerProps.columns;
-		delete outerProps.rows;
-		delete outerProps.selected;
-		delete outerProps.maxRows;
-		delete outerProps.sortColumn;
-		delete outerProps.sortDir;
-		delete outerProps.headerStyle;
-		delete outerProps.rowStyle;
-		delete outerProps.selectedStyle;
-		delete outerProps.cellSep;
-		return globalThis.Ramune.tui.style(lines.join('\n'), outerProps);
+		return styleRest(lines.join('\n'), props, [
+			'columns', 'rows', 'selected', 'maxRows', 'sortColumn',
+			'sortDir', 'headerStyle', 'rowStyle', 'selectedStyle', 'cellSep',
+		]);
 	};
 
 	// Form: huh-style multi-field composer. Field types accepted today:
@@ -1503,11 +1457,10 @@ func (r *Runtime) installTUI() error {
 				}
 			}
 			if (f.type === 'confirm') {
-				if (key === 'left' || key === 'right' || key === 'h' || key === 'l' || key === ' ' || key === 'tab') {
-					if (key !== 'tab') {
-						fields[idx] = Object.assign({}, f, { value: !f.value });
-						return Object.assign({}, state, { fields: fields });
-					}
+				// 'tab' falls through to the form-wide nav block below.
+				if (key === 'left' || key === 'right' || key === 'h' || key === 'l' || key === ' ') {
+					fields[idx] = Object.assign({}, f, { value: !f.value });
+					return Object.assign({}, state, { fields: fields });
 				}
 				if (key === 'y') { fields[idx] = Object.assign({}, f, { value: true }); return Object.assign({}, state, { fields: fields }); }
 				if (key === 'n') { fields[idx] = Object.assign({}, f, { value: false }); return Object.assign({}, state, { fields: fields }); }
@@ -1535,7 +1488,7 @@ func (r *Runtime) installTUI() error {
 				return Object.assign({}, state, {
 					errors: errors,
 					submitted: clean,
-					focused: clean ? idx : Object.keys(errors).length > 0 ? fields.findIndex(function(ff) { return errors[ff.name]; }) : idx,
+					focused: clean ? idx : fields.findIndex(function(ff) { return errors[ff.name]; }),
 				});
 			}
 			return null;
@@ -1622,9 +1575,7 @@ func (r *Runtime) installTUI() error {
 		if (state.submitted) {
 			lines.push(globalThis.Ramune.tui.style('✓ submitted', { bold: true, fg: '10' }));
 		}
-		var outerProps = Object.assign({}, props);
-		delete outerProps.state;
-		return globalThis.Ramune.tui.style(lines.join('\n'), outerProps);
+		return styleRest(lines.join('\n'), props, ['state']);
 	};
 
 	// keymap(bindings, opts?) bundles a set of bindings with help labels.
@@ -1857,7 +1808,7 @@ func goTUIStart(rt *Runtime, mgr *tuiManager) func([]any) (any, error) {
 			if sess.outBuf != nil {
 				captured = sess.outBuf.String()
 			}
-			ev := tuiDoneEvent{sess: sess, finalState: final, captured: captured}
+			ev := tuiDoneEvent{done: sess.done, sess: sess, finalState: final, captured: captured}
 			if runErr != nil {
 				ev.err = runErr.Error()
 			}

@@ -65,6 +65,19 @@ type Result struct {
 	Candidates []Candidate
 }
 
+// Registry bundles the symbol tables threaded through every body
+// walker: same-file functions, cross-file static methods, top-level
+// consts. Pick / IsFunctionExtractable / IsClassExtractable all take
+// one of these instead of three separate map args, so adding new
+// symbol kinds (type aliases, enums) doesn't change every signature.
+// Maps inside are mutated by the picker as it accepts candidates;
+// callers can construct one ahead of time to thread across files.
+type Registry struct {
+	Funcs   map[string]struct{}
+	Statics map[string]map[string]bool
+	Consts  map[string]struct{}
+}
+
 // Options holds tuning knobs for Pick.
 type Options struct {
 	// TopLevelFuncs, if non-nil, is used instead of scanning sf for peer
@@ -97,10 +110,10 @@ func Pick(sf *ast.SourceFile, ck *checker.Checker, opts Options) Result {
 		return r
 	}
 
-	topLevelFuncs := opts.TopLevelFuncs
-	if topLevelFuncs == nil {
+	reg := &Registry{Funcs: opts.TopLevelFuncs, Statics: opts.StaticMethods, Consts: opts.TopLevelConsts}
+	if reg.Funcs == nil {
 		// Pre-collect peer names so IsFunctionExtractable can resolve forward calls.
-		topLevelFuncs = map[string]struct{}{}
+		reg.Funcs = map[string]struct{}{}
 		for _, stmt := range sf.Statements.Nodes {
 			if stmt.Kind != ast.KindFunctionDeclaration {
 				continue
@@ -109,16 +122,11 @@ func Pick(sf *ast.SourceFile, ck *checker.Checker, opts Options) Result {
 			if fd == nil || fd.Name() == nil {
 				continue
 			}
-			topLevelFuncs[fd.Name().AsIdentifier().Text] = struct{}{}
+			reg.Funcs[fd.Name().AsIdentifier().Text] = struct{}{}
 		}
 	}
-
-	// Cross-class registry. Each accepted class writes its accepted static
-	// method names back here; later bodies (functions or other classes
-	// processed after) can call `<Class>.<method>(...)`.
-	staticMethods := opts.StaticMethods
-	if staticMethods == nil {
-		staticMethods = map[string]map[string]bool{}
+	if reg.Statics == nil {
+		reg.Statics = map[string]map[string]bool{}
 	}
 	// Pre-pass: structurally enumerate top-level classes and stamp their
 	// static method names into the registry before any body walker runs.
@@ -128,22 +136,16 @@ func Pick(sf *ast.SourceFile, ck *checker.Checker, opts Options) Result {
 	// AST-only — no checker calls, no body walks — so the cost is
 	// proportional to the top-level declaration count, well under the
 	// main validation pass it precedes.
-	PreCollectStaticMethods(sf, staticMethods)
+	PreCollectStaticMethods(sf, reg.Statics)
 
 	// Top-level `const` declarations whose initializer is an extractable
 	// expression are emitted as Go-side `const` (or `var` when the
 	// initializer needs runtime evaluation). Body walkers accept refs to
 	// these so views can hoist style constants (ANSI escape strings,
 	// theme tokens) without paying a per-frame JSC dispatch.
-	topLevelConsts := opts.TopLevelConsts
-	if topLevelConsts == nil {
-		topLevelConsts = map[string]struct{}{}
+	if reg.Consts == nil {
+		reg.Consts = map[string]struct{}{}
 	}
-	type acceptedConst struct {
-		stmt *ast.Node
-		name string
-	}
-	var accepted []acceptedConst
 	for _, stmt := range sf.Statements.Nodes {
 		if stmt.Kind != ast.KindVariableStatement {
 			continue
@@ -188,18 +190,14 @@ func Pick(sf *ast.SourceFile, ck *checker.Checker, opts Options) Result {
 			continue
 		}
 		for _, n := range names {
-			topLevelConsts[n] = struct{}{}
+			reg.Consts[n] = struct{}{}
 		}
-		accepted = append(accepted, acceptedConst{stmt: stmt, name: names[0]})
-	}
-
-	// Emit accepted const candidates first so the source-order-preserved
-	// extracted-nodes list places them ahead of any function that
-	// references them.
-	for _, c := range accepted {
+		// Emit the const candidate up front so the source-order-preserved
+		// extracted-nodes list places it ahead of any function that
+		// references it.
 		r.Candidates = append(r.Candidates, Candidate{
-			Node:      c.stmt,
-			Name:      c.name,
+			Node:      stmt,
+			Name:      names[0],
 			Kind:      KindConst,
 			Extracted: true,
 		})
@@ -213,7 +211,7 @@ func Pick(sf *ast.SourceFile, ck *checker.Checker, opts Options) Result {
 				continue
 			}
 			name := fd.Name().AsIdentifier().Text
-			ok, reason := IsFunctionExtractable(stmt, ck, topLevelFuncs, staticMethods, topLevelConsts)
+			ok, reason := IsFunctionExtractable(stmt, ck, reg)
 			r.Candidates = append(r.Candidates, Candidate{
 				Node:      stmt,
 				Name:      name,
@@ -226,7 +224,7 @@ func Pick(sf *ast.SourceFile, ck *checker.Checker, opts Options) Result {
 			if id == nil || id.Kind != ast.KindIdentifier {
 				continue
 			}
-			ok, reason := IsClassExtractable(stmt, ck, topLevelFuncs, staticMethods, topLevelConsts)
+			ok, reason := IsClassExtractable(stmt, ck, reg)
 			r.Candidates = append(r.Candidates, Candidate{
 				Node:      stmt,
 				Name:      id.AsIdentifier().Text,

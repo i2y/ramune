@@ -1,6 +1,7 @@
 package ramune_test
 
 import (
+	"encoding/json"
 	"strings"
 	"sync"
 	"testing"
@@ -25,28 +26,11 @@ func runTUIScript(t *testing.T, body string) []string {
 	if out == nil {
 		t.Fatalf("eval returned nil")
 	}
-	s := out.String()
-	// Manual quick parse — the runtime's ToMap path returns a JS string
-	// here, and bringing in encoding/json just for tests is overkill.
-	// Strip outer brackets and split on `","`.
-	s = strings.TrimPrefix(s, "[")
-	s = strings.TrimSuffix(s, "]")
-	if s == "" {
-		return nil
+	var frames []string
+	if err := json.Unmarshal([]byte(out.String()), &frames); err != nil {
+		t.Fatalf("decode frames: %v", err)
 	}
-	parts := strings.Split(s, "\",\"")
-	for i, p := range parts {
-		p = strings.TrimPrefix(p, `"`)
-		p = strings.TrimSuffix(p, `"`)
-		// Unescape the JSON-encoded \n / \" we'll see in the captured
-		// frames. Good-enough for the current test surface; if we
-		// grow more exotic content it's worth swapping for json.
-		p = strings.ReplaceAll(p, `\n`, "\n")
-		p = strings.ReplaceAll(p, `\"`, `"`)
-		p = strings.ReplaceAll(p, `\\`, `\`)
-		parts[i] = p
-	}
-	return parts
+	return frames
 }
 
 func TestTUI_TestHarness_Counter(t *testing.T) {
