@@ -994,12 +994,21 @@ func isTypeScript(filename string) bool {
 // emit pipeline. ModuleKindCommonJS makes tsgo produce `exports.foo = foo`
 // / `module.exports = …` directly, so no post-processing is needed.
 func transformTypeScript(filename string, code []byte) ([]byte, error) {
-	r, err := tsgotranspile.Transpile(string(code), tsgotranspile.Options{
+	opts := tsgotranspile.Options{
 		FileName:               filepath.Base(filename),
 		Target:                 tsgoTarget(),
 		Module:                 core.ModuleKindCommonJS,
 		ExperimentalDecorators: true,
-	})
+	}
+	if filepath.Ext(filename) == ".tsx" {
+		// .tsx defaults to the Ramune.tui JSX runtime so users can
+		// write Bubbletea-style views as <Box>/<Text>/<Stack> JSX
+		// without configuring tsconfig manually.
+		opts.JSX = core.JsxEmitReact
+		opts.JsxFactory = "Ramune.tui.h"
+		opts.JsxFragmentFactory = "Ramune.tui.Fragment"
+	}
+	r, err := tsgotranspile.Transpile(string(code), opts)
 	if err != nil {
 		return nil, fmt.Errorf("TypeScript %s: %w", filepath.Base(filename), err)
 	}

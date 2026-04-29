@@ -116,12 +116,22 @@ func isTypeScriptFile(name string) bool {
 }
 
 func transformTypeScriptForRun(filename string, code []byte) ([]byte, error) {
-	r, err := tsgotranspile.Transpile(string(code), tsgotranspile.Options{
+	opts := tsgotranspile.Options{
 		FileName:               filepath.Base(filename),
 		Target:                 tsgoTarget(),
 		Module:                 core.ModuleKindCommonJS,
 		ExperimentalDecorators: true,
-	})
+	}
+	if filepath.Ext(filename) == ".tsx" {
+		// .tsx defaults to the Ramune.tui JSX runtime: <Box>foo</Box>
+		// lowers to `Ramune.tui.h(Box, props, "foo")`. Users wanting a
+		// different runtime can pre-transpile or wire their own jsx
+		// factory via the `runtime` API.
+		opts.JSX = core.JsxEmitReact
+		opts.JsxFactory = "Ramune.tui.h"
+		opts.JsxFragmentFactory = "Ramune.tui.Fragment"
+	}
+	r, err := tsgotranspile.Transpile(string(code), opts)
 	if err != nil {
 		return nil, fmt.Errorf("ramune: TypeScript %s: %w", filepath.Base(filename), err)
 	}

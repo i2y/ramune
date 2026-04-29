@@ -295,6 +295,10 @@ func (r *Runtime) gojaLoop(ready chan<- error, cfg *config) {
 			ready <- fmt.Errorf("ramune: markdown: %w", err)
 			return
 		}
+		if err := r.installTUI(); err != nil {
+			ready <- fmt.Errorf("ramune: tui: %w", err)
+			return
+		}
 		if err := r.installWebView(); err != nil {
 			ready <- fmt.Errorf("ramune: webview: %w", err)
 			return

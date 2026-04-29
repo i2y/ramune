@@ -244,7 +244,18 @@ func typeCheckFiles(normalizedPaths []string, emit func(string)) {
 	fs := osvfs.FS()
 	host := compiler.NewCachedFSCompilerHost(cwd, fs, "", nil, nil)
 
-	opts := &core.CompilerOptions{NoEmit: core.TSTrue, Strict: core.TSTrue}
+	opts := &core.CompilerOptions{
+		NoEmit: core.TSTrue,
+		Strict: core.TSTrue,
+		// Match `ramune run` / `runfile.go` defaults so .tsx files
+		// don't fail with TS17004 "Cannot use JSX unless --jsx is
+		// provided". The factory dotted name is resolved by tsgo at
+		// emit time the same way TypeScript proper handles
+		// "React.createElement".
+		Jsx:                core.JsxEmitReact,
+		JsxFactory:         "Ramune.tui.h",
+		JsxFragmentFactory: "Ramune.tui.Fragment",
+	}
 	config := tsoptions.NewParsedCommandLine(opts, normalizedPaths, tspath.ComparePathsOptions{
 		UseCaseSensitiveFileNames: fs.UseCaseSensitiveFileNames(),
 		CurrentDirectory:          cwd,
