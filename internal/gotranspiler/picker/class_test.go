@@ -210,7 +210,10 @@ export class PP {
 	}
 }
 
-func TestPicker_Class_Reject_MethodWithClosureCapture(t *testing.T) {
+// Class methods can reference primitive top-level consts the same way
+// free functions do — the picker registers the const as its own
+// candidate and lets the body walker resolve the identifier.
+func TestPicker_Class_Accepts_MethodWithTopLevelConst(t *testing.T) {
 	src := `
 const BONUS = 5;
 export class R {
@@ -220,7 +223,7 @@ export class R {
 }`
 	res := pickOne(t, src)
 	c, _ := byName(res, "R")
-	if c.Extracted {
-		t.Fatalf("expected R rejected (closure capture)")
+	if !c.Extracted {
+		t.Fatalf("expected R extracted; got %+v", c.Reason)
 	}
 }

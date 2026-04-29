@@ -202,6 +202,29 @@ export function knownIds(ids: string[]): number {
 	runTinyGoAudit(t, "map_string_primitive", src)
 }
 
+// TestTinyGoAudit_TopLevelConsts covers `const X = literal` declarations
+// at module scope. Picker-accepted constants emit as Go-side `const` /
+// `var`, body refs go through the same gate as locals — used by TUI
+// view() functions that pre-define ANSI escape strings at module level.
+func TestTinyGoAudit_TopLevelConsts(t *testing.T) {
+	if _, err := exec.LookPath("tinygo"); err != nil {
+		t.Skip("tinygo not on PATH")
+	}
+	src := `
+const RED = "\x1b[31m";
+const RESET = "\x1b[0m";
+const BONUS = 5;
+const ENABLED = true;
+export function paint(label: string): string {
+  return RED + label + RESET;
+}
+export function bonusOf(x: number): number {
+  return ENABLED ? x + BONUS : x;
+}
+`
+	runTinyGoAudit(t, "top_level_consts", src)
+}
+
 // TestTinyGoAudit_ArrayReduce covers `xs.reduce(cb, seed)` where cb is a
 // *JSFunc parameter. Emit lowers to a for-range IIFE with the seed-typed
 // accumulator on the Go stack. Both the receiver and callback signatures

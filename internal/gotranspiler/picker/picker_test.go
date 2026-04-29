@@ -930,15 +930,44 @@ func TestPicker_Rejects_StringIndexing(t *testing.T) {
 	}
 }
 
-func TestPicker_Rejects_ClosureCapture(t *testing.T) {
+// Top-level `const` with a primitive initializer is an extractable
+// candidate in its own right and is reachable from extracted functions
+// without tripping the closure-capture gate. The const is emitted as a
+// Go-side var/const so the runtime cost matches a plain Go reference.
+func TestPicker_Accepts_TopLevelConstReference(t *testing.T) {
 	src := `
 const K = 10;
 export function scale(x: number): number { return x * K; }
 `
 	res := pickOne(t, src)
+	scale, _ := byName(res, "scale")
+	if !scale.Extracted {
+		t.Fatalf("expected `scale` extracted; got %+v", scale.Reason)
+	}
+	k, ok := byName(res, "K")
+	if !ok {
+		t.Fatalf("expected `K` candidate to be present; got %+v", res.Candidates)
+	}
+	if !k.Extracted {
+		t.Fatalf("expected `K` extracted; got %+v", k.Reason)
+	}
+	if k.Kind.String() != "const" {
+		t.Fatalf("expected K's kind to be const, got %s", k.Kind)
+	}
+}
+
+// Non-primitive top-level const initializers (object literals, fetched
+// values, etc.) still fail the gate, and any function referencing them
+// keeps reporting closure-capture so the user gets a clear pointer.
+func TestPicker_Rejects_ClosureCaptureOfNonExtractableConst(t *testing.T) {
+	src := `
+const cfg = { factor: 10 };
+export function scale(x: number): number { return x * cfg.factor; }
+`
+	res := pickOne(t, src)
 	c, _ := byName(res, "scale")
 	if c.Extracted {
-		t.Fatalf("expected rejection for closure capture")
+		t.Fatalf("expected rejection for closure capture of object const")
 	}
 	if c.Reason.Code != "closure-capture" {
 		t.Fatalf("expected closure-capture, got %q", c.Reason.Code)

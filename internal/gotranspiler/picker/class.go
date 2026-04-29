@@ -31,7 +31,7 @@ import (
 // accepted static method names back keyed under the class's identifier
 // so other extracted functions' bodies can validate `Class.method(...)`
 // calls. nil disables the cross-reference channel.
-func IsClassExtractable(node *ast.Node, ck *checker.Checker, topLevelFuncs map[string]struct{}, staticMethods map[string]map[string]bool) (bool, Reason) {
+func IsClassExtractable(node *ast.Node, ck *checker.Checker, topLevelFuncs map[string]struct{}, staticMethods map[string]map[string]bool, topLevelConsts map[string]struct{}) (bool, Reason) {
 	if node == nil || node.Kind != ast.KindClassDeclaration {
 		return false, Reason{Code: reasonUnhandledKind, Detail: "not a class declaration"}
 	}
@@ -165,19 +165,19 @@ func IsClassExtractable(node *ast.Node, ck *checker.Checker, topLevelFuncs map[s
 	// Uses a scoped bodyCtx so expression RHS is validated with the same
 	// allowlist as function bodies.
 	if constructor != nil {
-		if r := checkConstructor(constructor, ck, topLevelFuncs, thisFields, thisMethods); r != nil {
+		if r := checkConstructor(constructor, ck, topLevelFuncs, thisFields, thisMethods, topLevelConsts); r != nil {
 			return false, *r
 		}
 	}
 
 	// Method check: signature + body.
 	for _, m := range methods {
-		if r := checkClassMethod(m, ck, topLevelFuncs, thisFields, thisMethods, staticMethods, false); r != nil {
+		if r := checkClassMethod(m, ck, topLevelFuncs, thisFields, thisMethods, staticMethods, topLevelConsts, false); r != nil {
 			return false, *r
 		}
 	}
 	for _, m := range statics {
-		if r := checkClassMethod(m, ck, topLevelFuncs, thisFields, thisMethods, staticMethods, true); r != nil {
+		if r := checkClassMethod(m, ck, topLevelFuncs, thisFields, thisMethods, staticMethods, topLevelConsts, true); r != nil {
 			return false, *r
 		}
 	}
@@ -202,7 +202,7 @@ func IsClassExtractable(node *ast.Node, ck *checker.Checker, topLevelFuncs map[s
 // checkConstructor validates a constructor's parameters and body. The body is
 // restricted to `this.<field> = <expr>` statements — all field initialisation
 // happens here (field initializers are rejected up in the field loop).
-func checkConstructor(ctor *ast.Node, ck *checker.Checker, topLevelFuncs map[string]struct{}, thisFields, thisMethods map[string]bool) *Reason {
+func checkConstructor(ctor *ast.Node, ck *checker.Checker, topLevelFuncs map[string]struct{}, thisFields, thisMethods map[string]bool, topLevelConsts map[string]struct{}) *Reason {
 	cd := ctor.AsConstructorDeclaration()
 	if cd == nil {
 		return &Reason{Code: reasonUnhandledKind, Detail: "nil constructor"}
@@ -247,13 +247,14 @@ func checkConstructor(ctor *ast.Node, ck *checker.Checker, topLevelFuncs map[str
 	}
 
 	ctx := &bodyCtx{
-		ck:            ck,
-		paramNames:    paramNames,
-		topLevelFuncs: topLevelFuncs,
-		localNames:    map[string]bool{},
-		inMethod:      true,
-		thisFields:    thisFields,
-		thisMethods:   thisMethods,
+		ck:             ck,
+		paramNames:     paramNames,
+		topLevelFuncs:  topLevelFuncs,
+		topLevelConsts: topLevelConsts,
+		localNames:     map[string]bool{},
+		inMethod:       true,
+		thisFields:     thisFields,
+		thisMethods:    thisMethods,
 	}
 
 	body := cd.Body
@@ -313,7 +314,7 @@ func checkConstructorStatement(stmt *ast.Node, ctx *bodyCtx) *Reason {
 // Same rules as a free function, plus `this` / `this.<field>` / `this.<method>`
 // for instance methods. isStatic switches off the `this`-related allowances
 // (static method bodies must not reference `this` or instance members).
-func checkClassMethod(m *ast.Node, ck *checker.Checker, topLevelFuncs map[string]struct{}, thisFields, thisMethods map[string]bool, staticMethods map[string]map[string]bool, isStatic bool) *Reason {
+func checkClassMethod(m *ast.Node, ck *checker.Checker, topLevelFuncs map[string]struct{}, thisFields, thisMethods map[string]bool, staticMethods map[string]map[string]bool, topLevelConsts map[string]struct{}, isStatic bool) *Reason {
 	md := m.AsMethodDeclaration()
 	if md == nil {
 		return &Reason{Code: reasonUnhandledKind, Detail: "nil method"}
@@ -346,6 +347,7 @@ func checkClassMethod(m *ast.Node, ck *checker.Checker, topLevelFuncs map[string
 		paramNames:       paramNames,
 		jsFuncParamNames: jsFuncParams,
 		topLevelFuncs:    topLevelFuncs,
+		topLevelConsts:   topLevelConsts,
 		staticMethods:    staticMethods,
 		localNames:       map[string]bool{},
 		inAsync:          ast.HasSyntacticModifier(m, ast.ModifierFlagsAsync),

@@ -25,6 +25,7 @@ const (
 	KindFunction Kind = iota
 	KindClass
 	KindInterface
+	KindConst
 )
 
 func (k Kind) String() string {
@@ -35,6 +36,8 @@ func (k Kind) String() string {
 		return "class"
 	case KindInterface:
 		return "interface"
+	case KindConst:
+		return "const"
 	default:
 		return "?"
 	}
@@ -75,6 +78,12 @@ type Options struct {
 	// Multi-file callers can share one map across Pick calls so a static
 	// method declared in one file is callable from another.
 	StaticMethods map[string]map[string]bool
+	// TopLevelConsts, if non-nil, is the set of top-level `const` names
+	// that have been validated as extractable. Body walkers accept refs
+	// to these. Multi-file callers thread the union across files so
+	// view() in app.ts can reference a constant declared in palette.ts.
+	// When nil (single-file default), Pick collects from sf.
+	TopLevelConsts map[string]struct{}
 }
 
 // Pick walks the top-level statements of sf and classifies each
@@ -121,6 +130,81 @@ func Pick(sf *ast.SourceFile, ck *checker.Checker, opts Options) Result {
 	// main validation pass it precedes.
 	PreCollectStaticMethods(sf, staticMethods)
 
+	// Top-level `const` declarations whose initializer is an extractable
+	// expression are emitted as Go-side `const` (or `var` when the
+	// initializer needs runtime evaluation). Body walkers accept refs to
+	// these so views can hoist style constants (ANSI escape strings,
+	// theme tokens) without paying a per-frame JSC dispatch.
+	topLevelConsts := opts.TopLevelConsts
+	if topLevelConsts == nil {
+		topLevelConsts = map[string]struct{}{}
+	}
+	type acceptedConst struct {
+		stmt *ast.Node
+		name string
+	}
+	var accepted []acceptedConst
+	for _, stmt := range sf.Statements.Nodes {
+		if stmt.Kind != ast.KindVariableStatement {
+			continue
+		}
+		vs := stmt.AsVariableStatement()
+		if vs == nil || vs.DeclarationList == nil {
+			continue
+		}
+		decls := vs.DeclarationList.AsVariableDeclarationList()
+		// Reject `let` / `var` — re-assignment would diverge between
+		// the JS and Go sides without a sync mechanism. Only `const`
+		// (NodeFlagsConst on the declaration list) is sound.
+		if decls == nil || decls.Flags&ast.NodeFlagsConst == 0 {
+			continue
+		}
+		// Each VariableStatement may declare multiple names. The
+		// emit path goes through the whole statement, so all of them
+		// must be acceptable, otherwise the whole declaration is
+		// dropped (and bodies that reference any of the names will
+		// reject loudly).
+		ok := true
+		var names []string
+		if decls.Declarations != nil {
+			for _, decl := range decls.Declarations.Nodes {
+				vd := decl.AsVariableDeclaration()
+				if vd == nil || vd.Name() == nil || vd.Name().Kind != ast.KindIdentifier {
+					ok = false
+					break
+				}
+				if vd.Initializer == nil {
+					ok = false
+					break
+				}
+				if r := isExtractableConstInit(ck, vd.Initializer); r != nil {
+					ok = false
+					break
+				}
+				names = append(names, vd.Name().AsIdentifier().Text)
+			}
+		}
+		if !ok || len(names) == 0 {
+			continue
+		}
+		for _, n := range names {
+			topLevelConsts[n] = struct{}{}
+		}
+		accepted = append(accepted, acceptedConst{stmt: stmt, name: names[0]})
+	}
+
+	// Emit accepted const candidates first so the source-order-preserved
+	// extracted-nodes list places them ahead of any function that
+	// references them.
+	for _, c := range accepted {
+		r.Candidates = append(r.Candidates, Candidate{
+			Node:      c.stmt,
+			Name:      c.name,
+			Kind:      KindConst,
+			Extracted: true,
+		})
+	}
+
 	for _, stmt := range sf.Statements.Nodes {
 		switch stmt.Kind {
 		case ast.KindFunctionDeclaration:
@@ -129,7 +213,7 @@ func Pick(sf *ast.SourceFile, ck *checker.Checker, opts Options) Result {
 				continue
 			}
 			name := fd.Name().AsIdentifier().Text
-			ok, reason := IsFunctionExtractable(stmt, ck, topLevelFuncs, staticMethods)
+			ok, reason := IsFunctionExtractable(stmt, ck, topLevelFuncs, staticMethods, topLevelConsts)
 			r.Candidates = append(r.Candidates, Candidate{
 				Node:      stmt,
 				Name:      name,
@@ -142,7 +226,7 @@ func Pick(sf *ast.SourceFile, ck *checker.Checker, opts Options) Result {
 			if id == nil || id.Kind != ast.KindIdentifier {
 				continue
 			}
-			ok, reason := IsClassExtractable(stmt, ck, topLevelFuncs, staticMethods)
+			ok, reason := IsClassExtractable(stmt, ck, topLevelFuncs, staticMethods, topLevelConsts)
 			r.Candidates = append(r.Candidates, Candidate{
 				Node:      stmt,
 				Name:      id.AsIdentifier().Text,

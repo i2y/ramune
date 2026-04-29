@@ -138,7 +138,16 @@ func composeAll(files []*ast.SourceFile, ck *checker.Checker, opts Options) (*Re
 	for _, sf := range files {
 		picker.PreCollectStaticMethods(sf, globalStaticMethods)
 	}
-	pickerOpts := picker.Options{TopLevelFuncs: globalFuncs, StaticMethods: globalStaticMethods}
+	// Cross-file const registry — populated across Pick calls below
+	// (each Pick mutates this map in place when its TopLevelConsts opt
+	// is non-nil), so a view() in app.ts can reference an ANSI constant
+	// declared in palette.ts regardless of file order.
+	globalConsts := map[string]struct{}{}
+	pickerOpts := picker.Options{
+		TopLevelFuncs:  globalFuncs,
+		StaticMethods:  globalStaticMethods,
+		TopLevelConsts: globalConsts,
+	}
 	merged := &picker.Result{File: files[0].FileName()}
 	var allNodes []*ast.Node
 	var allFuncNames []string

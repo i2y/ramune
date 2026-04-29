@@ -507,7 +507,22 @@ func (t *Transpiler) emitPackageLevelVarStatement(node *ast.Node) {
 			} else if t.emitFuncAliasWrapper(varDecl, varName, node) {
 				// Emitted a wrapper function for type-narrowed function alias
 			} else {
-				t.w.writef("var %s = ", varName)
+				// Pin the Go type from the checker. Without this, an
+				// untyped numeric literal infers Go's int (TS number
+				// always lowers to float64) and downstream arithmetic
+				// against function locals fails to compile.
+				goType := ""
+				if t.ck != nil {
+					typ := t.ck.GetTypeAtLocation(decl)
+					if typ != nil {
+						goType = t.tm.goType(typ)
+					}
+				}
+				if goType != "" && goType != "any" {
+					t.w.writef("var %s %s = ", varName, goType)
+				} else {
+					t.w.writef("var %s = ", varName)
+				}
 				t.emitExpr(varDecl.Initializer)
 				t.w.newline()
 			}

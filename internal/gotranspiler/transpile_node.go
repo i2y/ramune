@@ -85,6 +85,13 @@ func TranspileNodes(ck *checker.Checker, nodes []*ast.Node, pkgName string, back
 			t.emitInterfaceDeclaration(n)
 		case ast.KindClassDeclaration:
 			t.emitClassDeclaration(n)
+		case ast.KindVariableStatement:
+			// Picker-accepted top-level `const` blocks. Reuses the
+			// existing package-level emitter so the const reaches Go
+			// as a `var` (we lower TS const to Go var because some
+			// initializers — string concat at runtime — aren't Go
+			// const-eligible).
+			t.emitPackageLevelVarStatement(n)
 		default:
 			return "", fmt.Errorf("unsupported node kind for TranspileNodes: %v", n.Kind)
 		}

@@ -24,7 +24,7 @@ import (
 //   - no parameter mutation
 //   - calls only the built-in safelist (Math.*, Number.*, string/array
 //     methods, same-file extractable functions, JSFunc params at call head)
-func IsFunctionExtractable(node *ast.Node, ck *checker.Checker, topLevelFuncs map[string]struct{}, staticMethods map[string]map[string]bool) (bool, Reason) {
+func IsFunctionExtractable(node *ast.Node, ck *checker.Checker, topLevelFuncs map[string]struct{}, staticMethods map[string]map[string]bool, topLevelConsts map[string]struct{}) (bool, Reason) {
 	if node == nil || node.Kind != ast.KindFunctionDeclaration {
 		return false, Reason{Code: reasonUnhandledKind, Detail: "not a function declaration"}
 	}
@@ -60,6 +60,7 @@ func IsFunctionExtractable(node *ast.Node, ck *checker.Checker, topLevelFuncs ma
 		paramNames:       paramNames,
 		jsFuncParamNames: jsFuncParams,
 		topLevelFuncs:    topLevelFuncs,
+		topLevelConsts:   topLevelConsts,
 		staticMethods:    staticMethods,
 		localNames:       map[string]bool{},
 		inAsync:          ast.HasSyntacticModifier(node, ast.ModifierFlagsAsync),
@@ -145,11 +146,12 @@ func checkCallableSignature(ck *checker.Checker, node *ast.Node, params *ast.Par
 
 // bodyCtx carries state threaded through the body walker.
 type bodyCtx struct {
-	ck            *checker.Checker
-	paramNames    map[string]bool     // function parameters - readable, not writable
-	topLevelFuncs map[string]struct{} // same-file top-level functions - callable
-	localNames    map[string]bool     // locals declared in this body (let/const/var) - readable AND writable
-	inAsync       bool                // function is `async` - permits `await` on Promise<T>
+	ck             *checker.Checker
+	paramNames     map[string]bool     // function parameters - readable, not writable
+	topLevelFuncs  map[string]struct{} // same-file top-level functions - callable
+	topLevelConsts map[string]struct{} // same-file extractable consts - readable
+	localNames     map[string]bool     // locals declared in this body (let/const/var) - readable AND writable
+	inAsync        bool                // function is `async` - permits `await` on Promise<T>
 	// jsFuncParamNames is the subset of paramNames whose declared TS type is
 	// a callable accepted by isJSFuncParamType. The emitter lowers these to
 	// `*ramune.JSFunc`. The walker allows a reference only in call-head
@@ -521,6 +523,9 @@ func checkIdentifierRef(node *ast.Node, ctx *bodyCtx) *Reason {
 		return nil
 	}
 	if _, ok := ctx.topLevelFuncs[name]; ok {
+		return nil
+	}
+	if _, ok := ctx.topLevelConsts[name]; ok {
 		return nil
 	}
 	return &Reason{Code: reasonClosureCapture, Detail: "free identifier `" + name + "`"}
