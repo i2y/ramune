@@ -1,3 +1,9 @@
 coverage
 .tool-versions
 releases
+
+# QuickJS-NG submodule, intentionally not committed (NOTICES.md). Cloned
+# locally only when rebuilding qjs.wasm; keep LICENSE tracked for the MIT
+# attribution that ships with the prebuilt binary.
+qjswasm/quickjs/*
+!qjswasm/quickjs/LICENSE
