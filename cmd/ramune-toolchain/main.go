@@ -1010,7 +1010,10 @@ func compileCmd(args []string) {
 				os.Exit(1)
 			}
 			accumulateNativeFuncs(modName, "ramune-compiled-app/"+pkgAlias, pkgAlias, funcs, &nativeImports, &nativeModules)
-			bundledJS += res.ShimJS
+			// Prepend so the shim's module-scope reassignments override
+			// hoisted user bindings before any top-level call runs. See
+			// BuildShimWithClasses for the hoisting rationale.
+			bundledJS = res.ShimJS + bundledJS
 		}
 	}
 

@@ -228,6 +228,13 @@ func BuildShim(moduleName string, jsNames []string) string {
 // names as declared (PascalCase); each one is installed as `globalThis.<Name>`
 // pointing at the Go factory registered under `mod.new<Name>`. Calling
 // `new Counter(...)` or `Counter(...)` both return the native instance object.
+// JS-side globals the shim writes through. Centralised so tests and
+// future hooks can reach them by the same name as the runtime emit.
+const (
+	shimInstalledKey = "__ramuneNativeInstalled"
+	shimExportsKey   = "__ramuneNativeExports"
+)
+
 func BuildShimWithClasses(moduleName string, jsNames []string, classNames []string) string {
 	if len(jsNames) == 0 && len(classNames) == 0 {
 		return ""
@@ -235,10 +242,10 @@ func BuildShimWithClasses(moduleName string, jsNames []string, classNames []stri
 	var b strings.Builder
 	b.Grow(280 + 180*(len(jsNames)+len(classNames)))
 	b.WriteString("\n;(function(){\n")
-	b.WriteString("  if (globalThis.__ramuneNativeInstalled) return;\n")
-	b.WriteString("  globalThis.__ramuneNativeInstalled = true;\n")
+	fmt.Fprintf(&b, "  if (globalThis.%s) return;\n", shimInstalledKey)
+	fmt.Fprintf(&b, "  globalThis.%s = true;\n", shimInstalledKey)
 	fmt.Fprintf(&b, "  var mod = require(%q);\n", moduleName)
-	b.WriteString("  globalThis.__ramuneNativeExports = mod;\n")
+	fmt.Fprintf(&b, "  globalThis.%s = mod;\n", shimExportsKey)
 	b.WriteString("  var _me = (typeof module !== 'undefined' && module && module.exports) ? module.exports : null;\n")
 	// esbuild's CommonJS output defines exports via Object.defineProperty with
 	// only a getter, so a plain assignment throws "no setter for property" on
@@ -266,5 +273,14 @@ func BuildShimWithClasses(moduleName string, jsNames []string, classNames []stri
 		b.WriteString("  }\n")
 	}
 	b.WriteString("})();\n")
+	// Module-scope reassignments override the hoisted local bindings the
+	// IIFE above can't reach. Per-name try/catch so a missing or
+	// non-bundled symbol doesn't take the rest of the swap down with it.
+	for _, name := range jsNames {
+		fmt.Fprintf(&b, "try { if (globalThis.%s && globalThis.%s.%s) %s = globalThis.%s.%s; } catch (e) {}\n", shimExportsKey, shimExportsKey, name, name, shimExportsKey, name)
+	}
+	for _, cname := range classNames {
+		fmt.Fprintf(&b, "try { if (globalThis.%s) %s = globalThis.%s; } catch (e) {}\n", cname, cname, cname)
+	}
 	return b.String()
 }

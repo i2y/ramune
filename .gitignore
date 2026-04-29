@@ -5,6 +5,8 @@
 /ramune-goja
 /bench/fib_jsc
 /bench/fib_hybrid
+/bench/hello_jsc
+/bench/hello_hybrid
 *.exe
 *.exe~
 *.dll

@@ -18,15 +18,22 @@ if [ ! -f "$RAMUNE" ]; then
     cd .. && make build-cli && cd bench
 fi
 
-# Pre-build two binaries from fib.ts so the Fib(40) section can isolate
-# AOT-extraction wins from raw `compile` startup cost: fib_jsc keeps the
-# function in JS (no --hybrid flag), fib_hybrid extracts it as native Go.
-# The picker swap is a postlude, so fib.ts uses setTimeout(0) to defer
-# the call past the shim install — without that, the JS local binding
-# wins and hybrid is silently no-op.
-echo "Building hybrid-AOT and JSC fib binaries..."
-"$RAMUNE" compile -o "$JSC_FIB" fib.ts >/dev/null 2>&1 || JSC_FIB=""
-"$RAMUNE" compile --hybrid -o "$HYBRID_FIB" fib.ts >/dev/null 2>&1 || HYBRID_FIB=""
+# Pre-build the four binaries needed for the CPU and startup-decomp
+# sections: {fib, hello} × {jsc, hybrid}. Skip a build when the binary
+# is fresher than its source so repeat runs don't pay the full toolchain
+# cost (~10-30s × 4 = ~minute uncached).
+HYBRID_HELLO="./hello_hybrid"
+JSC_HELLO="./hello_jsc"
+echo "Building hybrid-AOT and JSC binaries (fib + hello for startup baseline)..."
+build_if_stale() {
+    local flags="$1" out="$2" src="$3"
+    [ -f "$out" ] && [ "$out" -nt "$src" ] && return 0
+    "$RAMUNE" compile $flags -o "$out" "$src" >/dev/null 2>&1
+}
+build_if_stale ""        "$JSC_FIB"      fib.ts   || JSC_FIB=""
+build_if_stale "--hybrid" "$HYBRID_FIB"  fib.ts   || HYBRID_FIB=""
+build_if_stale ""        "$JSC_HELLO"    hello.ts || JSC_HELLO=""
+build_if_stale "--hybrid" "$HYBRID_HELLO" hello.ts || HYBRID_HELLO=""
 
 # Check dependencies.
 for cmd in hyperfine node bun; do
@@ -51,14 +58,17 @@ hyperfine --warmup 2 --min-runs 10 \
     2>&1 | grep -E "Time|Summary|times"
 
 echo ""
+echo "=== 1b. Compiled-binary startup (pure runtime cost, subtract from CPU section for compute-only) ==="
+startup_cmds=()
+[ -f "$JSC_HELLO" ]    && startup_cmds+=("$JSC_HELLO")
+[ -f "$HYBRID_HELLO" ] && startup_cmds+=("$HYBRID_HELLO")
+[ ${#startup_cmds[@]} -gt 0 ] && hyperfine --warmup 3 --min-runs 30 "${startup_cmds[@]}" 2>&1 | grep -E "Time|Summary|times"
+
+echo ""
 echo "=== 2. Fibonacci(40) (CPU) ==="
 fib_cmds=("$RAMUNE run fib.js" "node fib.js" "bun run fib.js")
-if [ -n "$JSC_FIB" ] && [ -f "$JSC_FIB" ]; then
-    fib_cmds+=("$JSC_FIB")
-fi
-if [ -n "$HYBRID_FIB" ] && [ -f "$HYBRID_FIB" ]; then
-    fib_cmds+=("$HYBRID_FIB")
-fi
+[ -f "$JSC_FIB" ]    && fib_cmds+=("$JSC_FIB")
+[ -f "$HYBRID_FIB" ] && fib_cmds+=("$HYBRID_FIB")
 hyperfine --warmup 1 --min-runs 5 "${fib_cmds[@]}" 2>&1 | grep -E "Time|Summary|times"
 
 echo ""
