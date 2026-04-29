@@ -844,7 +844,18 @@ func checkArrayLiteral(node *ast.Node, ctx *bodyCtx) *Reason {
 	}
 	for _, elem := range arr.Elements.Nodes {
 		if elem.Kind == ast.KindSpreadElement {
-			return &Reason{Code: reasonSpread, Detail: "spread in array literal"}
+			// Spread of an extractable expression is fine — expr.go's
+			// array-literal lowering already chains append calls. Walk
+			// the inner expression for the same checks any other element
+			// gets so a `...someJunk` doesn't slip through.
+			inner := elem.AsSpreadElement()
+			if inner == nil || inner.Expression == nil {
+				return &Reason{Code: reasonSpread, Detail: "spread missing operand"}
+			}
+			if r := checkExpr(inner.Expression, ctx); r != nil {
+				return r
+			}
+			continue
 		}
 		if r := checkExpr(elem, ctx); r != nil {
 			return r
@@ -1037,18 +1048,21 @@ var arraySafeMethods = map[string]bool{
 // instance methods. Membership check only; per-method return-type policy
 // lives in callbackReturnPolicy so additions stay mechanical.
 //
-// Deferred: `reduce` (accumulator type inference), `find` / `findIndex`
-// (return-shape adapters: `find` produces `(T, bool)` from jsarray.Find
-// which has to be lowered into `*T`, and `findIndex` returns Go `int`
-// which has to be widened to TS `number`'s float64; both also need the
-// callback-as-JSFunc bridge that the existing safelisted methods take
-// for granted via the bare-*JSFunc-param pattern in the body walker).
+// `find` / `findIndex` joined the set after the JSFunc-bridge emit grew
+// the corresponding IIFEs in expr.go's emitArrayJSFuncCallbackMethod.
+// Inline-arrow callbacks remain rejected (the bare-*JSFunc-param rule),
+// so the legacy `jsarray.Find{,Index}` int-return / `(T, bool)` shape
+// never reaches the build.
+//
+// Deferred: `reduce` (accumulator type inference).
 var arrayCallbackSafeMethods = map[string]bool{
-	"map":     true,
-	"filter":  true,
-	"forEach": true,
-	"some":    true,
-	"every":   true,
+	"map":       true,
+	"filter":    true,
+	"forEach":   true,
+	"some":      true,
+	"every":     true,
+	"find":      true,
+	"findIndex": true,
 }
 
 // checkThisMethodCall accepts `this.<method>(...)` when <method> is declared
@@ -1218,7 +1232,7 @@ func checkArrayCallbackMethodCall(ce *ast.CallExpression, pa *ast.PropertyAccess
 	// the emitter discards the result. map rejects void (the output slice
 	// would be `[]void` — malformed).
 	switch method {
-	case "filter", "some", "every":
+	case "filter", "some", "every", "find", "findIndex":
 		if ret == nil || !isBoolLikeType(ret) {
 			return &Reason{Code: reasonObjectType, Detail: "." + method + " callback must return boolean"}
 		}

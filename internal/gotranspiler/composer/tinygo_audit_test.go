@@ -128,6 +128,97 @@ export function checkOpt(s?: string): boolean {
 	runTinyGoAudit(t, "optional_param", src)
 }
 
+// TestTinyGoAudit_ArraySpread covers `[lit, ...xs, lit]` lowering to
+// chained `append` calls. The picker now walks each spread operand for
+// the same expr-gate as a non-spread element, so untyped/dynamic
+// spreads still reject — only statically-typed array spreads survive.
+func TestTinyGoAudit_ArraySpread(t *testing.T) {
+	if _, err := exec.LookPath("tinygo"); err != nil {
+		t.Skip("tinygo not on PATH")
+	}
+	src := `
+export function pad(xs: number[]): number[] {
+  return [0, ...xs, 99];
+}
+export function joinTwo(a: number[], b: number[]): number[] {
+  return [...a, ...b];
+}
+`
+	runTinyGoAudit(t, "array_spread", src)
+}
+
+// TestTinyGoAudit_LiteralUnion covers `"a" | "b" | "c"` and `1 | 2 | 3`
+// shapes, including the type-alias form. typemapper.go now skips the
+// alias name when every arm shares a primitive base — picker-extracted
+// code has no type-alias decl emitted, so the alias would otherwise
+// dangle as an undefined Go type.
+func TestTinyGoAudit_LiteralUnion(t *testing.T) {
+	if _, err := exec.LookPath("tinygo"); err != nil {
+		t.Skip("tinygo not on PATH")
+	}
+	src := `
+type Direction = "up" | "down" | "left" | "right";
+export function rotate(d: Direction): Direction {
+  if (d === "up") return "right";
+  if (d === "right") return "down";
+  if (d === "down") return "left";
+  return "up";
+}
+type Tier = 1 | 2 | 3;
+export function bumpTier(t: Tier): number {
+  return t + 1;
+}
+export function inlineUnion(d: "yes" | "no"): boolean {
+  return d === "yes";
+}
+`
+	runTinyGoAudit(t, "literal_union", src)
+}
+
+// TestTinyGoAudit_NestedStruct covers named interfaces whose fields are
+// themselves named structs. Earlier the picker rejected these (assuming
+// the emit would fall back to jsrt.Obj reflection); the typed nested
+// access path is plain Go field chaining and round-trips through the
+// JSON bridge identically to flat struct fields.
+func TestTinyGoAudit_NestedStruct(t *testing.T) {
+	if _, err := exec.LookPath("tinygo"); err != nil {
+		t.Skip("tinygo not on PATH")
+	}
+	src := `
+interface Pos { x: number; y: number; }
+interface Body { center: Pos; mass: number; }
+export function kinetic(b: Body, vx: number, vy: number): number {
+  return 0.5 * b.mass * (vx * vx + vy * vy);
+}
+export function distSq(a: Body, b: Body): number {
+  const dx = a.center.x - b.center.x;
+  const dy = a.center.y - b.center.y;
+  return dx * dx + dy * dy;
+}
+`
+	runTinyGoAudit(t, "nested_struct", src)
+}
+
+// TestTinyGoAudit_FindCallbacks covers the `find` / `findIndex` methods.
+// Both pass through emitArrayJSFuncCallbackMethod so the build only sees
+// the JSFunc-bridge IIFE forms (inline arrows would be picker-rejected).
+// `find` lowers to `*T` (TS `T | undefined`) and `findIndex` widens Go
+// `int` to TS `number` / `float64` on the return path.
+func TestTinyGoAudit_FindCallbacks(t *testing.T) {
+	if _, err := exec.LookPath("tinygo"); err != nil {
+		t.Skip("tinygo not on PATH")
+	}
+	src := `
+export function firstMatch(xs: number[], pred: (n: number) => boolean): number | undefined {
+  return xs.find(pred);
+}
+export function indexOf(xs: number[], pred: (n: number) => boolean): number {
+  return xs.findIndex(pred);
+}
+`
+	runTinyGoAudit(t, "find_callbacks", src)
+}
+
 // TestTinyGoAudit_NullablePrimitive covers the `T | null` case for the
 // three primitives that lower to `*T` (string/float64/bool). Nullish
 // coalescing on the pointer and an explicit `=== null` test together

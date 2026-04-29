@@ -55,6 +55,17 @@ const (
 // Unions (including `T | null`), tuples, objects, generics, Map/Set/Promise,
 // and everything else bail with a named Reason code.
 func isExtractableType(ck *checker.Checker, t *checker.Type) *Reason {
+	return isExtractableTypeWith(ck, t, nil)
+}
+
+// isExtractableTypeWith is the cycle-safe inner form. visited carries the
+// set of named struct/interface types currently on the recursion stack;
+// re-entry rejects with reasonObjectType because Go's type system has no
+// direct mutual recursion — the emitted `type A struct { B B }` would
+// fail with "invalid recursive type" without pointer indirection that
+// the field walker doesn't currently insert. Without this guard the
+// recursion blew the goroutine stack outright.
+func isExtractableTypeWith(ck *checker.Checker, t *checker.Type, visited map[*checker.Type]bool) *Reason {
 	if t == nil {
 		return &Reason{Code: reasonAnyType, Detail: "nil type"}
 	}
@@ -82,13 +93,10 @@ func isExtractableType(ck *checker.Checker, t *checker.Type) *Reason {
 		return nil
 	}
 	if flags&checker.TypeFlagsUnion != 0 {
-		// `T | null` / `T | undefined` round-trips through typemapper.go:
-		// primitive `T` lowers to `*T`, named struct/interface to `*T`,
-		// already-pointer/slice/map/any types stay as-is. Accept iff the
-		// union has exactly one extractable non-nullable component plus
-		// only null/undefined arms — anything wider (`string | number`,
-		// full discriminated unions) keeps the original rejection so the
-		// body walker doesn't dispatch on runtime type tags.
+		// Accept the two union shapes the body walker can lower without
+		// runtime tag dispatch: nullable single-arm (typemapper → `*T`)
+		// and uniform-primitive literal sets (typemapper → bare `string`
+		// / `float64` / `bool`). Wider unions keep the rejection.
 		if union := t.AsUnionType(); union != nil {
 			var nonNullable []*checker.Type
 			for _, u := range union.Types() {
@@ -98,9 +106,12 @@ func isExtractableType(ck *checker.Checker, t *checker.Type) *Reason {
 				nonNullable = append(nonNullable, u)
 			}
 			if len(nonNullable) == 1 {
-				if r := isExtractableType(ck, nonNullable[0]); r != nil {
+				if r := isExtractableTypeWith(ck, nonNullable[0], visited); r != nil {
 					return r
 				}
+				return nil
+			}
+			if len(nonNullable) >= 2 && unionShareSinglePrimitive(nonNullable) {
 				return nil
 			}
 		}
@@ -116,7 +127,7 @@ func isExtractableType(ck *checker.Checker, t *checker.Type) *Reason {
 			}
 			return nil
 		}
-		if isExtractableObjectType(ck, t) {
+		if isExtractableObjectTypeWith(ck, t, visited) {
 			return nil
 		}
 		if ck.GetPromisedTypeOfPromise(t) != nil {
@@ -134,6 +145,31 @@ func isExtractableType(ck *checker.Checker, t *checker.Type) *Reason {
 
 func isPrimitiveType(flags checker.TypeFlags) bool {
 	return flags&(checker.TypeFlagsStringLike|checker.TypeFlagsNumberLike|checker.TypeFlagsBooleanLike) != 0
+}
+
+// unionShareSinglePrimitive reports whether every type in the union shares
+// a single primitive base — `"up" | "down"` (StringLike), `1 | 2 | 3`
+// (NumberLike), `true | false` (BooleanLike). Mirrors typemapper.go's
+// allString/allNumber/allBool gating: typemapper unconditionally lowers
+// these to bare `string`/`float64`/`bool`, so the picker can accept the
+// shape without the body walker doing any extra narrowing.
+func unionShareSinglePrimitive(arms []*checker.Type) bool {
+	if len(arms) == 0 {
+		return false
+	}
+	const (
+		strMask  = checker.TypeFlagsStringLike
+		numMask  = checker.TypeFlagsNumberLike
+		boolMask = checker.TypeFlagsBooleanLike
+	)
+	allStr, allNum, allBool := true, true, true
+	for _, t := range arms {
+		f := t.Flags()
+		allStr = allStr && f&strMask != 0
+		allNum = allNum && f&numMask != 0
+		allBool = allBool && f&boolMask != 0
+	}
+	return allStr || allNum || allBool
 }
 
 func isPrimitiveOrVoid(flags checker.TypeFlags) bool {
@@ -192,6 +228,10 @@ func isExtractableReturnType(ck *checker.Checker, t *checker.Type) *Reason {
 // reference types (Array, Promise, Map, Set, etc.) carry ObjectFlagsReference
 // and are handled by their own callers above.
 func isExtractableObjectType(ck *checker.Checker, t *checker.Type) bool {
+	return isExtractableObjectTypeWith(ck, t, nil)
+}
+
+func isExtractableObjectTypeWith(ck *checker.Checker, t *checker.Type, visited map[*checker.Type]bool) bool {
 	if ck == nil || t == nil {
 		return false
 	}
@@ -220,9 +260,24 @@ func isExtractableObjectType(ck *checker.Checker, t *checker.Type) bool {
 	if len(props) == 0 {
 		return false
 	}
+	// Mark t in-progress before recursing so a cycle (`A.b: B; B.a: A`)
+	// is rejected before the goroutine stack blows. Could be lifted if
+	// the emitter learned to insert `*` indirection for recursive
+	// fields, but the JSON bridge and field-access walker both assume
+	// flat structs today.
+	if visited == nil {
+		visited = map[*checker.Type]bool{}
+	}
+	if visited[t] {
+		return false
+	}
+	visited[t] = true
 	for _, p := range props {
 		pt := ck.GetTypeOfSymbol(p)
-		if pt == nil || !isPrimitiveType(pt.Flags()) {
+		if pt == nil {
+			return false
+		}
+		if r := isExtractableTypeWith(ck, pt, visited); r != nil {
 			return false
 		}
 	}

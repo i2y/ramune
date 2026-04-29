@@ -296,11 +296,31 @@ func (m *typeMapper) goType(t *checker.Type) string {
 
 // goUnionType handles union types like T | null, string | number, etc.
 func (m *typeMapper) goUnionType(t *checker.Type) string {
-	// If the union has a non-generic type alias, preserve the alias name
+	union := t.AsUnionType()
+	types := union.Types()
+
+	// Single arm walk: separate nullable arms and detect uniform-primitive
+	// shapes up front so the alias-shortcut and the lowering branches both
+	// consume the same precomputed values.
+	var nonNullable []*checker.Type
+	hasNull := false
+	allString, allNumber, allBool := true, true, true
+	for _, u := range types {
+		if u.Flags()&checker.TypeFlagsNullable != 0 {
+			hasNull = true
+			continue
+		}
+		nonNullable = append(nonNullable, u)
+		f := u.Flags()
+		allString = allString && f&checker.TypeFlagsStringLike != 0
+		allNumber = allNumber && f&checker.TypeFlagsNumberLike != 0
+		allBool = allBool && f&checker.TypeFlagsBooleanLike != 0
+	}
+	uniformPrim := len(nonNullable) > 0 && (allString || allNumber || allBool)
+
 	if alias := t.Alias(); alias != nil && alias.Symbol() != nil {
 		aliasName := alias.Symbol().Name
 		if isValidGoIdentifier(aliasName) && !strings.HasPrefix(aliasName, "__") {
-			// Skip generic aliases — they resolve to any and can't be instantiated meaningfully
 			isGenericAlias := len(alias.TypeArguments()) > 0
 			if !isGenericAlias && m.checker != nil {
 				localTPs := m.checker.GetLocalTypeParametersOfClassOrInterfaceOrTypeAlias(alias.Symbol())
@@ -310,22 +330,14 @@ func (m *typeMapper) goUnionType(t *checker.Type) string {
 				if mapped := m.mapWellKnownType(aliasName); mapped != "" {
 					return mapped
 				}
-				return m.qualifyTypeName(aliasName)
+				// Picker-extracted code skips type-alias declarations, so
+				// returning the alias name for `type D = "a" | "b"` would
+				// reference an undeclared Go type. Fall through to the
+				// uniform-primitive lowering below in that case.
+				if !uniformPrim {
+					return m.qualifyTypeName(aliasName)
+				}
 			}
-		}
-	}
-
-	union := t.AsUnionType()
-	types := union.Types()
-
-	// Check for T | null / T | undefined pattern → *T
-	var nonNullable []*checker.Type
-	hasNull := false
-	for _, u := range types {
-		if u.Flags()&checker.TypeFlagsNullable != 0 {
-			hasNull = true
-		} else {
-			nonNullable = append(nonNullable, u)
 		}
 	}
 
@@ -375,36 +387,21 @@ func (m *typeMapper) goUnionType(t *checker.Type) string {
 		}
 	}
 
-	// Check if all members are the same base type (e.g., "up" | "down" → string)
-	if len(nonNullable) > 0 {
-		allString := true
-		allNumber := true
-		allBool := true
-		for _, u := range nonNullable {
-			f := u.Flags()
-			if f&checker.TypeFlagsStringLike == 0 {
-				allString = false
-			}
-			if f&checker.TypeFlagsNumberLike == 0 {
-				allNumber = false
-			}
-			if f&checker.TypeFlagsBooleanLike == 0 {
-				allBool = false
-			}
-		}
-		if allString {
+	// "up" | "down" → string; 1 | 2 → float64; etc. Uses the
+	// allString/allNumber/allBool flags computed at function entry.
+	if uniformPrim {
+		switch {
+		case allString:
 			if hasNull {
 				return "*string"
 			}
 			return "string"
-		}
-		if allNumber {
+		case allNumber:
 			if hasNull {
 				return "*float64"
 			}
 			return "float64"
-		}
-		if allBool {
+		case allBool:
 			return "bool"
 		}
 	}

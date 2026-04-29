@@ -479,9 +479,9 @@ export function perimeter(r: Rect): number { return 2 * (r.width + r.height); }
 	}
 }
 
-func TestPicker_Rejects_NamedInterfaceWithObjectField(t *testing.T) {
-	// Nested object field would force the emitter to do recursive jsrt.Obj
-	// lookups. Reject named interfaces whose any field is non-primitive.
+func TestPicker_Accepts_NamedInterfaceWithObjectField(t *testing.T) {
+	// Named-interface fields that are themselves named structs round-
+	// trip through the JSON bridge identically to flat fields.
 	src := `
 interface Inner { x: number; }
 interface Outer { inner: Inner; }
@@ -489,11 +489,25 @@ export function getX(o: Outer): number { return o.inner.x; }
 `
 	res := pickOne(t, src)
 	c, _ := byName(res, "getX")
-	if c.Extracted {
-		t.Fatalf("expected rejection for nested-object interface")
+	if !c.Extracted {
+		t.Fatalf("expected `getX` extracted; got %+v", c.Reason)
 	}
-	if c.Reason.Code != "object-type" {
-		t.Fatalf("expected object-type, got %q", c.Reason.Code)
+}
+
+func TestPicker_Rejects_RecursiveInterface(t *testing.T) {
+	// Mutually-recursive interfaces would emit Go that fails with
+	// "invalid recursive type" (no pointer indirection in the field
+	// walker). The visited-set guard rejects before recursing the
+	// goroutine stack into oblivion.
+	src := `
+interface A { b: B; }
+interface B { a: A; }
+export function f(x: A): number { return 1; }
+`
+	res := pickOne(t, src)
+	c, _ := byName(res, "f")
+	if c.Extracted {
+		t.Fatalf("expected rejection for recursive interface")
 	}
 }
 
@@ -918,17 +932,16 @@ func TestPicker_Rejects_EmptyArrayLiteral(t *testing.T) {
 	}
 }
 
-func TestPicker_Rejects_ArrayLiteralWithSpread(t *testing.T) {
+func TestPicker_Accepts_ArrayLiteralWithSpread(t *testing.T) {
+	// Each spread operand is walked by the expr gate, so untyped /
+	// dynamic spreads still reject — only typed-array spreads survive.
 	src := `
 export function dupe(xs: number[]): number[] { return [0, ...xs]; }
 `
 	res := pickOne(t, src)
 	c, _ := byName(res, "dupe")
-	if c.Extracted {
-		t.Fatalf("expected rejection for array literal with spread")
-	}
-	if c.Reason.Code != "spread-element" {
-		t.Fatalf("expected spread-element, got %q", c.Reason.Code)
+	if !c.Extracted {
+		t.Fatalf("expected `dupe` extracted; got %+v", c.Reason)
 	}
 }
 

@@ -3352,6 +3352,9 @@ func (t *Transpiler) emitArrayMethodCall(call *ast.CallExpression) {
 		t.w.write(")")
 
 	case "find":
+		if t.emitArrayJSFuncCallbackMethod(call, prop, method, arrayElemGoType) {
+			return
+		}
 		t.w.write("jsarray.Find(")
 		t.emitExpr(prop.Expression)
 		t.w.write(", ")
@@ -3359,6 +3362,9 @@ func (t *Transpiler) emitArrayMethodCall(call *ast.CallExpression) {
 		t.w.write(")")
 
 	case "findIndex":
+		if t.emitArrayJSFuncCallbackMethod(call, prop, method, arrayElemGoType) {
+			return
+		}
 		t.w.write("jsarray.FindIndex(")
 		t.emitExpr(prop.Expression)
 		t.w.write(", ")
@@ -4552,6 +4558,10 @@ func (t *Transpiler) emitArrayJSFuncCallbackMethod(call *ast.CallExpression, pro
 		t.w.writef("func() bool { for _, __x := range %s { __v, __err := %s.Call(__x); if __err != nil { jsrt.Throw(__err) }; if __v.(bool) { return true } }; return false }()", arrCode, pn)
 	case "every":
 		t.w.writef("func() bool { for _, __x := range %s { __v, __err := %s.Call(__x); if __err != nil { jsrt.Throw(__err) }; if !__v.(bool) { return false } }; return true }()", arrCode, pn)
+	case "findIndex":
+		t.w.writef("func() float64 { for __i, __x := range %s { __v, __err := %s.Call(__x); if __err != nil { jsrt.Throw(__err) }; if __v.(bool) { return float64(__i) } }; return float64(-1) }()", arrCode, pn)
+	case "find":
+		t.w.writef("func() *%s { for _, __x := range %s { __v, __err := %s.Call(__x); if __err != nil { jsrt.Throw(__err) }; if __v.(bool) { __r := __x; return &__r } }; return nil }()", elemGoType, arrCode, pn)
 	default:
 		return false
 	}
