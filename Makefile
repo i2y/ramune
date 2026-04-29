@@ -1,4 +1,4 @@
-.PHONY: all build build-cli build-toolchain build-goja build-qjswasm fmt fmt-check vet test test-goja test-qjswasm test-qjswasm-ci test-downstream test-wpt ci bench bench-go clean sync-tsgo sync-tsgo-pinned sync-rslint sync site
+.PHONY: all build build-cli build-toolchain build-goja build-qjswasm fmt fmt-check vet test test-goja test-qjswasm test-qjswasm-ci test-downstream test-wpt ci bench bench-go clean sync-tsgo sync-tsgo-pinned sync-rslint sync site tui-gifs
 
 all: ci
 
@@ -115,3 +115,17 @@ clean:
 # Build the GitHub Pages landing page in docs/. Runs npm install on first run.
 site:
 	cd docs && npm install && npm run build
+
+# Render every examples/tui-*/ TUI to a GIF via charmbracelet/vhs.
+# Each demo ships its own .tape script so the GIFs stay reproducible.
+# Requires `vhs` on PATH (`brew install vhs` or see github.com/charmbracelet/vhs).
+tui-gifs:
+	@command -v vhs >/dev/null 2>&1 || { echo "vhs not found - install via 'brew install vhs' or see github.com/charmbracelet/vhs"; exit 1; }
+	@$(MAKE) build-cli >/dev/null
+	@for tape in examples/tui-*/*.tape; do \
+		echo ">> $$tape"; \
+		(cd $$(dirname $$tape) && vhs $$(basename $$tape)); \
+	done
+	@echo ""
+	@echo "GIFs written next to each .tape:"
+	@ls examples/tui-*/*.gif 2>/dev/null || echo "(none produced)"
