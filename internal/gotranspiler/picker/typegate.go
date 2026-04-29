@@ -82,6 +82,28 @@ func isExtractableType(ck *checker.Checker, t *checker.Type) *Reason {
 		return nil
 	}
 	if flags&checker.TypeFlagsUnion != 0 {
+		// `T | null` / `T | undefined` round-trips through typemapper.go:
+		// primitive `T` lowers to `*T`, named struct/interface to `*T`,
+		// already-pointer/slice/map/any types stay as-is. Accept iff the
+		// union has exactly one extractable non-nullable component plus
+		// only null/undefined arms — anything wider (`string | number`,
+		// full discriminated unions) keeps the original rejection so the
+		// body walker doesn't dispatch on runtime type tags.
+		if union := t.AsUnionType(); union != nil {
+			var nonNullable []*checker.Type
+			for _, u := range union.Types() {
+				if u != nil && u.Flags()&checker.TypeFlagsNullable != 0 {
+					continue
+				}
+				nonNullable = append(nonNullable, u)
+			}
+			if len(nonNullable) == 1 {
+				if r := isExtractableType(ck, nonNullable[0]); r != nil {
+					return r
+				}
+				return nil
+			}
+		}
 		return &Reason{Code: reasonUnionType, Detail: "union type not supported"}
 	}
 	if flags&checker.TypeFlagsObject != 0 {

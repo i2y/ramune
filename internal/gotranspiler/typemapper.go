@@ -66,6 +66,18 @@ func (m *typeMapper) goTypeInfo(t *checker.Type) GoTypeInfo {
 		}
 	}
 
+	// jsbridge.Func is the TinyGo-backend lowering for plain TS callables.
+	// Categorize as GoTypeFunc so emitCallExpr's "callee is any" cast path
+	// stays inactive on identifiers whose checker type is a callable — the
+	// same outcome as the default-backend `*ramune.JSFunc` mapping (which
+	// lands in GoTypePointer via the `*` prefix below). Without this
+	// branch the dotted name fails isValidGoIdentifier and falls into
+	// GoTypeJSObject, which makes IsAny() spuriously true.
+	if goStr == "jsbridge.Func" {
+		info.Category = GoTypeFunc
+		return info
+	}
+
 	switch {
 	case goStr == "any":
 		info.Category = GoTypeJSObject
@@ -162,10 +174,23 @@ type typeMapper struct {
 	// knownTypes tracks struct/interface/type names defined in the current compilation unit.
 	// Populated from classNames after Pass 1.5.
 	knownTypes map[string]bool
+	// backend selects the runtime concrete type emitted for TS function-
+	// typed parameters; see Backend's docs for what each value implies
+	// for transitive deps.
+	backend Backend
 }
 
 func newTypeMapper(c *checker.Checker) *typeMapper {
 	return &typeMapper{checker: c, resolvedPkgs: make(map[string]bool)}
+}
+
+// jsFuncTypeName returns the Go type used for plain TS callable params under
+// the configured backend.
+func (m *typeMapper) jsFuncTypeName() string {
+	if m.backend == BackendTinyGo {
+		return "jsbridge.Func"
+	}
+	return "*ramune.JSFunc"
 }
 
 // goType converts a checker.Type to a Go type string.
@@ -226,7 +251,7 @@ func (m *typeMapper) goType(t *checker.Type) string {
 	// Object types (arrays, classes, interfaces, etc.)
 	if flags&checker.TypeFlagsObject != 0 {
 		if m.isPlainCallable(t) {
-			return "*ramune.JSFunc"
+			return m.jsFuncTypeName()
 		}
 		return m.goObjectType(t)
 	}
@@ -306,10 +331,22 @@ func (m *typeMapper) goUnionType(t *checker.Type) string {
 
 	if hasNull && len(nonNullable) == 1 {
 		inner := m.goType(nonNullable[0])
-		if inner == "string" || inner == "float64" || inner == "bool" {
+		if inner == "string" || inner == "float64" || inner == "bool" || inner == "int" {
 			return "*" + inner
 		}
-		// Already a pointer/interface type
+		// `*T`, `[]T`, `map[K]V`, interfaces (`any`, generic discriminated
+		// unions): all already nil-able in Go, return as-is.
+		if strings.HasPrefix(inner, "*") || strings.HasPrefix(inner, "[]") || strings.HasPrefix(inner, "map[") || inner == "any" {
+			return inner
+		}
+		// Named struct/interface (`Point`, `Counter`, …) — wrap as
+		// pointer so the body walker's `p === null` lowers to a valid
+		// `p == nil` comparison and field access keeps working via
+		// Go's automatic deref. Without this the param would emit as
+		// the bare struct type, which has no untyped-nil identity.
+		if isValidGoIdentifier(inner) || isGenericType(inner) {
+			return "*" + inner
+		}
 		return inner
 	}
 

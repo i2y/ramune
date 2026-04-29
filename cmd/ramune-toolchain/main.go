@@ -620,6 +620,236 @@ func typegenCmd(args []string) {
 	fmt.Fprintf(os.Stderr, "wrote %s\n", outFile)
 }
 
+// writeRamuneModule drops a go.mod into tmpDir wired against either the
+// local ramune checkout (preferred — picks up the toolchain's own
+// in-flight changes) or the published version that matches the running
+// toolchain. fallbackVer is used only when neither is detectable. Runs
+// `go mod tidy` so callers can immediately invoke the build tool.
+func writeRamuneModule(tmpDir, moduleName, fallbackVer string) error {
+	goMod := fmt.Sprintf("module %s\n\ngo 1.26\n", moduleName)
+	if local := findRamuneModPath(); local != "" {
+		goMod += fmt.Sprintf("\nrequire github.com/i2y/ramune v0.0.0\n\nreplace github.com/i2y/ramune => %s\n", local)
+	} else {
+		ver := getVersion()
+		if ver == "" || ver == "dev" {
+			ver = fallbackVer
+		} else if !strings.HasPrefix(ver, "v") {
+			ver = "v" + ver
+		}
+		goMod += fmt.Sprintf("\nrequire github.com/i2y/ramune %s\n", ver)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "go.mod"), []byte(goMod), 0o644); err != nil {
+		return fmt.Errorf("writing go.mod: %w", err)
+	}
+	tidy := exec.Command("go", "mod", "tidy")
+	tidy.Dir = tmpDir
+	tidy.Stderr = os.Stderr
+	if err := tidy.Run(); err != nil {
+		return fmt.Errorf("go mod tidy: %w", err)
+	}
+	return nil
+}
+
+// wasmABINumerics is the set of Go type names that round-trip through
+// TinyGo's WASI export ABI as wasm i32/i64/f32/f64. Anything outside it
+// (string, slice, struct, interface, pointer-to-struct, …) gets dropped
+// from the export list with a CLI warning.
+var wasmABINumerics = map[string]bool{
+	"float64": true, "float32": true,
+	"int": true, "int32": true, "int64": true,
+	"uint": true, "uint32": true, "uint64": true,
+	"bool": true,
+}
+
+// wasmExportSkip records why an exported Go function couldn't be wrapped
+// for the WASI ABI; the CLI surfaces these as warnings.
+type wasmExportSkip struct {
+	name   string
+	reason string
+}
+
+// wasmExportableFuncs partitions the picker-emitted Go source's exported
+// top-level functions into ABI-shaped exports and a skipped list with
+// reasons. Reuses gotranspiler.DiscoverExportedFuncs's parse pass — the
+// new ABI gate runs purely against ExportedFunc.Params/.Return.
+func wasmExportableFuncs(goSource string) ([]gotranspiler.ExportedFunc, []wasmExportSkip, error) {
+	funcs, err := gotranspiler.DiscoverExportedFuncs(goSource)
+	if err != nil {
+		return nil, nil, err
+	}
+	var exports []gotranspiler.ExportedFunc
+	var skipped []wasmExportSkip
+	for _, fn := range funcs {
+		if fn.Generic {
+			skipped = append(skipped, wasmExportSkip{fn.GoName, "generic"})
+			continue
+		}
+		bad := ""
+		for _, ty := range fn.Params {
+			if !wasmABINumerics[ty] {
+				bad = fmt.Sprintf("non-numeric param type %q", ty)
+				break
+			}
+		}
+		if bad == "" && fn.Return != "" && !wasmABINumerics[fn.Return] {
+			bad = fmt.Sprintf("non-numeric return type %q", fn.Return)
+		}
+		if bad != "" {
+			skipped = append(skipped, wasmExportSkip{fn.GoName, bad})
+			continue
+		}
+		exports = append(exports, fn)
+	}
+	return exports, skipped, nil
+}
+
+// generateWasmMainGo builds the main package for the wasm-wasi build:
+// `_` import on the extracted package + a `//go:wasmexport` wrapper per
+// numerics-only function so the produced .wasm exposes named exports
+// callable from a wasm host (wazero, wasmtime …).
+func generateWasmMainGo(pkgAlias string, exports []gotranspiler.ExportedFunc) string {
+	var b strings.Builder
+	b.WriteString("package main\n\n")
+	if len(exports) == 0 {
+		// No numerics-only exports — emit the bare-minimum module so
+		// the build still produces a wasm artifact for inspection.
+		fmt.Fprintf(&b, "import _ %q\n\nfunc main() {}\n", "ramune-wasm-app/"+pkgAlias)
+		return b.String()
+	}
+	fmt.Fprintf(&b, "import app %q\n\n", "ramune-wasm-app/"+pkgAlias)
+	b.WriteString("func main() {}\n\n")
+	for _, e := range exports {
+		fmt.Fprintf(&b, "//go:wasmexport %s\n", e.JSName)
+		fmt.Fprintf(&b, "func wasmExport_%s(", e.GoName)
+		var argNames []string
+		for i, ty := range e.Params {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			argName := fmt.Sprintf("a%d", i)
+			argNames = append(argNames, argName)
+			fmt.Fprintf(&b, "%s %s", argName, ty)
+		}
+		b.WriteString(") ")
+		if e.Return != "" {
+			b.WriteString(e.Return + " ")
+		}
+		b.WriteString("{ ")
+		if e.Return != "" {
+			b.WriteString("return ")
+		}
+		fmt.Fprintf(&b, "app.%s(%s)", e.GoName, strings.Join(argNames, ", "))
+		b.WriteString(" }\n\n")
+	}
+	return b.String()
+}
+
+// compileWasmWASI runs the standalone-WASM build path: TS source → picker
+// extraction → emitted Go (Backend="tinygo") → tinygo build -target=wasi.
+// The artifact is a single .wasm file containing only the picker-extracted
+// Go and the jsbridge interface. No JS runtime is bundled, so unextracted
+// TS code (top-level statements, untyped helpers) is silently dropped —
+// the compile is "library-style": the wasm exposes the extracted functions
+// for a wasm host (wazero, wasmtime, …) to call. Top-level TS code that
+// the picker rejects produces no observable behaviour at runtime.
+func compileWasmWASI(filename, output string, hybridReport bool) {
+	if _, err := exec.LookPath("tinygo"); err != nil {
+		fmt.Fprintln(os.Stderr, "error: --target wasm-wasi requires `tinygo` on PATH (https://tinygo.org/getting-started/install/)")
+		os.Exit(1)
+	}
+	if !isTypeScript(filename) {
+		fmt.Fprintf(os.Stderr, "error: --target wasm-wasi requires a TypeScript source (got %q)\n", filename)
+		os.Exit(1)
+	}
+
+	safeBase := gotranspiler.GoPackageName(strings.TrimSuffix(filepath.Base(filename), filepath.Ext(filename)))
+	pkgAlias := "nativehybrid_" + safeBase
+	res, err := composer.ComposeFile(filename, composer.Options{
+		PkgName:          pkgAlias,
+		NativeModuleName: "native:__hybrid_" + safeBase + "__",
+		Backend:          gotranspiler.BackendTinyGo,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "wasm compose error: %v\n", err)
+		os.Exit(1)
+	}
+	if hybridReport {
+		res.PickerResult.Format(os.Stderr)
+	}
+	if res.GoSource == "" {
+		fmt.Fprintln(os.Stderr, "error: picker extracted no functions — nothing to emit. Add explicit return types and avoid dynamic features (eval, reflect, late `this`).")
+		os.Exit(1)
+	}
+
+	if output == "" {
+		output = strings.TrimSuffix(filepath.Base(filename), filepath.Ext(filename)) + ".wasm"
+	}
+	if !strings.HasSuffix(output, ".wasm") {
+		output += ".wasm"
+	}
+
+	tmpDir, err := os.MkdirTemp("", "ramune-wasm-*")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	pkgDir := filepath.Join(tmpDir, pkgAlias)
+	if err := os.MkdirAll(pkgDir, 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "error creating wasm pkg dir: %v\n", err)
+		os.Exit(1)
+	}
+	if err := os.WriteFile(filepath.Join(pkgDir, "module.go"), []byte(res.GoSource), 0o644); err != nil {
+		fmt.Fprintf(os.Stderr, "error writing wasm module: %v\n", err)
+		os.Exit(1)
+	}
+
+	exports, skipped, err := wasmExportableFuncs(res.GoSource)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "wasm export discovery: %v\n", err)
+		os.Exit(1)
+	}
+	for _, s := range skipped {
+		fmt.Fprintf(os.Stderr, "  warning: skipping wasm export for %s — %s (only float64/int/bool numerics are exportable under TinyGo's WASI ABI)\n", s.name, s.reason)
+	}
+
+	mainGo := generateWasmMainGo(pkgAlias, exports)
+	if err := os.WriteFile(filepath.Join(tmpDir, "main.go"), []byte(mainGo), 0o644); err != nil {
+		fmt.Fprintf(os.Stderr, "error writing wasm main: %v\n", err)
+		os.Exit(1)
+	}
+
+	if err := writeRamuneModule(tmpDir, "ramune-wasm-app", "v0.21.0"); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+
+	absOutput, _ := filepath.Abs(output)
+	// -buildmode=c-shared produces a WASI reactor (exports `_initialize`,
+	// no `_start`), which host runtimes need to call individual exports
+	// after runtime init. The default buildmode produces a one-shot
+	// command that panics inside wasmExportCheckRun when an export is
+	// invoked outside of _start's scope.
+	tinygoCmd := exec.Command("tinygo", "build", "-target=wasi", "-buildmode=c-shared", "-o", absOutput, ".")
+	tinygoCmd.Dir = tmpDir
+	if out, err := tinygoCmd.CombinedOutput(); err != nil {
+		fmt.Fprintf(os.Stderr, "tinygo build failed: %v\n%s", err, out)
+		os.Exit(1)
+	}
+	fmt.Fprintf(os.Stderr, "compiled wasm: %s\n", absOutput)
+	if len(exports) > 0 {
+		fmt.Fprintf(os.Stderr, "exports (call after `_initialize`):\n")
+		for _, e := range exports {
+			fmt.Fprintf(os.Stderr, "  %s(%s)", e.JSName, strings.Join(e.Params, ", "))
+			if e.Return != "" {
+				fmt.Fprintf(os.Stderr, " %s", e.Return)
+			}
+			fmt.Fprintln(os.Stderr)
+		}
+	}
+}
+
 // accumulateNativeFuncs appends the native-import line and bridge-code block
 // for a single native extension module to imports/modules, prints the discovery
 // summary and any generic warnings, and is a no-op when funcs is empty.
@@ -643,7 +873,7 @@ func accumulateNativeFuncs(modName, pkgImport, pkgAlias string, funcs []gotransp
 
 func compileCmd(args []string) {
 	fs := flag.NewFlagSet("compile", flag.ExitOnError)
-	var output, buildTags string
+	var output, buildTags, hybridBackend, target string
 	var minify, httpMode, hybrid, hybridReport bool
 	var nativeFiles stringSliceFlag
 	fs.StringVar(&output, "o", "", "output binary name")
@@ -653,9 +883,33 @@ func compileCmd(args []string) {
 	fs.BoolVar(&hybridReport, "hybrid-report", false, "print the picker's extraction report to stderr (implies --hybrid)")
 	fs.Var(&nativeFiles, "native", "TypeScript file to transpile as native extension (repeatable)")
 	fs.StringVar(&buildTags, "tags", "", "comma-separated Go build tags for the embedded runtime (e.g. qjswasm,goja)")
+	fs.StringVar(&hybridBackend, "hybrid-backend", "", "emit Go for backend: \"go\" (default, drags ramune host) or \"tinygo\" (jsbridge.Func interface, TinyGo-compat). Empty = \"go\".")
+	fs.StringVar(&target, "target", "", "build target: empty (default, native binary with JS runtime) or \"wasm-wasi\" (TinyGo standalone .wasm of picker-extracted Go, no JS runtime). \"wasm-wasi\" implies --hybrid --hybrid-backend tinygo and requires `tinygo` on PATH.")
 	fs.Parse(args)
 	if hybridReport {
 		hybrid = true
+	}
+	if target == "wasm-wasi" {
+		hybrid = true
+		if hybridBackend == "" {
+			hybridBackend = string(gotranspiler.BackendTinyGo)
+		}
+		if hybridBackend != string(gotranspiler.BackendTinyGo) {
+			fmt.Fprintf(os.Stderr, "error: --target wasm-wasi requires --hybrid-backend tinygo (got %q)\n", hybridBackend)
+			os.Exit(2)
+		}
+	}
+	backend, err := gotranspiler.ParseBackend(hybridBackend)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: --hybrid-backend %v\n", err)
+		os.Exit(2)
+	}
+	switch target {
+	case "", "wasm-wasi":
+		// ok
+	default:
+		fmt.Fprintf(os.Stderr, "error: --target must be empty or \"wasm-wasi\" (got %q)\n", target)
+		os.Exit(2)
 	}
 
 	if fs.NArg() < 1 {
@@ -663,6 +917,11 @@ func compileCmd(args []string) {
 		os.Exit(1)
 	}
 	filename := fs.Arg(0)
+
+	if target == "wasm-wasi" {
+		compileWasmWASI(filename, output, hybridReport)
+		return
+	}
 
 	code, err := os.ReadFile(filename)
 	if err != nil {
@@ -721,6 +980,7 @@ func compileCmd(args []string) {
 		res, err := composer.ComposeFile(filename, composer.Options{
 			PkgName:          pkgAlias,
 			NativeModuleName: "native:" + modName,
+			Backend:          backend,
 		})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "hybrid compose error: %v\n", err)
@@ -865,33 +1125,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	ramuneModPath := findRamuneModPath()
-	goMod := `module ramune-compiled-app
-
-go 1.26
-`
-	if ramuneModPath != "" {
-		goMod += fmt.Sprintf("\nrequire github.com/i2y/ramune v0.0.0\n\nreplace github.com/i2y/ramune => %s\n", ramuneModPath)
-	} else {
-		ver := getVersion()
-		if ver == "" || ver == "dev" {
-			ver = "v0.15.1"
-		} else if !strings.HasPrefix(ver, "v") {
-			ver = "v" + ver
-		}
-		goMod += fmt.Sprintf("\nrequire github.com/i2y/ramune %s\n", ver)
-	}
-
-	if err := os.WriteFile(filepath.Join(tmpDir, "go.mod"), []byte(goMod), 0o644); err != nil {
+	if err := writeRamuneModule(tmpDir, "ramune-compiled-app", "v0.15.1"); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
-	}
-
-	tidyCmd := exec.Command("go", "mod", "tidy")
-	tidyCmd.Dir = tmpDir
-	tidyCmd.Stderr = os.Stderr
-	if err := tidyCmd.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "go mod tidy failed: %v\n", err)
 		os.Exit(1)
 	}
 

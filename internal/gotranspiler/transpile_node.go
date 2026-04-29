@@ -14,7 +14,10 @@ import (
 // The caller is responsible for ensuring the nodes are safe to translate
 // (typically via the picker package). All nodes must originate from the same
 // source file and must be top-level function declarations.
-func TranspileNodes(ck *checker.Checker, nodes []*ast.Node, pkgName string) (string, error) {
+//
+// backend selects the JS-function bridge concrete type emitted for TS
+// callable params (see the Backend type's docs).
+func TranspileNodes(ck *checker.Checker, nodes []*ast.Node, pkgName string, backend Backend) (string, error) {
 	if pkgName == "" {
 		pkgName = "native"
 	}
@@ -39,6 +42,7 @@ func TranspileNodes(ck *checker.Checker, nodes []*ast.Node, pkgName string) (str
 		forceExportedFuncs: true,
 	}
 	t.tm = newTypeMapper(ck)
+	t.tm.backend = backend
 
 	// Pre-scan: every extracted top-level function and class becomes an
 	// exported Go symbol (forceExportedFuncs above), so emitIdentifier

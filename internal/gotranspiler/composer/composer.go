@@ -29,6 +29,10 @@ type Options struct {
 	// NativeModuleName is the JS require() specifier registered with
 	// NativeModuleFromFuncs. Defaults to "native:__transpiled_app__".
 	NativeModuleName string
+	// Backend chooses the JS-function bridge concrete type emitted for
+	// TS callable params. See gotranspiler.Backend for the semantics of
+	// each value; the zero value selects gotranspiler.BackendGo.
+	Backend gotranspiler.Backend
 }
 
 // Result holds the artifacts produced for one source file.
@@ -144,7 +148,7 @@ func composeAll(files []*ast.SourceFile, ck *checker.Checker, opts Options) (*Re
 		return res, nil
 	}
 
-	goSrc, err := gotranspiler.TranspileNodes(ck, allNodes, opts.PkgName)
+	goSrc, err := gotranspiler.TranspileNodes(ck, allNodes, opts.PkgName, opts.Backend)
 	if err != nil {
 		return nil, fmt.Errorf("transpile nodes: %w", err)
 	}
@@ -173,7 +177,7 @@ func Compose(sf *ast.SourceFile, ck *checker.Checker, opts Options) (*Result, er
 		return res, nil
 	}
 
-	goSrc, err := gotranspiler.TranspileNodes(ck, nodes, opts.PkgName)
+	goSrc, err := gotranspiler.TranspileNodes(ck, nodes, opts.PkgName, opts.Backend)
 	if err != nil {
 		return nil, fmt.Errorf("transpile nodes: %w", err)
 	}

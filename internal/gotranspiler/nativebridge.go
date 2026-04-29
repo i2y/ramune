@@ -9,11 +9,17 @@ import (
 	"unicode"
 )
 
-// ExportedFunc represents an exported Go function discovered in transpiled code.
+// ExportedFunc represents an exported Go function discovered in transpiled
+// code. Params/Return are populated as best-effort Go type strings (Ident,
+// SelectorExpr, StarExpr, ArrayType, MapType — anything more exotic falls
+// back to a `<%T>` placeholder); callers that only need the name set
+// (existing JS-bridge wiring) can ignore those fields.
 type ExportedFunc struct {
-	GoName  string // PascalCase Go name (e.g., "Fibonacci")
-	JSName  string // camelCase JS name (e.g., "fibonacci")
-	Generic bool   // True if the function has type parameters
+	GoName  string   // PascalCase Go name (e.g., "Fibonacci")
+	JSName  string   // camelCase JS name (e.g., "fibonacci")
+	Generic bool     // True if the function has type parameters
+	Params  []string // One entry per param slot, in declaration order
+	Return  string   // "" for void / no return clause
 }
 
 // DiscoverExportedFuncs parses Go source code and returns all exported
@@ -43,14 +49,54 @@ func DiscoverExportedFuncs(goSource string) ([]ExportedFunc, error) {
 
 		isGeneric := fn.Type.TypeParams != nil && len(fn.Type.TypeParams.List) > 0
 
+		var params []string
+		if fn.Type.Params != nil {
+			for _, field := range fn.Type.Params.List {
+				ty := goExprString(field.Type)
+				count := 1
+				if len(field.Names) > 0 {
+					count = len(field.Names)
+				}
+				for i := 0; i < count; i++ {
+					params = append(params, ty)
+				}
+			}
+		}
+		var ret string
+		if fn.Type.Results != nil && len(fn.Type.Results.List) == 1 && len(fn.Type.Results.List[0].Names) <= 1 {
+			ret = goExprString(fn.Type.Results.List[0].Type)
+		}
+
 		funcs = append(funcs, ExportedFunc{
 			GoName:  fn.Name.Name,
 			JSName:  GoNameToJS(fn.Name.Name),
 			Generic: isGeneric,
+			Params:  params,
+			Return:  ret,
 		})
 	}
 
 	return funcs, nil
+}
+
+// goExprString stringifies a Go AST type expression for downstream
+// signature analysis. Covers the shapes the transpiler actually emits;
+// anything else gets a `<%T>` placeholder that ABI checks can reject
+// without crashing.
+func goExprString(expr ast.Expr) string {
+	switch e := expr.(type) {
+	case *ast.Ident:
+		return e.Name
+	case *ast.SelectorExpr:
+		return goExprString(e.X) + "." + e.Sel.Name
+	case *ast.StarExpr:
+		return "*" + goExprString(e.X)
+	case *ast.ArrayType:
+		return "[]" + goExprString(e.Elt)
+	case *ast.MapType:
+		return "map[" + goExprString(e.Key) + "]" + goExprString(e.Value)
+	}
+	return fmt.Sprintf("<%T>", expr)
 }
 
 // GenerateBridgeCode generates Go source code that registers transpiled

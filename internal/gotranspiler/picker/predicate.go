@@ -104,11 +104,18 @@ func checkCallableSignature(ck *checker.Checker, node *ast.Node, params *ast.Par
 				continue
 			}
 			if pd.Initializer != nil {
-				return nil, nil, &Reason{Code: reasonUnhandledKind, Detail: label + "default parameter value not supported"}
+				// Default-valued params widen JS-callable arity without
+				// a corresponding Go default — emitting `f(a, b)` silently
+				// changes runtime semantics. Suggest the body-side
+				// alternative the picker can already extract.
+				return nil, nil, &Reason{Code: reasonUnhandledKind, Detail: label + "default parameter value not supported (use `b ?? <default>` in the body with a nullable param instead)"}
 			}
-			if pd.QuestionToken != nil {
-				return nil, nil, &Reason{Code: reasonUnhandledKind, Detail: label + "optional parameter not supported"}
-			}
+			// `b?: T` is accepted: tsgo widens the symbol's type to `T |
+			// undefined`, which lowers via typemapper.go's nullable path
+			// to `*T`. JS callers passing `undefined` (or omitting the
+			// arg) bridge to a Go `nil` *T — the body walker dereferences
+			// where the program actually reads `b`, and `b ?? default` /
+			// `b === undefined` paths use the existing nullable emit.
 		}
 	}
 	paramNames := map[string]bool{}
@@ -1031,7 +1038,11 @@ var arraySafeMethods = map[string]bool{
 // lives in callbackReturnPolicy so additions stay mechanical.
 //
 // Deferred: `reduce` (accumulator type inference), `find` / `findIndex`
-// (T | undefined shape).
+// (return-shape adapters: `find` produces `(T, bool)` from jsarray.Find
+// which has to be lowered into `*T`, and `findIndex` returns Go `int`
+// which has to be widened to TS `number`'s float64; both also need the
+// callback-as-JSFunc bridge that the existing safelisted methods take
+// for granted via the bare-*JSFunc-param pattern in the body walker).
 var arrayCallbackSafeMethods = map[string]bool{
 	"map":     true,
 	"filter":  true,

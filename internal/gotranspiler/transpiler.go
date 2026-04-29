@@ -112,9 +112,14 @@ type Transpiler struct {
 }
 
 // isJSFuncParam reports whether pn is a parameter whose emitted Go type
-// is *ramune.JSFunc.
+// is the configured backend's JS-function bridge type. Routing through
+// the typeMapper keeps the bridge-name's source of truth in one place
+// regardless of how many backends the emitter ends up supporting.
 func (t *Transpiler) isJSFuncParam(pn string) bool {
-	return t.goVarTypes != nil && t.goVarTypes[pn] == "*ramune.JSFunc"
+	if t.goVarTypes == nil || t.tm == nil {
+		return false
+	}
+	return t.goVarTypes[pn] == t.tm.jsFuncTypeName()
 }
 
 // projectSharedState holds cross-file state collected in a first pass over all source files.
@@ -207,6 +212,12 @@ func goTypeInfoFromString(goType string) GoTypeInfo {
 	switch {
 	case goType == "any":
 		return GoTypeInfo{Category: GoTypeJSObject, GoStr: "any"}
+	case goType == "jsbridge.Func":
+		// TinyGo-backend JS-function bridge interface; mirror the
+		// goTypeInfo branch in typemapper.go so emit-time identifier
+		// lookups treat it as a callable rather than falling into
+		// GoTypeJSObject via the dotted-identifier rejection.
+		return GoTypeInfo{Category: GoTypeFunc, GoStr: goType}
 	case goType == "string" || goType == "float64" || goType == "bool" || goType == "int":
 		return GoTypeInfo{Category: GoTypePrimitive, GoStr: goType}
 	case strings.HasPrefix(goType, "*promise.Promise["):

@@ -167,6 +167,11 @@ func (w *goWriter) renderFile(pkgName string) (string, error) {
 	if strings.Contains(body, "*ramune.JSFunc") {
 		w.addImport("github.com/i2y/ramune", "")
 	}
+	// jsbridge.Func is the TinyGo-backend counterpart of *ramune.JSFunc;
+	// see the package doc for the host-decoupling rationale.
+	if strings.Contains(body, "jsbridge.Func") {
+		w.addImport("github.com/i2y/ramune/jsbridge", "")
+	}
 
 	// Resolve pending imports that appear as package qualifiers in the body.
 	// Use stricter check: the alias must appear followed by .UpperCase AND not be a parameter name.

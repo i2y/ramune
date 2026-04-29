@@ -372,6 +372,21 @@ func (t *Transpiler) emitBinaryExpr(node *ast.Node) {
 				left = strings.TrimSuffix(left, suffix)
 			}
 		}
+		// Pointer-typed left (`*T` from `T | null` lowering): the ??
+		// branch reads `*left` rather than asserting an interface.
+		// `if left != nil { return *left }` keeps the test concise and
+		// works for `*string`, `*float64`, `*bool`, `*int`, *Point, …
+		if leftGoType.IsPointer() {
+			deref := strings.TrimPrefix(leftGoType.GoStr, "*")
+			if retType == leftGoType.GoStr {
+				t.w.writef("func() %s { if %s != nil { return %s }; return ", retType, left, left)
+			} else {
+				t.w.writef("func() %s { if %s != nil { return *%s }; return ", deref, left, left)
+			}
+			t.emitExpr(bin.Right)
+			t.w.write(" }()")
+			return
+		}
 		if retType != "any" {
 			t.w.writef("func() %s { if %s != nil { return %s.(%s) }; return ", retType, left, left, retType)
 		} else {

@@ -312,15 +312,17 @@ func TestPicker_Rejects_DefaultParam(t *testing.T) {
 	}
 }
 
-func TestPicker_Rejects_OptionalParam(t *testing.T) {
+func TestPicker_Accepts_OptionalParam(t *testing.T) {
+	// Optional params widen `T` to `T | undefined`, which the picker now
+	// accepts via the same nullable path as `T | null`. The body has to
+	// stick to the nullable-safe operators (`x ?? default`, `x ===
+	// undefined`); accessing `x` directly without a guard will read a
+	// nil *T at runtime — but that's the user's bug, not the picker's.
 	src := `export function withOptional(x?: number): number { return (x ?? 0) + 1; }`
 	res := pickOne(t, src)
 	c, _ := byName(res, "withOptional")
-	if c.Extracted {
-		t.Fatalf("expected rejection for optional parameter")
-	}
-	if c.Reason.Code != "unhandled-ast-kind" {
-		t.Fatalf("expected unhandled-ast-kind, got %q", c.Reason.Code)
+	if !c.Extracted {
+		t.Fatalf("expected `withOptional` extracted; got %+v", c.Reason)
 	}
 }
 
