@@ -1,0 +1,5 @@
+# agentboard runtime state — board JSON + per-card worktrees
+.agentboard/
+
+# generated demo recording (regenerate with: vhs demo.tape)
+demo.gif
