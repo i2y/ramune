@@ -379,6 +379,9 @@ func (r *Runtime) installTUI() error {
 	if err := r.registerFuncLocked("__go_tui_style", goTUIStyle); err != nil {
 		return err
 	}
+	if err := r.registerFuncLocked("__go_tui_join", goTUIJoin); err != nil {
+		return err
+	}
 	if err := r.registerFuncLocked("__go_tui_quit", goTUIQuit(mgr)); err != nil {
 		return err
 	}
@@ -614,15 +617,42 @@ func (r *Runtime) installTUI() error {
 	globalThis.Ramune.tui.Text = function(props, children) {
 		return globalThis.Ramune.tui.style(children.join(''), props);
 	};
+	// Box / Stack / Row do real block layout via Lipgloss JoinVertical /
+	// JoinHorizontal, so multi-line children stack and sit side by side
+	// correctly. align (Box/Stack: left|center|right) / valign (Row:
+	// top|center|bottom) pick cross-axis alignment; gap inserts spacers.
 	globalThis.Ramune.tui.Box = function(props, children) {
-		return globalThis.Ramune.tui.style(children.join('\n'), props);
+		props = props || {};
+		var body = __go_tui_join('v', props.align || 'left', children);
+		return styleRest(body, props, ['align']);
 	};
 	globalThis.Ramune.tui.Stack = function(props, children) {
-		var sep = props.gap > 0 ? '\n'.repeat(props.gap + 1) : '\n';
-		return globalThis.Ramune.tui.style(children.join(sep), props);
+		props = props || {};
+		var gap = props.gap || 0;
+		var blocks = children;
+		if (gap > 0) {
+			var sp = '\n'.repeat(gap - 1);
+			blocks = [];
+			for (var i = 0; i < children.length; i++) {
+				if (i > 0) blocks.push(sp);
+				blocks.push(children[i]);
+			}
+		}
+		return styleRest(__go_tui_join('v', props.align || 'left', blocks), props, ['gap', 'align']);
 	};
 	globalThis.Ramune.tui.Row = function(props, children) {
-		return globalThis.Ramune.tui.style(children.join(props.gap > 0 ? ' '.repeat(props.gap) : ' '), props);
+		props = props || {};
+		var gap = props.gap || 0;
+		var blocks = children;
+		if (gap > 0) {
+			var sp = ' '.repeat(gap);
+			blocks = [];
+			for (var i = 0; i < children.length; i++) {
+				if (i > 0) blocks.push(sp);
+				blocks.push(children[i]);
+			}
+		}
+		return styleRest(__go_tui_join('h', props.valign || 'top', blocks), props, ['gap', 'valign']);
 	};
 	globalThis.Ramune.tui.Spacer = function(props) {
 		var n = (props && props.size) || 1;
@@ -1969,6 +1999,61 @@ func getOrCreateMarkdownRenderer(theme string, width int) (*glamour.TermRenderer
 	}
 	markdownRendererCache[key] = r
 	return r, nil
+}
+
+// goTUIJoin lays out pre-rendered blocks via Lipgloss's block-aware join.
+// It is the real layout primitive behind Row (horizontal) and Stack / Box
+// (vertical). args: [dir "h"|"v", pos string, blocks []any].
+func goTUIJoin(args []any) (any, error) {
+	if len(args) < 3 {
+		return "", nil
+	}
+	dir, _ := args[0].(string)
+	pos, _ := args[1].(string)
+	var blocks []string
+	switch v := args[2].(type) {
+	case []any:
+		for _, b := range v {
+			if s, ok := b.(string); ok {
+				blocks = append(blocks, s)
+			} else {
+				blocks = append(blocks, fmt.Sprint(b))
+			}
+		}
+	case []string:
+		blocks = v
+	}
+	if len(blocks) == 0 {
+		return "", nil
+	}
+	if dir == "h" {
+		return lipgloss.JoinHorizontal(joinPosH(pos), blocks...), nil
+	}
+	return lipgloss.JoinVertical(joinPosV(pos), blocks...), nil
+}
+
+// joinPosH maps a name to the vertical alignment of side-by-side blocks.
+func joinPosH(name string) lipgloss.Position {
+	switch name {
+	case "center", "middle":
+		return lipgloss.Center
+	case "bottom":
+		return lipgloss.Bottom
+	default:
+		return lipgloss.Top
+	}
+}
+
+// joinPosV maps a name to the horizontal alignment of stacked blocks.
+func joinPosV(name string) lipgloss.Position {
+	switch name {
+	case "center", "middle":
+		return lipgloss.Center
+	case "right":
+		return lipgloss.Right
+	default:
+		return lipgloss.Left
+	}
 }
 
 // goTUIStyle wraps Lipgloss into a one-shot styling helper. Userland
