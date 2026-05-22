@@ -621,38 +621,35 @@ func (r *Runtime) installTUI() error {
 	// JoinHorizontal, so multi-line children stack and sit side by side
 	// correctly. align (Box/Stack: left|center|right) / valign (Row:
 	// top|center|bottom) pick cross-axis alignment; gap inserts spacers.
-	globalThis.Ramune.tui.Box = function(props, children) {
+	function tuiLayout(dir, props, children, posKey, posDefault, spacer) {
 		props = props || {};
-		var body = __go_tui_join('v', props.align || 'left', children);
-		return styleRest(body, props, ['align']);
+		var blocks = children;
+		var gap = spacer ? (props.gap || 0) : 0;
+		if (gap > 0) {
+			var sp = spacer(gap);
+			blocks = [];
+			for (var i = 0; i < children.length; i++) {
+				if (i > 0) blocks.push(sp);
+				blocks.push(children[i]);
+			}
+		}
+		var body = __go_tui_join(dir, props[posKey] || posDefault, blocks);
+		return styleRest(body, props, ['gap', posKey]);
+	}
+	globalThis.Ramune.tui.Box = function(props, children) {
+		return tuiLayout('v', props, children, 'align', 'left', null);
 	};
 	globalThis.Ramune.tui.Stack = function(props, children) {
-		props = props || {};
-		var gap = props.gap || 0;
-		var blocks = children;
-		if (gap > 0) {
-			var sp = '\n'.repeat(gap - 1);
-			blocks = [];
-			for (var i = 0; i < children.length; i++) {
-				if (i > 0) blocks.push(sp);
-				blocks.push(children[i]);
-			}
-		}
-		return styleRest(__go_tui_join('v', props.align || 'left', blocks), props, ['gap', 'align']);
+		// A spacer of n newlines is n+1 empty lines once JoinVertical
+		// concatenates it, so gap-1 newlines yields exactly gap blank lines.
+		return tuiLayout('v', props, children, 'align', 'left', function(g) {
+			return '\n'.repeat(g - 1);
+		});
 	};
 	globalThis.Ramune.tui.Row = function(props, children) {
-		props = props || {};
-		var gap = props.gap || 0;
-		var blocks = children;
-		if (gap > 0) {
-			var sp = ' '.repeat(gap);
-			blocks = [];
-			for (var i = 0; i < children.length; i++) {
-				if (i > 0) blocks.push(sp);
-				blocks.push(children[i]);
-			}
-		}
-		return styleRest(__go_tui_join('h', props.valign || 'top', blocks), props, ['gap', 'valign']);
+		return tuiLayout('h', props, children, 'valign', 'top', function(g) {
+			return ' '.repeat(g);
+		});
 	};
 	globalThis.Ramune.tui.Spacer = function(props) {
 		var n = (props && props.size) || 1;

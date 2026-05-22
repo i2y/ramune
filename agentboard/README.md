@@ -38,6 +38,7 @@ agentboard.ts     entry — wires the Ramune.tui program
 orchestrator.ts   card lifecycle: worktree, agent run, finalize, merge
 board.ts          board state + .agentboard/board.json persistence
 git.ts            git worktree / diff / merge helpers
+proc.ts           spawn + line-buffer plumbing shared by the agent adapters
 agents/types.ts   AgentAdapter / AgentRun / AgentEvent — the agnostic seam
 agents/claude.ts  Claude Code adapter (claude -p --output-format stream-json)
 agents/mock.ts    fake adapter — exercises the loop without tokens

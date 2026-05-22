@@ -1,13 +1,8 @@
 // Claude Code adapter — drives `claude -p` in headless stream-json mode and
 // normalises its NDJSON event stream into AgentEvents.
-import { spawn } from "child_process";
+import { basename } from "path";
+import { spawnLines } from "../proc";
 import { AgentAdapter, AgentEvent } from "./types";
-
-function basename(p: string): string {
-  const s = String(p).replace(/\/+$/, "");
-  const i = s.lastIndexOf("/");
-  return i >= 0 ? s.slice(i + 1) : s;
-}
 
 function toolDetail(name: string, input: any): string {
   const n = name || "tool";
@@ -60,36 +55,11 @@ export const claudeAdapter: AgentAdapter = {
       // radius is that worktree, so skip interactive permission prompts.
       "--dangerously-skip-permissions",
     ];
-    const proc = spawn("claude", args, { cwd });
-    // claude -p still peeks stdin; close it so it does not wait 3s for EOF.
-    try {
-      if (proc.stdin) proc.stdin.end();
-    } catch {}
-    let buf = "";
-    let stderr = "";
-    proc.stdout.on("data", (d: any) => {
-      buf += String(d);
-      let nl: number;
-      while ((nl = buf.indexOf("\n")) >= 0) {
-        const line = buf.slice(0, nl).trim();
-        buf = buf.slice(nl + 1);
-        if (line) handleLine(line, onEvent);
-      }
-    });
-    proc.stderr.on("data", (d: any) => (stderr += String(d)));
-    proc.on("exit", (code: any) => {
-      const c = code ?? 0;
-      onDone({ code: c, error: c ? stderr.trim() || "exit " + c : undefined });
-    });
-    proc.on("error", (e: any) =>
-      onDone({ code: -1, error: String((e && e.message) || e) }),
+    return spawnLines("claude", args, cwd, (line) => handleLine(line, onEvent), (r) =>
+      onDone({
+        code: r.code,
+        error: r.error ?? (r.code ? r.stderr.trim() || "exit " + r.code : undefined),
+      }),
     );
-    return {
-      abort() {
-        try {
-          proc.kill();
-        } catch {}
-      },
-    };
   },
 };

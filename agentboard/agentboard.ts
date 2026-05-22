@@ -18,4 +18,5 @@ orch.init(repo, agent);
 const tick = Ramune.tui.Cmd.every(200, { type: "tick" });
 Ramune.tui.run({ init, update, view }).then(() => {
   Ramune.tui.Cmd.cancelEvery(tick);
+  orch.shutdown();
 });

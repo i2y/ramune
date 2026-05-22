@@ -3,15 +3,16 @@
 // The board lives in orchestrator (module-scope, mutated by async agent
 // events). This file owns only navigation state; a 200ms Cmd.every tick
 // re-renders so agent progress shows live.
+import { basename } from "path";
 import * as orch from "../orchestrator";
-import { Card, COLUMNS } from "../board";
+import { Card, Column, COLUMNS } from "../board";
 
 declare const Ramune: any;
 
 const s = Ramune.tui.style;
-const SPIN = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const SPIN: string[] = Ramune.tui.spinnerFrames.dot;
 const COLW = 20;
-const COLTITLE: { [k: string]: string } = {
+const COLTITLE: { [k in Column]: string } = {
   backlog: "BACKLOG",
   running: "RUNNING",
   review: "REVIEW",
@@ -28,7 +29,7 @@ export interface Model {
   tick: number;
 }
 
-let detailDiff = ""; // module-scope: diff text loaded for detail mode
+let detailLines: string[] = []; // diff for detail mode, pre-split into lines
 
 export function init(): Model {
   return {
@@ -118,9 +119,9 @@ function updateBoard(m: Model, msg: any): any {
         void orch.startCard(c.id);
         return m;
       }
-      detailDiff = "(loading diff…)";
+      detailLines = ["(loading diff…)"];
       void orch.cardDiff(c.id).then((t) => {
-        detailDiff = t;
+        detailLines = t.split("\n");
       });
       return { ...m, mode: "detail", detailId: c.id, detailScroll: 0 };
     }
@@ -181,7 +182,7 @@ function cardStrip(c: Card): string {
 
 function viewBoard(m: Model): string {
   const board = orch.getBoard();
-  const repo = board.repo.split("/").filter(Boolean).pop() || board.repo;
+  const repo = basename(board.repo) || board.repo;
   const header =
     s("agentboard", { bold: true, fg: "12" }) +
     s(
@@ -249,7 +250,7 @@ function viewDetail(m: Model): string {
   const log = c.log.length
     ? c.log.slice(-6).map((x) => s("  " + clip(x, 84), { fg: "245" })).join("\n")
     : s("  (no log)", { fg: "238" });
-  const all = detailDiff.split("\n");
+  const all = detailLines;
   const H = 20;
   const start = Math.max(0, Math.min(m.detailScroll, all.length - 1));
   const shown = all.slice(start, start + H).map(diffLine).join("\n");

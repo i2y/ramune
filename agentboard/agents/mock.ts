@@ -2,7 +2,7 @@
 // writes one file. Lets the whole orchestrator loop be exercised without
 // spending tokens or needing a real agent installed — also the reference
 // for what a minimal adapter looks like.
-import { spawn } from "child_process";
+import { spawnLines } from "../proc";
 import { AgentAdapter } from "./types";
 
 export const mockAdapter: AgentAdapter = {
@@ -20,15 +20,12 @@ export const mockAdapter: AgentAdapter = {
       'echo "EV|tool|Bash|list files"',
       'echo "EV|status|done"',
     ].join(" && ");
-    const proc = spawn("sh", ["-c", script], { cwd });
-    let buf = "";
-    proc.stdout.on("data", (d: any) => {
-      buf += String(d);
-      let nl: number;
-      while ((nl = buf.indexOf("\n")) >= 0) {
-        const line = buf.slice(0, nl).trim();
-        buf = buf.slice(nl + 1);
-        if (!line.startsWith("EV|")) continue;
+    return spawnLines(
+      "sh",
+      ["-c", script],
+      cwd,
+      (line) => {
+        if (!line.startsWith("EV|")) return;
         const p = line.split("|");
         if (p[1] === "tool") {
           onEvent({ kind: "tool", tool: p[2], detail: p.slice(2).join(" ") });
@@ -37,21 +34,8 @@ export const mockAdapter: AgentAdapter = {
         } else {
           onEvent({ kind: "text", text: p.slice(2).join("|") });
         }
-      }
-    });
-    proc.on("exit", (code: any) => {
-      const c = code ?? 0;
-      onDone({ code: c, error: c ? "mock exited " + c : undefined });
-    });
-    proc.on("error", (e: any) =>
-      onDone({ code: -1, error: String((e && e.message) || e) }),
-    );
-    return {
-      abort() {
-        try {
-          proc.kill();
-        } catch {}
       },
-    };
+      (r) => onDone({ code: r.code, error: r.code ? "mock exited " + r.code : undefined }),
+    );
   },
 };

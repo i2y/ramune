@@ -1,7 +1,7 @@
 // Card lifecycle: backlog -> running -> review -> done.
 //
 // The board is module-scope mutable state. Agent events mutate it
-// asynchronously; the UI subscribes via setNotify() and re-renders.
+// asynchronously; the UI's 200ms render tick picks the changes up.
 import { Board, Card, loadBoard, saveBoard, newCard } from "./board";
 import { AgentAdapter, AgentEvent, AgentRun } from "./agents/types";
 import { mockAdapter } from "./agents/mock";
@@ -15,15 +15,12 @@ const ADAPTERS: { [id: string]: AgentAdapter } = {
 
 let board: Board = { repo: ".", cards: [] };
 let adapter: AgentAdapter = mockAdapter;
-let notify: () => void = () => {};
 const runs: { [id: string]: AgentRun } = {};
+let saveTimer: any = null;
 
 export function init(repo: string, agentId: string): void {
   board = loadBoard(repo);
   adapter = ADAPTERS[agentId] || mockAdapter;
-}
-export function setNotify(fn: () => void): void {
-  notify = fn;
 }
 export function getBoard(): Board {
   return board;
@@ -32,11 +29,22 @@ export function agentName(): string {
   return adapter.id;
 }
 
+// persist: durable save for a lifecycle transition — write board.json now.
 function persist(): void {
+  if (saveTimer) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+  }
   saveBoard(board);
-  try {
-    notify();
-  } catch {}
+}
+// touch: streaming agent progress — coalesce the write so a chatty agent
+// run doesn't rewrite board.json on every event (the tick shows it live).
+function touch(): void {
+  if (saveTimer) return;
+  saveTimer = setTimeout(() => {
+    saveTimer = null;
+    saveBoard(board);
+  }, 1000);
 }
 function find(id: string): Card | undefined {
   return board.cards.find((c) => c.id === id);
@@ -90,7 +98,7 @@ export async function startCard(id: string): Promise<void> {
     } else if (e.kind === "usage") {
       logLine(c, "  tokens " + e.inTok + " in / " + e.outTok + " out");
     }
-    persist();
+    touch();
   };
   const onDone = (r: { code: number; error?: string }) => {
     delete runs[c.id];
@@ -165,5 +173,16 @@ export async function discardCard(id: string): Promise<void> {
     } catch {}
   }
   board.cards = board.cards.filter((x) => x.id !== c.id);
+  persist();
+}
+
+// shutdown: abort every in-flight agent and flush the board. The TUI calls
+// this on exit so agent child processes don't outlive agentboard.
+export function shutdown(): void {
+  for (const id in runs) {
+    try {
+      runs[id].abort();
+    } catch {}
+  }
   persist();
 }
