@@ -58,6 +58,17 @@ type TickManager interface {
 	Close()
 }
 
+// RegisterTickManager attaches a TickManager that will be polled on each
+// event-loop tick. Extension packages (e.g., ramune/tui) call this on a
+// fully-initialized Runtime to hook in custom async event delivery.
+//
+// Must be called during setup, before any concurrent Eval/Exec — the
+// underlying slice is not protected by a lock (mirrors the existing
+// install* pattern that appends to customTickMgrs without locking).
+func (r *Runtime) RegisterTickManager(mgr TickManager) {
+	r.customTickMgrs = append(r.customTickMgrs, mgr)
+}
+
 // WithTickManager registers a custom event loop manager.
 // The manager's ProcessEvents method is called during each event loop tick,
 // and HasActive is checked to determine if the event loop should keep running.
