@@ -505,6 +505,35 @@ backends (Redis, Postgres, …) and user-defined bindings
 (`env.QUEUE`, `env.EMAIL`, …), see the embed API below and the
 [custom binding guide](workers/BINDINGS.md).
 
+## Terminal UI (`Ramune.tui`)
+
+A built-in TUI module backed by the Charm stack ([Bubbletea](https://github.com/charmbracelet/bubbletea) + [Lipgloss](https://github.com/charmbracelet/lipgloss) + [bubbles](https://github.com/charmbracelet/bubbles) + [glamour](https://github.com/charmbracelet/glamour)), authored in TSX. You write Elm-style `init` / `update` / `view`; Ramune drives a Bubbletea program on the Go side and routes key/tick/async events back into the JS update.
+
+```tsx
+/** @jsx Ramune.tui.h */
+const init = () => ({ count: 0 });
+const update = (m, msg) =>
+  msg.type === "key" && msg.key === " " ? { ...m, count: m.count + 1 } : m;
+const view = (m) =>
+  <box border="rounded" padding={[1, 2]}>
+    <text bold fg="12">Hello, Ramune.tui</text>
+    <text fg="245">space to increment · count: {m.count}</text>
+  </box>;
+Ramune.tui.run({ init, update, view });
+```
+
+**Components.** `Box` / `Stack` / `Row` (block layout via lipgloss `JoinVertical` / `JoinHorizontal` with `align` / `valign` / `gap`), `List`, `Input`, `Textarea`, `Table`, `Form` (huh-style), `Markdown` (glamour-rendered), `Spinner`, `Progress`, `Viewport`, `Tabs`, `Help`, `Filepicker`, `Paginator`, `Stopwatch`, `Timer`. Runnable showcases in [`examples/tui-*/`](examples/) (clock, counter, todo, pomodoro, survey, themes, ssh, issues).
+
+**Cmd dispatch.** `Cmd.every(ms, msg)` for tick-driven async re-render, `Cmd.quit`, `Cmd.cancelEvery`.
+
+**Chord keymap.** vim + arrow defaults; register multi-key sequences like `g g` or `d d`.
+
+**Over SSH.** `Ramune.tui.serveSSH({ addr, program })` serves the same Bubbletea program via [wish](https://github.com/charmbracelet/wish); every connection gets its own isolated session.
+
+**Headless harness.** `Ramune.tui.test(program)` drives keys and returns frame snapshots; golden-test `view()` without a real TTY.
+
+**Opt out via `-tags notui`.** The Charm stack (Bubbletea, Lipgloss, bubbles, glamour) and the wish SSH server are included in the default build; this tag drops them all for a smaller binary.
+
 ## Embed in Go
 
 Ramune is also a Go library. Embed JavaScript in your Go application and expose any Go library to JS — database drivers, image processing, gRPC clients, ML inference, etc.

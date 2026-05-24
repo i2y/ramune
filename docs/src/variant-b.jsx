@@ -149,7 +149,7 @@ function VariantB() {
         </div>
 
         <div style={{
-          display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 14,
+          display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 14,
           marginTop: 48,
         }}>
           {[
@@ -157,6 +157,7 @@ function VariantB() {
             { n: "02", t: tr("Sandbox & permissions","サンドボックスと権限"), d: tr("Layered: language-level deny-all + allow-lists on every backend, plus WASM VM isolation via wazero when built with -tags qjswasm. Docker is an optional extra layer.","多層: どのバックエンドでも言語層の deny-all + allow-list、-tags qjswasm ビルドなら wazero の WASM VM 隔離も追加。Docker は任意の追加層。"), h: "sandbox", href: "#quickstart" },
             { n: "03", t: tr("Embed in Go","Go に埋め込む"), d: tr("Call any Go lib from JS. Same API across all three backends, zero Cgo at build time.","GoライブラリをJSから呼出し、3バックエンド共通API、ビルド時Cgo不要。"), h: "embed", href: "#backends" },
             { n: "04", t: tr("Self-host Workers","Workersセルフホスト"), d: tr("export default { fetch }. Compile handler + runtime into a single Go binary; run on your VM, bare metal, or scratch container.","export default { fetch }。ハンドラとランタイムを 1 つの Go バイナリに、自分の VM / bare metal / scratch コンテナで実行。"), h: "workers", href: "https://github.com/i2y/ramune/tree/main/examples/workers" },
+            { n: "05", t: tr("Terminal UI","ターミナルUI"), d: tr("Ramune.tui: Bubbletea + Lipgloss + glamour, authored in TSX. Elm-style init/update/view; components, block layout, chord keymap; runs locally or over SSH via wish.","Ramune.tui: Bubbletea + Lipgloss + glamour を TSX で記述。Elm 風 init/update/view、コンポーネント・ブロックレイアウト・和音キーマップ。ローカル実行と wish 経由 SSH 提供。"), h: "tui", href: "https://github.com/i2y/ramune/tree/main/examples" },
           ].map((p) => {
             const isInternal = p.href.startsWith("#");
             return (
@@ -421,6 +422,10 @@ ${sy.c("#     fib(float64) float64")}` },
                   { name: "esbuild",         url: "https://github.com/evanw/esbuild",             tag: tr("bundler","バンドラ") },
                   { name: "typescript-go",   url: "https://github.com/microsoft/typescript-go",   tag: tr("checker · fmt · emit","check · fmt · emit") },
                   { name: "rslint",          url: "https://github.com/web-infra-dev/rslint",      tag: tr("linter","lint") },
+                  { name: "Bubbletea",       url: "https://github.com/charmbracelet/bubbletea",   tag: tr("TUI framework","TUI フレームワーク") },
+                  { name: "Lipgloss",        url: "https://github.com/charmbracelet/lipgloss",    tag: tr("TUI styling","TUI スタイリング") },
+                  { name: "glamour",         url: "https://github.com/charmbracelet/glamour",     tag: tr("Markdown render","Markdown レンダリング") },
+                  { name: "wish",            url: "https://github.com/charmbracelet/wish",        tag: tr("SSH server","SSH サーバ") },
                 ].map((c) => (
                   <div key={c.name}>
                     <span style={{ color: "rgba(10,22,40,.35)" }}>{c.tag} · </span>

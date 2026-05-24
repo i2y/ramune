@@ -399,6 +399,47 @@ Supported APIs:
 - `Bun.*` — Alias for `Ramune.*` (partial Bun compatibility)
 - `bun:sqlite` — pure Go SQLite (Database, Statement)
 
+## Terminal UI (Ramune.tui)
+
+A built-in TUI module backed by the Charm stack (Bubbletea, Lipgloss, bubbles, glamour) and authored in TSX. You write Elm-style `init` / `update` / `view` in TypeScript; the runtime drives a Bubbletea program on the Go side and routes key, tick, and async events back into the JS update.
+
+```tsx
+/** @jsx Ramune.tui.h */
+const init = () => ({ count: 0 });
+const update = (m, msg) =>
+  msg.type === "key" && msg.key === " " ? { ...m, count: m.count + 1 } : m;
+const view = (m) =>
+  <box border="rounded" padding={[1, 2]}>
+    <text bold fg="12">Hello, Ramune.tui</text>
+    <text fg="245">space to increment · count: {m.count}</text>
+  </box>;
+Ramune.tui.run({ init, update, view });
+```
+
+Components:
+- `Box` / `Stack` / `Row`: block layout via lipgloss `JoinVertical` / `JoinHorizontal`. `align` (left/center/right) for vertical stacks, `valign` (top/center/bottom) for horizontal rows, `gap` inserts spacer rows/columns.
+- `List`, `Input`, `Textarea`, `Table`, `Form` (huh-style multi-field), `Filepicker`, `Paginator`
+- `Markdown` (glamour-rendered, theme switchable at runtime)
+- `Spinner`, `Progress`, `Viewport`, `Tabs`, `Help`, `Stopwatch`, `Timer`
+
+Cmd dispatch:
+- `Ramune.tui.Cmd.every(ms, msg)`: tick-driven async re-render (e.g., live agent progress)
+- `Ramune.tui.Cmd.quit`: exit the program
+- `Ramune.tui.Cmd.cancelEvery(tickHandle)`: cancel a tick
+
+Keymap: vim and arrow defaults out of the box. Register multi-key chord sequences (`g g`, `d d`) via the keymap API.
+
+Modes:
+- `Ramune.tui.run({init, update, view})`: local TTY, blocks until quit
+- `Ramune.tui.serveSSH({addr, program})`: same program served over SSH via charmbracelet/wish; every connection gets its own Bubbletea session
+- `Ramune.tui.test(program)`: headless harness that drives keys and returns frame snapshots, useful for golden tests of `view()` without a real TTY
+
+Build flags:
+- Default build (no flag): the full Charm stack and the wish SSH server are bundled in (TUI ships on by default)
+- `-tags notui`: opts out, dropping Bubbletea, Lipgloss, bubbles, glamour, and the wish SSH server entirely; smaller binary when the runtime doesn't need TUI
+
+Examples: `examples/tui-{clock,counter,todo,pomodoro,survey,themes,ssh,issues}/`, plus `examples/hybrid-tui/` (AOT-extractable view() functions).
+
 ## Node.js Compatibility
 
 Enabled via `ramune.NodeCompat()`:

@@ -87,6 +87,15 @@ Three backends, same API:
 - Blob, File, FormData, Headers, Request, Response (with ReadableStream body)
 - performance.now/mark/measure, structuredClone, AbortController, TextEncoder/TextDecoder, URL/URLSearchParams, navigator, WebSocket (server-side)
 
+## Terminal UI (Ramune.tui)
+
+- [Ramune.tui (tui.go)](https://github.com/i2y/ramune/blob/main/tui.go): TUI module backed by Bubbletea + Lipgloss + bubbles + glamour, authored in TSX. Elm-style `init` / `update` / `view`; `Ramune.tui.run({init,update,view})` for a local TTY, `Ramune.tui.serveSSH({addr,program})` for the same program served via charmbracelet/wish (per-connection isolated session).
+- Components: Box / Stack / Row (block layout via lipgloss JoinVertical/JoinHorizontal with align/valign/gap), List, Input, Textarea, Table, Form (huh-style), Markdown (glamour-rendered), Spinner, Progress, Viewport, Tabs, Help, Filepicker, Paginator, Stopwatch, Timer.
+- Cmd dispatch: Cmd.every(ms, msg) for tick-driven re-render, Cmd.quit, Cmd.cancelEvery. Chord-aware keymap (multi-key sequences like `g g`, `d d`).
+- Headless test harness: `Ramune.tui.test(program)` drives keys, returns frame snapshots; golden-tests `view()` output without a real TTY.
+- Included in the default build; opt out via `-tags notui` to drop the entire Charm stack (Bubbletea, Lipgloss, glamour, bubbles, wish SSH server) for smaller binaries.
+- Examples: `examples/tui-{clock,counter,todo,pomodoro,survey,themes,ssh,issues}/`, plus `examples/hybrid-tui/` for AOT-extractable view() functions.
+
 ## Ramune APIs & Bun Compatibility
 
 - [Ramune/Bun APIs (buncompat.go)](https://github.com/i2y/ramune/blob/main/buncompat.go): Ramune.serve() (HTTP server), Ramune.file(), Ramune.write(), Ramune.password, Ramune.sleep(), Ramune.hash(), Ramune.plugin() (onLoad filters, virtual modules), Request/Response with ReadableStream body. Bun.* available as alias. Works with Hono.
