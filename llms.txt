@@ -40,6 +40,15 @@ Three backends, same API:
 - Deno-style permissions (`--sandbox`, `--allow-read`, `--allow-write`, `--allow-net`)
 - Rich REPL with history, tab completion, colors (ergochat/readline + charmbracelet/lipgloss)
 
+## Hybrid AOT (--hybrid)
+
+- Picker accepts: primitive / T[] / Promise<primitive> signatures; pure classes (primitive fields, constructor-initialized, `this`-method bodies, `static` methods including cross-file calls); arithmetic, comparison, `%`, `switch`, `for` / `while` / `for-of`, template literals, `await`-on-extractable; `Math.*` / `Number.*`; string and array method safelists (`map`, `filter`, `forEach`, `some`, `every`, `find`, `findIndex`, `reduce`, `push`, `charAt`); named-interface struct params (including nested struct fields and literal union types like `"a" | "b"`); same-file `*JSFunc` callback params; module-scope `const` declarations extracted alongside dependent functions; `Map<string, primitive>` and `Set<primitive>` (`.has` / `.get` / `.set` / `.delete` / `.size` / `.clear`); array spread (`[a, ...rest]`).
+- Picker rejects: inline object literal params, `Date` / `RegExp`, `try` / `catch` / `throw`, generics, generators, closure capture beyond params/locals, parameter mutation, class inheritance / `#private` / decorators / getters-setters, `str.charCodeAt`, and more. Each rejection ships an actionable hint suggesting how to rewrite for extraction; print the full report with `--hybrid-report` on stderr.
+- Shim prepend: the composer's postlude rebinds module-scope user identifiers to native exports. The shim is prepended (not appended) so hoisted `function` declarations bind first, then the shim runs before any top-level call site (no `setTimeout(0)` workaround needed).
+- TinyGo backend: `--hybrid-backend tinygo` emits `jsbridge.Func` (interface) instead of `*ramune.JSFunc` so the artifact stays inside TinyGo's stdlib subset; `--target wasm-wasi` produces a standalone WASI reactor of the picker-extracted Go alone (no JS runtime bundled, ~110-320 KB).
+- Real-world: `examples/hybrid-realworld/` extracts lodash_mini at 16/17 (~94%) and zod_lite at 17/17 (100%).
+- Examples: `examples/hybrid/`, `examples/hybrid-hono/`, `examples/hybrid-multifile/`, `examples/hybrid-realworld/`, `examples/hybrid-tui/`.
+
 ## TypeScript-to-Go Transpiler (Experimental)
 
 - [Transpiler (internal/gotranspiler/)](https://github.com/i2y/ramune/blob/main/internal/gotranspiler/): Built-in TypeScript-to-Go transpiler (experimental — under active development)

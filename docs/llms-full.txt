@@ -144,6 +144,47 @@ ramune typegen go:fmt go:net/http -o go.d.ts
 
 Generates `declare module "go:fmt" { ... }` with function signatures, interfaces, constants, and type mappings (number, string, boolean, Record, tuples for multi-return, Error | null for error returns).
 
+## Hybrid AOT (`compile --hybrid`)
+
+`ramune compile --hybrid` walks every user TypeScript file in the entry's import graph and extracts each top-level function or pure class whose signature and body are statically provable to behave identically in Go. Extracted functions become native Go; the rest run as JS unchanged. Adding `--hybrid` to an existing `ramune compile` never breaks correctness; the worst case is that nothing gets extracted.
+
+### Picker acceptance surface
+
+Signatures: primitive types (`number`, `string`, `boolean`), arrays of primitives or accepted structs (`T[]`), `Promise<primitive>`, named-interface struct params (including nested struct fields and literal union types like `"a" | "b"`), same-file `*JSFunc` callback params.
+
+Bodies: arithmetic, comparison, `%`, `switch`, `for` / `while` / `for-of`, template literals, `await` on extractable Promises, optional chaining, nullish coalescing.
+
+Standard-library safelist:
+- `Math.*` / `Number.*` (full sets)
+- String methods: `length`, `slice`, `substring`, `indexOf`, `lastIndexOf`, `includes`, `startsWith`, `endsWith`, `toLowerCase`, `toUpperCase`, `trim`, `split`, `repeat`, `charAt`, `padStart` / `padEnd`, `concat`
+- Array methods: `length`, `push`, `pop`, `shift`, `unshift`, `slice`, `concat`, `join`, `indexOf`, `lastIndexOf`, `includes`, `map`, `filter`, `forEach`, `some`, `every`, `find`, `findIndex`, `reduce`, array spread (`[a, ...rest]`)
+- Collections: `Map<string, primitive>` and `Set<primitive>` with `.has` / `.get` / `.set` / `.delete` / `.size` / `.clear`
+
+Classes: pure classes with primitive fields, constructor-initialized, `this`-method bodies, `static` methods including cross-file calls (the picker pre-collects every class's static methods before any body validation, so `Class.method(...)` resolves whether the class is declared earlier or later, even across files).
+
+Module scope: top-level `const` declarations extracted alongside the functions that reference them (so `const N = 40` gets a Go counterpart when its dependents are extracted).
+
+### Rejections
+
+`Date`, `RegExp`, `try` / `catch` / `throw`, generics, generators, closure capture beyond params/locals, parameter mutation, inline object literal params, class inheritance / `#private` / decorators / getters/setters, `str.charCodeAt`, dynamic property access, and more. Each rejection ships an actionable hint explaining how to rewrite for extraction (e.g., "use `s[i]` instead of `s.charCodeAt(i)`", "convert `Map<K, V>` keys to `string`"); print the full per-function report on stderr with `--hybrid-report`.
+
+### Shim prepend
+
+The composer emits a postlude shim that rebinds module-scope user identifiers to the native exports. The shim is prepended (not appended) to the JS bundle so that hoisted `function fib(n) {...}` declarations bind first, then the shim's `fib = globalThis.__ramuneNativeExports.fib` runs before any top-level call site (no `setTimeout(0)` workaround needed).
+
+### Backend selection
+
+- `--hybrid-backend go` (default): emits `*ramune.JSFunc` (host concrete type) for callable-typed parameters; the artifact drags ramune root deps.
+- `--hybrid-backend tinygo`: emits `jsbridge.Func` (interface) instead, so the artifact stays inside TinyGo's stdlib subset. Used by `--target wasm-wasi`.
+
+### Real-world extraction rates
+
+`examples/hybrid-realworld/`: lodash_mini at 16/17 functions (~94%) and zod_lite at 17/17 (100%) extracted, demonstrating that the picker's accept surface covers idiomatic real-world TypeScript.
+
+### Examples
+
+`examples/hybrid/` (minimal bench), `examples/hybrid-hono/` (Hono web app), `examples/hybrid-multifile/` (cross-file kernels), `examples/hybrid-realworld/` (lodash_mini, zod_lite), `examples/hybrid-tui/` (AOT-extractable view() functions).
+
 ## Native Extension Modules (Experimental)
 
 Experimental: uses the TypeScript-to-Go transpiler internally, so it inherits the transpiler's experimental status. Simple typed functions (primitives, structs, typed slices) work reliably; generics, decorators, and deep class inheritance may produce Go code that needs manual fixes.

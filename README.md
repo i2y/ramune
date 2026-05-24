@@ -295,7 +295,7 @@ console.log(c.count); // 101
 
 ### Automatic Native Extraction (`--hybrid`)
 
-An alternative to `--native` that walks your app automatically: top-level functions and pure classes whose signature and body fall inside a statically-verified subset get compiled to Go; everything else stays on the JS floor. Rejected functions are not silently skipped — each is reported with a reason code when `--hybrid-report` is set.
+An alternative to `--native` that walks your app automatically: top-level functions and pure classes whose signature and body fall inside a statically-verified subset get compiled to Go; everything else stays on the JS floor. Rejected functions are not silently skipped — each is reported with a reason code and an actionable hint when `--hybrid-report` is set.
 
 Multi-file projects are supported transparently — the picker walks every user TS file reachable from the entry's import graph (excluding `.d.ts` and `node_modules`), so functions declared in a separate `kernel.ts` or `lib/math.ts` are eligible for extraction, and cross-file calls between them are accepted.
 
@@ -308,9 +308,9 @@ The picker is soundness-gated: it accepts a function only when every signature t
 
 Soundness is proven, speed is not. Each extracted call pays a fixed JS↔Go bridge cost, so extraction can *regress* when the body does trivial per-call work, marshals a large array on every invocation, or hammers a method in a tight loop — `examples/hybrid/` shows one case where `sumSquares(xs)` over a 1000-element array is ~86× slower than plain JS on JSC + JIT because array marshalling dominates the ~1 µs of body work. Rule of thumb: extract recursive or loop-heavy kernels with primitive arguments; leave frequently-called tight methods and array/object-arg APIs on the JS floor. The picker doesn't see these costs — it only proves semantic equivalence — so use `--hybrid-report` to pick targets and then measure.
 
-Accepts: primitive / `T[]` / `Promise<primitive>` signatures; pure classes (primitive fields, constructor-initialized, `this`-method bodies); arithmetic, comparison, `%`, switch, `for` / `while` / `for-of`, template literals, `await`-on-extractable; `Math.*`, `Number.*`, string / array method safelists, callback-driven `map` / `filter` / `forEach` / `some` / `every`; named-interface struct params; same-file `*JSFunc` callback params.
+Accepts: primitive / `T[]` / `Promise<primitive>` signatures; pure classes (primitive fields, constructor-initialized, `this`-method bodies, `static` methods including cross-file calls); arithmetic, comparison, `%`, switch, `for` / `while` / `for-of`, template literals, `await`-on-extractable; `Math.*`, `Number.*`, string and array method safelists (`map`, `filter`, `forEach`, `some`, `every`, `find`, `findIndex`, `reduce`, `push`, `charAt`); named-interface struct params (including nested struct fields and literal union types like `"a" | "b"`); same-file `*JSFunc` callback params; module-scope `const` declarations extracted alongside the functions that reference them; `Map<string, primitive>` and `Set<primitive>` (`.has` / `.get` / `.set` / `.delete` / `.size` / `.clear`); array spread (`[a, ...rest]`).
 
-Rejects: `reduce` / `find` / `findIndex`, inline object literal params, `Map` / `Set` / `Date` / `RegExp`, `try` / `catch` / `throw`, generics, generators, closure capture beyond params/locals, parameter mutation, class inheritance / `static` / `#private` / decorators / getters-setters, `str.charAt` / `charCodeAt`, and more. Full reason-code list in the extraction report.
+Rejects: inline object literal params, `Date` / `RegExp`, `try` / `catch` / `throw`, generics, generators, closure capture beyond params/locals, parameter mutation, class inheritance / `#private` / decorators / getters-setters, `str.charCodeAt`, and more. Full reason-code list in the extraction report; each rejection now ships an actionable hint suggesting how to rewrite for extraction (e.g., "use `s[i]` instead of `s.charCodeAt(i)`", "convert `Map<K, V>` keys to `string`").
 
 **vs `--native`:**
 
