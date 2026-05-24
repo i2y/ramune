@@ -42,6 +42,7 @@ import (
 	"github.com/i2y/ramune/internal/registry"
 	"github.com/i2y/ramune/internal/tsgo/core"
 	"github.com/i2y/ramune/tsgotranspile"
+	"github.com/i2y/ramune/tui"
 )
 
 //go:embed skills
@@ -260,7 +261,15 @@ func createRuntime(packages []string) (*ramune.Runtime, error) {
 }
 
 func createRuntimeFromOpts(opts []ramune.Option) (*ramune.Runtime, error) {
-	return ramune.New(opts...)
+	rt, err := ramune.New(opts...)
+	if err != nil {
+		return nil, err
+	}
+	if err := tui.Install(rt); err != nil {
+		rt.Close()
+		return nil, fmt.Errorf("tui install: %w", err)
+	}
+	return rt, nil
 }
 
 func runCmd(args []string) {

@@ -306,7 +306,6 @@ func (r *Runtime) qjswasmLoop(ready chan<- error, cfg *config) {
 			{"archive", r.installArchive},
 			{"cron", r.installCron},
 			{"markdown", r.installMarkdown},
-			{"tui", r.installTUI},
 			{"webview", r.installWebView},
 			{"cdp", r.installCDP},
 			{"sqlite", r.installSQLite},

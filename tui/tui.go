@@ -1,6 +1,10 @@
-//go:build !notui
-
-package ramune
+// Package tui exposes Ramune.tui — a TUI module backed by the Charm stack
+// (Bubbletea, Lipgloss, bubbles, glamour, wish). Import this package and
+// call Install(rt) on a freshly-created *ramune.Runtime to enable the
+// Ramune.tui.* JavaScript surface; embedders that don't need TUI avoid
+// the Charm transitive deps and the bundled SSH server by simply not
+// importing this package.
+package tui
 
 import (
 	"bytes"
@@ -17,6 +21,8 @@ import (
 	"github.com/charmbracelet/wish"
 	bm "github.com/charmbracelet/wish/bubbletea"
 	"github.com/muesli/termenv"
+
+	"github.com/i2y/ramune"
 )
 
 // tuiSession owns one BubbleTea program backed by JS update/view callbacks.
@@ -26,12 +32,12 @@ import (
 // TickManager whose HasActive() pins the event loop until the program
 // exits.
 type tuiSession struct {
-	rt     *Runtime
+	rt     *ramune.Runtime
 	id     uint64
 	prog   *tea.Program
-	update *JSFunc
-	view   *JSFunc
-	done   *JSFunc
+	update *ramune.JSFunc
+	view   *ramune.JSFunc
+	done   *ramune.JSFunc
 
 	// stateRaw is the JSON-encoded model that JS-side returned from the
 	// last update. We keep it as a string so the BubbleTea goroutine can
@@ -67,7 +73,7 @@ type tuiManager struct {
 
 type tuiSSHServer struct {
 	srv  *ssh.Server
-	done *JSFunc
+	done *ramune.JSFunc
 }
 
 type tuiDoneEvent struct {
@@ -75,14 +81,14 @@ type tuiDoneEvent struct {
 	// that don't belong to a per-connection session (e.g. SSH server
 	// shutdown) — only when sess is set do we mark it exited and
 	// remove it from the manager's session map.
-	done       *JSFunc
+	done       *ramune.JSFunc
 	sess       *tuiSession
 	err        string
 	finalState string
 	captured   string
 }
 
-func (m *tuiManager) ProcessEvents(r *Runtime) {
+func (m *tuiManager) ProcessEvents(r *ramune.Runtime) {
 	m.mu.Lock()
 	pending := m.pending
 	m.pending = nil
@@ -130,26 +136,26 @@ func (m *tuiManager) HasActive() bool {
 // while keeping each connection's state isolated. Returns the server
 // id; the JS side gets the resolution via doneFn when the server stops
 // (Close, listener error, or stop_ssh).
-func goTUIServeSSH(rt *Runtime, mgr *tuiManager) func([]any) (any, error) {
+func goTUIServeSSH(rt *ramune.Runtime, mgr *tuiManager) func([]any) (any, error) {
 	return func(args []any) (any, error) {
 		if len(args) < 6 {
 			return nil, fmt.Errorf("tui.serveSSH: need (addr, hostKeyPath, initFn, updateFn, viewFn, doneFn)")
 		}
 		addr, _ := args[0].(string)
 		hostKeyPath, _ := args[1].(string)
-		initFn, ok := args[2].(*JSFunc)
+		initFn, ok := args[2].(*ramune.JSFunc)
 		if !ok {
 			return nil, fmt.Errorf("tui.serveSSH: init must be a function")
 		}
-		updateFn, ok := args[3].(*JSFunc)
+		updateFn, ok := args[3].(*ramune.JSFunc)
 		if !ok {
 			return nil, fmt.Errorf("tui.serveSSH: update must be a function")
 		}
-		viewFn, ok := args[4].(*JSFunc)
+		viewFn, ok := args[4].(*ramune.JSFunc)
 		if !ok {
 			return nil, fmt.Errorf("tui.serveSSH: view must be a function")
 		}
-		doneFn, ok := args[5].(*JSFunc)
+		doneFn, ok := args[5].(*ramune.JSFunc)
 		if !ok {
 			return nil, fmt.Errorf("tui.serveSSH: done must be a function")
 		}
@@ -366,39 +372,42 @@ func decomposeUpdateResult(res any) (string, tea.Cmd) {
 	return "", nil
 }
 
-func (r *Runtime) installTUI() error {
+// Install registers the Ramune.tui.* JavaScript surface on the given
+// runtime. Call this once on a fully-initialized *ramune.Runtime before
+// running any user JS that touches Ramune.tui (the CLI does this in main).
+func Install(r *ramune.Runtime) error {
 	mgr := &tuiManager{
 		sessions: map[uint64]*tuiSession{},
 		servers:  map[uint64]*tuiSSHServer{},
 	}
-	r.customTickMgrs = append(r.customTickMgrs, mgr)
+	r.RegisterTickManager(mgr)
 
-	if err := r.registerFuncLocked("__go_tui_start", goTUIStart(r, mgr)); err != nil {
+	if err := r.RegisterFunc("__go_tui_start", goTUIStart(r, mgr)); err != nil {
 		return err
 	}
-	if err := r.registerFuncLocked("__go_tui_style", goTUIStyle); err != nil {
+	if err := r.RegisterFunc("__go_tui_style", goTUIStyle); err != nil {
 		return err
 	}
-	if err := r.registerFuncLocked("__go_tui_join", goTUIJoin); err != nil {
+	if err := r.RegisterFunc("__go_tui_join", goTUIJoin); err != nil {
 		return err
 	}
-	if err := r.registerFuncLocked("__go_tui_quit", goTUIQuit(mgr)); err != nil {
+	if err := r.RegisterFunc("__go_tui_quit", goTUIQuit(mgr)); err != nil {
 		return err
 	}
-	if err := r.registerFuncLocked("__go_tui_dispatch", goTUIDispatch(mgr)); err != nil {
+	if err := r.RegisterFunc("__go_tui_dispatch", goTUIDispatch(mgr)); err != nil {
 		return err
 	}
-	if err := r.registerFuncLocked("__go_tui_markdown", goTUIMarkdown); err != nil {
+	if err := r.RegisterFunc("__go_tui_markdown", goTUIMarkdown); err != nil {
 		return err
 	}
-	if err := r.registerFuncLocked("__go_tui_serve_ssh", goTUIServeSSH(r, mgr)); err != nil {
+	if err := r.RegisterFunc("__go_tui_serve_ssh", goTUIServeSSH(r, mgr)); err != nil {
 		return err
 	}
-	if err := r.registerFuncLocked("__go_tui_stop_ssh", goTUIStopSSH(mgr)); err != nil {
+	if err := r.RegisterFunc("__go_tui_stop_ssh", goTUIStopSSH(mgr)); err != nil {
 		return err
 	}
 
-	return r.execLocked(`(function() {
+	return r.Exec(`(function() {
 	globalThis.Ramune.tui = {
 		run: function(opts) {
 			opts = opts || {};
@@ -1757,21 +1766,21 @@ func (r *Runtime) installTUI() error {
 })();`)
 }
 
-func goTUIStart(rt *Runtime, mgr *tuiManager) func([]any) (any, error) {
+func goTUIStart(rt *ramune.Runtime, mgr *tuiManager) func([]any) (any, error) {
 	return func(args []any) (any, error) {
 		if len(args) < 4 {
 			return nil, fmt.Errorf("tui.run: need (initialStateJSON, updateFn, viewFn, doneFn[, opts])")
 		}
 		initialJSON, _ := args[0].(string)
-		updateFn, ok := args[1].(*JSFunc)
+		updateFn, ok := args[1].(*ramune.JSFunc)
 		if !ok {
 			return nil, fmt.Errorf("tui.run: update must be a function")
 		}
-		viewFn, ok := args[2].(*JSFunc)
+		viewFn, ok := args[2].(*ramune.JSFunc)
 		if !ok {
 			return nil, fmt.Errorf("tui.run: view must be a function")
 		}
-		doneFn, ok := args[3].(*JSFunc)
+		doneFn, ok := args[3].(*ramune.JSFunc)
 		if !ok {
 			return nil, fmt.Errorf("tui.run: done must be a function")
 		}

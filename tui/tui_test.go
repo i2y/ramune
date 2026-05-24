@@ -1,6 +1,4 @@
-//go:build !notui
-
-package ramune_test
+package tui_test
 
 import (
 	"encoding/json"
@@ -10,7 +8,35 @@ import (
 	"time"
 
 	"github.com/i2y/ramune"
+	"github.com/i2y/ramune/tui"
 )
+
+// sharedNodeCompat returns a process-wide *ramune.Runtime with NodeCompat,
+// fetch, and TUI installed — built once, reused across tests for speed.
+// Skips the calling test when JSC is unavailable.
+var (
+	sharedTUIOnce sync.Once
+	sharedTUIRT   *ramune.Runtime
+)
+
+func sharedNodeCompat(t *testing.T) *ramune.Runtime {
+	t.Helper()
+	sharedTUIOnce.Do(func() {
+		r, err := ramune.New(ramune.NodeCompat(), ramune.WithFetch())
+		if err != nil {
+			return
+		}
+		if err := tui.Install(r); err != nil {
+			r.Close()
+			return
+		}
+		sharedTUIRT = r
+	})
+	if sharedTUIRT == nil {
+		t.Skip("JSC not available")
+	}
+	return sharedTUIRT
+}
 
 // runTUIScript drives Ramune.tui.test() with a JSON-serialized opts
 // blob and returns the captured frames as a slice of strings.
@@ -134,6 +160,9 @@ func TestTUI_Headless_DispatchAndCapture(t *testing.T) {
 	r, err := ramune.New(ramune.NodeCompat())
 	if err != nil {
 		t.Skipf("JSC not available: %v", err)
+	}
+	if err := tui.Install(r); err != nil {
+		t.Fatalf("tui.Install: %v", err)
 	}
 	defer r.Close()
 
@@ -477,6 +506,9 @@ func TestTUI_ServeSSH_Lifecycle(t *testing.T) {
 	r, err := ramune.New(ramune.NodeCompat())
 	if err != nil {
 		t.Skipf("JSC not available: %v", err)
+	}
+	if err := tui.Install(r); err != nil {
+		t.Fatalf("tui.Install: %v", err)
 	}
 	defer r.Close()
 

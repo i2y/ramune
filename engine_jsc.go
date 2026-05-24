@@ -482,11 +482,6 @@ func (r *Runtime) jscLoop(cfg config, initErr chan<- error) {
 			initErr <- fmt.Errorf("ramune: failed to install markdown: %w", err)
 			return
 		}
-		if err := r.installTUI(); err != nil {
-			releaseCtx()
-			initErr <- fmt.Errorf("ramune: failed to install TUI: %w", err)
-			return
-		}
 		if err := r.installWebView(); err != nil {
 			releaseCtx()
 			initErr <- fmt.Errorf("ramune: failed to install WebView: %w", err)

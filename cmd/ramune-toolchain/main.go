@@ -1115,6 +1115,7 @@ import (
 	%s
 
 	"github.com/i2y/ramune"
+	"github.com/i2y/ramune/tui"
 %s)
 
 //go:embed app.bundle.js
@@ -1126,6 +1127,10 @@ func main() {
 		log.Fatal(err)
 	}
 	defer rt.Close()
+
+	if err := tui.Install(rt); err != nil {
+		log.Fatal(err)
+	}
 
 	if err := rt.Exec(appJS); err != nil {
 		log.Fatal(err)
