@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # agentboard — hands-on launcher with the real Claude agent.
 #
-#   ./agentboard/try.sh [repo-path]
+#   ./examples/agentboard/try.sh [repo-path]
 #
 # Runs agentboard against [repo-path], or a scratch repo at
 # /tmp/agentboard-try (created on first run). Agent: Claude Code.
 set -euo pipefail
 
 repo="${1:-/tmp/agentboard-try}"
-root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 if [ ! -d "$repo/.git" ]; then
   echo "creating scratch repo: $repo"
@@ -24,4 +24,4 @@ fi
 
 echo "agentboard → repo: $repo   agent: claude"
 exec env AGENTBOARD_REPO="$repo" AGENTBOARD_AGENT=claude \
-  "$root/ramune" run "$root/agentboard/agentboard.ts"
+  "$root/ramune" run "$root/examples/agentboard/agentboard.ts"

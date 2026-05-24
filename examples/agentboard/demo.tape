@@ -2,7 +2,7 @@
 #   vhs demo.tape
 # Paths are absolute; adjust for your machine. Uses the mock agent so the
 # recording is fast, deterministic, and token-free.
-Output "/Users/i2y/esffi/agentboard/demo.gif"
+Output "/Users/i2y/esffi/examples/agentboard/demo.gif"
 Set Shell "bash"
 Set FontSize 13
 Set Width 1000
@@ -11,7 +11,7 @@ Set Theme "Dracula"
 
 # Launch off-camera so the GIF opens on the live board.
 Hide
-Type "AGENTBOARD_REPO=/tmp/ab-demo AGENTBOARD_AGENT=mock /Users/i2y/esffi/ramune run /Users/i2y/esffi/agentboard/agentboard.ts"
+Type "AGENTBOARD_REPO=/tmp/ab-demo AGENTBOARD_AGENT=mock /Users/i2y/esffi/ramune run /Users/i2y/esffi/examples/agentboard/agentboard.ts"
 Enter
 Sleep 5s
 Show
