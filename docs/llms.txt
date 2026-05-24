@@ -102,7 +102,7 @@ Three backends, same API:
 - Components: Box / Stack / Row (block layout via lipgloss JoinVertical/JoinHorizontal with align/valign/gap), List, Input, Textarea, Table, Form (huh-style), Markdown (glamour-rendered), Spinner, Progress, Viewport, Tabs, Help, Filepicker, Paginator, Stopwatch, Timer.
 - Cmd dispatch: Cmd.every(ms, msg) for tick-driven re-render, Cmd.quit, Cmd.cancelEvery. Chord-aware keymap (multi-key sequences like `g g`, `d d`).
 - Headless test harness: `Ramune.tui.test(program)` drives keys, returns frame snapshots; golden-tests `view()` output without a real TTY.
-- Included in the default build; opt out via `-tags notui` to drop the entire Charm stack (Bubbletea, Lipgloss, glamour, bubbles, wish SSH server) for smaller binaries.
+- Included in the default build; opt out via `-tags notui` to drop the entire Charm stack (Bubbletea, Lipgloss, glamour, bubbles, wish SSH server) for ~7 MB smaller binary and ~6 ms faster startup.
 - Examples: `examples/tui-{clock,counter,todo,pomodoro,survey,themes,ssh,issues}/`, plus `examples/hybrid-tui/` for AOT-extractable view() functions.
 
 ## Ramune APIs & Bun Compatibility

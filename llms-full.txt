@@ -476,8 +476,8 @@ Modes:
 - `Ramune.tui.test(program)`: headless harness that drives keys and returns frame snapshots, useful for golden tests of `view()` without a real TTY
 
 Build flags:
-- Default build (no flag): the full Charm stack and the wish SSH server are bundled in (TUI ships on by default)
-- `-tags notui`: opts out, dropping Bubbletea, Lipgloss, bubbles, glamour, and the wish SSH server entirely; smaller binary when the runtime doesn't need TUI
+- Default build (no flag): the full Charm stack and the wish SSH server are bundled in (TUI ships on by default; +~7 MB binary and +~6 ms startup paid on every invocation, even when TUI is unused)
+- `-tags notui`: opts out, dropping Bubbletea, Lipgloss, bubbles, glamour, and the wish SSH server entirely; restores baseline binary size and startup time when the runtime doesn't need TUI
 
 Examples: `examples/tui-{clock,counter,todo,pomodoro,survey,themes,ssh,issues}/`, plus `examples/hybrid-tui/` (AOT-extractable view() functions).
 

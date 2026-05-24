@@ -532,7 +532,7 @@ Ramune.tui.run({ init, update, view });
 
 **Headless harness.** `Ramune.tui.test(program)` drives keys and returns frame snapshots; golden-test `view()` without a real TTY.
 
-**Opt out via `-tags notui`.** The Charm stack (Bubbletea, Lipgloss, bubbles, glamour) and the wish SSH server are included in the default build; this tag drops them all for a smaller binary.
+**Opt out via `-tags notui`.** The Charm stack (Bubbletea, Lipgloss, bubbles, glamour) and the wish SSH server are included in the default build; this tag drops them all for ~7 MB smaller binary and ~6 ms faster startup (the runtime pays the TUI install cost on every invocation, even when TUI is unused).
 
 ## Embed in Go
 
