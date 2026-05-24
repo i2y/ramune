@@ -532,7 +532,7 @@ Ramune.tui.run({ init, update, view });
 
 **Headless harness.** `Ramune.tui.test(program)` drives keys and returns frame snapshots; golden-test `view()` without a real TTY.
 
-**Opt out via `-tags notui`.** The Charm stack (Bubbletea, Lipgloss, bubbles, glamour) and the wish SSH server are included in the default build; this tag drops them all for ~7 MB smaller binary and ~6 ms faster startup (the runtime pays the TUI install cost on every invocation, even when TUI is unused).
+**Subpackage opt-in (embedders).** TUI lives in `github.com/i2y/ramune/tui`, a separate Go package. The CLI binary always imports it, so `ramune run` users get `Ramune.tui.*` out of the box; Go embedders who `import "github.com/i2y/ramune"` directly stay lean (no Bubbletea / Lipgloss / glamour / wish in `go.mod`, no SSH server in the binary, ~7 MB smaller, ~6 ms faster startup). To enable TUI in an embedded runtime: `import "github.com/i2y/ramune/tui"` and call `tui.Install(rt)` after `ramune.New`.
 
 ## Embed in Go
 
