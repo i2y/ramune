@@ -5,6 +5,7 @@ import (
 
 	"github.com/i2y/ramune/internal/tsgo/collections"
 	"github.com/i2y/ramune/internal/tsgo/core"
+	"github.com/i2y/ramune/internal/tsgo/tracing"
 	"github.com/i2y/ramune/internal/tsgo/tsoptions"
 	"github.com/i2y/ramune/internal/tsgo/tspath"
 )
@@ -16,7 +17,11 @@ type projectReferenceParseTask struct {
 }
 
 func (t *projectReferenceParseTask) parse(projectReferenceParser *projectReferenceParser) {
-	t.resolved = projectReferenceParser.loader.opts.Host.GetResolvedProjectReference(t.configName, projectReferenceParser.loader.toPath(t.configName))
+	loader := projectReferenceParser.loader
+	if tr := loader.opts.Tracing; tr != nil {
+		defer tr.Push(tracing.PhaseParse, "parseJsonSourceFileConfigFileContent", map[string]any{"path": t.configName}, false)()
+	}
+	t.resolved = loader.opts.Host.GetResolvedProjectReference(t.configName, loader.toPath(t.configName))
 	if t.resolved == nil {
 		return
 	}

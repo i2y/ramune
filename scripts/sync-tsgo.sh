@@ -33,6 +33,7 @@ PACKAGES=(
     locale
     module
     modulespecifiers
+    nativepath
     nodebuilder
     outputpaths
     packagejson
@@ -45,6 +46,7 @@ PACKAGES=(
     sourcemap
     stringutil
     symlinks
+    tracing
     transformers
     transformers/declarations
     transformers/estransforms

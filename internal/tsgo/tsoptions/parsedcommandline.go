@@ -9,6 +9,7 @@ import (
 
 	"github.com/i2y/ramune/internal/tsgo/ast"
 	"github.com/i2y/ramune/internal/tsgo/core"
+	"github.com/i2y/ramune/internal/tsgo/diagnostics"
 	"github.com/i2y/ramune/internal/tsgo/glob"
 	"github.com/i2y/ramune/internal/tsgo/locale"
 	"github.com/i2y/ramune/internal/tsgo/module"
@@ -82,7 +83,7 @@ var (
 )
 
 func (p *ParsedCommandLine) ConfigName() string {
-	if p == nil {
+	if p == nil || p.ConfigFile == nil {
 		return ""
 	}
 	return p.ConfigFile.SourceFile.FileName()
@@ -120,21 +121,34 @@ func (p *ParsedCommandLine) ParseInputOutputNames() {
 
 func (p *ParsedCommandLine) CommonSourceDirectory() string {
 	p.commonSourceDirectoryOnce.Do(func() {
+		files := func() []string {
+			return core.Filter(p.ParsedConfig.FileNames, func(file string) bool {
+				return !(p.ParsedConfig.CompilerOptions.NoEmitForJsFiles.IsTrue() && tspath.HasJSFileExtension(file)) && !tspath.IsDeclarationFileName(file)
+			})
+		}
+
 		p.commonSourceDirectory = outputpaths.GetCommonSourceDirectory(
 			p.ParsedConfig.CompilerOptions,
-			func() []string {
-				return core.Filter(
-					p.ParsedConfig.FileNames,
-					func(file string) bool {
-						return !(p.ParsedConfig.CompilerOptions.NoEmitForJsFiles.IsTrue() && tspath.HasJSFileExtension(file)) &&
-							!tspath.IsDeclarationFileName(file)
-					})
-			},
+			files,
 			p.GetCurrentDirectory(),
 			p.UseCaseSensitiveFileNames(),
+			p.checkSourceFilesBelongToPath,
 		)
 	})
 	return p.commonSourceDirectory
+}
+
+func (p *ParsedCommandLine) checkSourceFilesBelongToPath(sourceFiles []string, rootDirectory string) bool {
+	allFilesBelongToPath := true
+	for _, file := range sourceFiles {
+		absoluteSourceFilePath := tspath.GetCanonicalFileName(tspath.GetNormalizedAbsolutePath(file, p.GetCurrentDirectory()), p.UseCaseSensitiveFileNames())
+		if !tspath.ContainsPath(rootDirectory, file, p.comparePathsOptions) {
+			p.Errors = append(p.Errors, ast.NewCompilerDiagnostic(diagnostics.File_0_is_not_under_rootDir_1_rootDir_is_expected_to_contain_all_source_files, absoluteSourceFilePath, rootDirectory))
+			allFilesBelongToPath = false
+		}
+	}
+
+	return allFilesBelongToPath
 }
 
 func (p *ParsedCommandLine) GetCurrentDirectory() string {

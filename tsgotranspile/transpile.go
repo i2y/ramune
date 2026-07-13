@@ -294,6 +294,10 @@ func (f *singleFileFS) WriteFile(p string, data string) error {
 	return f.base.WriteFile(p, data)
 }
 
+func (f *singleFileFS) AppendFile(p string, data string) error {
+	return f.base.AppendFile(p, data)
+}
+
 func (f *singleFileFS) Remove(p string) error { return f.base.Remove(p) }
 
 func (f *singleFileFS) Chtimes(p string, a, m time.Time) error {

@@ -62,8 +62,31 @@ func (c *Checker) GetUnknownSymbol() *ast.Symbol {
 	return c.unknownSymbol
 }
 
+func (c *Checker) GetUndefinedSymbol() *ast.Symbol {
+	return c.undefinedSymbol
+}
+
+func (c *Checker) GetArgumentsSymbol() *ast.Symbol {
+	return c.argumentsSymbol
+}
+
 func (c *Checker) GetUnionType(types []*Type) *Type {
 	return c.getUnionType(types)
+}
+
+func (c *Checker) GetNameTypeOfSymbol(symbol *ast.Symbol) *Type {
+	if !c.valueSymbolLinks.Has(symbol) {
+		return nil
+	}
+	return c.valueSymbolLinks.TryGet(symbol).nameType
+}
+
+func IsTypeUsableAsPropertyName(t *Type) bool {
+	return isTypeUsableAsPropertyName(t)
+}
+
+func GetPropertyNameFromType(t *Type) string {
+	return getPropertyNameFromType(t)
 }
 
 func (c *Checker) GetGlobalSymbol(name string, meaning ast.SymbolFlags, diagnostic *diagnostics.Message) *ast.Symbol {
@@ -154,6 +177,14 @@ func (c *Checker) GetConstraintOfTypeParameter(typeParameter *Type) *Type {
 	return c.getConstraintOfTypeParameter(typeParameter)
 }
 
+func (c *Checker) GetTrueTypeOfConditionalType(t *Type) *Type {
+	return c.getTrueTypeFromConditionalType(t)
+}
+
+func (c *Checker) GetFalseTypeOfConditionalType(t *Type) *Type {
+	return c.getFalseTypeFromConditionalType(t)
+}
+
 func (c *Checker) GetDefaultFromTypeParameter(typeParameter *Type) *Type {
 	return c.getDefaultFromTypeParameter(typeParameter)
 }
@@ -176,6 +207,10 @@ func (c *Checker) GetTypePredicateOfSignature(sig *Signature) *TypePredicate {
 
 func IsTupleType(t *Type) bool {
 	return isTupleType(t)
+}
+
+func (c *Checker) IsArrayType(t *Type) bool {
+	return c.isArrayType(t)
 }
 
 func (c *Checker) GetReturnTypeOfSignature(sig *Signature) *Type {
@@ -263,6 +298,10 @@ func (c *Checker) GetTypeArguments(t *Type) []*Type {
 	return c.getTypeArguments(t)
 }
 
+func (c *Checker) GetIndexInfoOfType(t *Type, keyType *Type) *IndexInfo {
+	return c.getIndexInfoOfType(t, keyType)
+}
+
 func (c *Checker) GetIndexInfosOfType(t *Type) []*IndexInfo {
 	return c.getIndexInfosOfType(t)
 }
@@ -301,4 +340,16 @@ func (c *Checker) RequiresAddingImplicitUndefined(node *ast.Node) bool {
 		return false
 	}
 	return c.GetEmitResolver().RequiresAddingImplicitUndefined(node, symbol, enclosingDeclaration)
+}
+
+func (c *Checker) RemoveMissingOrUndefinedType(t *Type) *Type {
+	return c.removeMissingOrUndefinedType(t)
+}
+
+func (c *Checker) GetWidenedType(t *Type) *Type {
+	return c.getWidenedType(t)
+}
+
+func (c *Checker) CompareSymbols(s1, s2 *ast.Symbol) int {
+	return c.compareSymbols(s1, s2)
 }
