@@ -1,7 +1,16 @@
 package utils
 
 import (
+	"encoding/json"
+	"slices"
+	"strconv"
+	"strings"
+
 	"github.com/i2y/ramune/internal/rslint/shim/ast"
+	"github.com/i2y/ramune/internal/rslint/shim/compiler"
+	"github.com/i2y/ramune/internal/rslint/shim/core"
+	"github.com/i2y/ramune/internal/rslint/shim/tspath"
+	"github.com/i2y/ramune/internal/rslint/rule"
 )
 
 type JestFnType string
@@ -21,6 +30,8 @@ const (
 	JestFnTypeTest     JestFnType = "test"
 	JestFnTypeUnknown  JestFnType = "unknown"
 )
+
+var JEST_HOOKS_ORDER = []string{"beforeAll", "beforeEach", "afterEach", "afterAll"}
 
 var JEST_METHOD_NAMES = map[string]bool{
 	"afterAll":   true,
@@ -65,6 +76,7 @@ var VALID_JEST_FN_CALL_CHAINS = map[string]bool{
 	"fdescribe":                 true,
 	"fdescribe.each":            true,
 	"fit":                       true,
+	"fit.concurrent":            true,
 	"fit.each":                  true,
 	"fit.failing":               true,
 	"fit.fails":                 true,
@@ -75,6 +87,7 @@ var VALID_JEST_FN_CALL_CHAINS = map[string]bool{
 	"it.concurrent.skip.each":   true,
 	"it.each":                   true,
 	"it.failing":                true,
+	"it.failing.each":           true,
 	"it.fails":                  true,
 	"it.only":                   true,
 	"it.only.each":              true,
@@ -105,6 +118,7 @@ var VALID_JEST_FN_CALL_CHAINS = map[string]bool{
 	"xdescribe":                 true,
 	"xdescribe.each":            true,
 	"xit":                       true,
+	"xit.concurrent":            true,
 	"xit.each":                  true,
 	"xit.failing":               true,
 	"xit.fails":                 true,
@@ -117,6 +131,30 @@ var VALID_JEST_FN_CALL_CHAINS = map[string]bool{
 type ParsedJestFnMemberEntry struct {
 	Name string
 	Node *ast.Node
+	Call *ast.Node
+}
+
+func JoinJestFnMemberEntries(entries []ParsedJestFnMemberEntry) string {
+	if len(entries) == 0 {
+		return ""
+	}
+
+	parts := make([]string, len(entries))
+	for i, e := range entries {
+		parts[i] = e.Name
+	}
+
+	return strings.Join(parts, ".")
+}
+
+// JestFnMemberEntriesRange returns the source range spanning the first through
+// last member entry nodes in a parsed jest/expect call chain.
+func JestFnMemberEntriesRange(entries []ParsedJestFnMemberEntry) (core.TextRange, bool) {
+	if len(entries) == 0 || entries[0].Node == nil || entries[len(entries)-1].Node == nil {
+		return core.TextRange{}, false
+	}
+
+	return core.NewTextRange(entries[0].Node.Pos(), entries[len(entries)-1].Node.End()), true
 }
 
 func getPropertyName(node *ast.Node) string {
@@ -135,18 +173,28 @@ func GetJestKind(name string) JestFnType {
 		return JestFnTypeDescribe
 	case "fit", "it", "test", "xit", "xtest":
 		return JestFnTypeTest
-	case "beforeEach", "afterEach", "beforeAll", "afterAll":
-		return JestFnTypeHook
 	case "jest":
 		return JestFnTypeJest
 	case "expect":
 		return JestFnTypeExpect
 	default:
+		if slices.Contains(JEST_HOOKS_ORDER, name) {
+			return JestFnTypeHook
+		}
 		return JestFnTypeUnknown
 	}
 }
 
+// JestHookOrderIndex returns the expected declaration order index for a Jest hook name, or -1 if unknown.
+func JestHookOrderIndex(name string) int {
+	return slices.Index(JEST_HOOKS_ORDER, name)
+}
+
 func GetJestFnMemberEntries(node *ast.Node) []ParsedJestFnMemberEntry {
+	if node == nil {
+		return nil
+	}
+	node = ast.SkipParentheses(node)
 	if node == nil {
 		return nil
 	}
@@ -178,9 +226,13 @@ func GetJestFnMemberEntries(node *ast.Node) []ParsedJestFnMemberEntry {
 				Node: nameNode,
 			})
 		}
-		return left
+		return nil
 	case ast.KindCallExpression:
-		return GetJestFnMemberEntries(node.AsCallExpression().Expression)
+		entries := GetJestFnMemberEntries(node.AsCallExpression().Expression)
+		if len(entries) > 0 {
+			entries[len(entries)-1].Call = node
+		}
+		return entries
 	case ast.KindTaggedTemplateExpression:
 		return GetJestFnMemberEntries(node.AsTaggedTemplateExpression().Tag)
 	default:
@@ -207,5 +259,337 @@ func getElementAccessName(node *ast.Node) string {
 		return node.AsNoSubstitutionTemplateLiteral().Text
 	default:
 		return ""
+	}
+}
+
+// CalleeChainName returns a dotted name for a call callee expression, mirroring
+// eslint-plugin-jest getNodeName for CallExpression callees (used by expect-expect
+// assertFunctionNames matching).
+//
+// It differs from GetJestFnMemberEntries / getElementAccessName: bracket notation
+// contributes a segment only when the index matches eslint-plugin-jest's
+// supported accessor names (identifier, string literal, or no-substitution
+// template). Unsupported keys break the chain entirely. NewExpression is peeled
+// so e.g. new (require('x')).y becomes a chain.
+func CalleeChainName(expr *ast.Node) string {
+	expr = ast.SkipParentheses(expr)
+	if expr == nil {
+		return ""
+	}
+
+	switch expr.Kind {
+	case ast.KindIdentifier:
+		return expr.AsIdentifier().Text
+	case ast.KindPropertyAccessExpression:
+		pa := expr.AsPropertyAccessExpression()
+		left := CalleeChainName(pa.Expression)
+		prop := pa.Name()
+		if prop == nil {
+			return left
+		}
+		pn := getPropertyName(prop)
+		if left == "" || pn == "" {
+			return left
+		}
+		return left + "." + pn
+	case ast.KindElementAccessExpression:
+		ea := expr.AsElementAccessExpression()
+		left := CalleeChainName(ea.Expression)
+		key := calleeChainLiteralElementKey(ast.SkipParentheses(ea.ArgumentExpression))
+		if left == "" || key == "" {
+			return ""
+		}
+		return left + "." + key
+	case ast.KindCallExpression:
+		return CalleeChainName(expr.AsCallExpression().Expression)
+	case ast.KindNewExpression:
+		ne := expr.AsNewExpression()
+		if ne == nil {
+			return ""
+		}
+		return CalleeChainName(ne.Expression)
+	case ast.KindTaggedTemplateExpression:
+		return CalleeChainName(expr.AsTaggedTemplateExpression().Tag)
+	default:
+		return ""
+	}
+}
+
+// calleeChainLiteralElementKey matches eslint-plugin-jest segments for
+// MemberExpression computed with a supported accessor name only.
+func calleeChainLiteralElementKey(n *ast.Node) string {
+	if n == nil {
+		return ""
+	}
+	switch n.Kind {
+	case ast.KindIdentifier:
+		return n.AsIdentifier().Text
+	case ast.KindStringLiteral:
+		return n.AsStringLiteral().Text
+	case ast.KindNoSubstitutionTemplateLiteral:
+		return n.AsNoSubstitutionTemplateLiteral().Text
+	default:
+		return ""
+	}
+}
+
+// DefaultJestVersion is used when the Jest version cannot be resolved from settings or package.json.
+const DefaultJestVersion = "29.0.0"
+
+// JestVersionMajor extracts the major version number from an npm version or range (e.g. "^29.0.0", "~27.1.0").
+// It returns 29 when the version cannot be parsed, matching the historical default of Jest 29.
+func JestVersionMajor(v string) int {
+	const fallback = 29
+	s := strings.TrimSpace(v)
+	if s == "" {
+		return fallback
+	}
+	low := strings.ToLower(s)
+	if strings.HasPrefix(low, "workspace:") || strings.HasPrefix(low, "file:") || strings.HasPrefix(low, "link:") {
+		return fallback
+	}
+	if low == "latest" || low == "*" {
+		return fallback
+	}
+	if strings.HasPrefix(low, "npm:") {
+		if at := strings.LastIndexByte(s, '@'); at >= 0 && at+1 < len(s) {
+			s = strings.TrimSpace(s[at+1:])
+		} else {
+			return fallback
+		}
+	}
+	// Remove leading range operators
+	for {
+		changed := false
+		if strings.HasPrefix(s, ">=") {
+			s = strings.TrimSpace(s[2:])
+			changed = true
+		} else if strings.HasPrefix(s, "<=") {
+			s = strings.TrimSpace(s[2:])
+			changed = true
+		} else if strings.HasPrefix(s, ">") || strings.HasPrefix(s, "<") {
+			s = strings.TrimSpace(s[1:])
+			changed = true
+		} else if strings.HasPrefix(s, "^") || strings.HasPrefix(s, "~") {
+			s = strings.TrimSpace(s[1:])
+			changed = true
+		}
+		if !changed {
+			break
+		}
+	}
+	s = strings.TrimLeft(s, "vV")
+	if s == "" {
+		return fallback
+	}
+	major, _, _ := strings.Cut(s, ".")
+	firstNonDigit := strings.IndexFunc(major, func(r rune) bool {
+		return r < '0' || r > '9'
+	})
+	if firstNonDigit >= 0 {
+		major = major[:firstNonDigit]
+	}
+	n, err := strconv.Atoi(major)
+	if err != nil {
+		return fallback
+	}
+	return n
+}
+
+// ApplyGlobalJestAlias maps settings.jest.globalAliases so that e.g. `context` is treated as
+// `describe`, matching eslint-plugin-jest.
+func ApplyGlobalJestAlias(name string, settings map[string]interface{}) string {
+	if name == "" || settings == nil {
+		return name
+	}
+	raw, ok := settings["jest"]
+	if !ok {
+		return name
+	}
+	jm, ok := raw.(map[string]interface{})
+	if !ok {
+		return name
+	}
+	rawGA, ok := jm["globalAliases"]
+	if !ok {
+		return name
+	}
+	ga, ok := rawGA.(map[string]interface{})
+	if !ok {
+		return name
+	}
+	for canonStr, aliasesVal := range ga {
+		if !JEST_METHOD_NAMES[canonStr] {
+			continue
+		}
+		list, ok := aliasesVal.([]interface{})
+		if !ok {
+			continue
+		}
+		for _, a := range list {
+			alias, ok := a.(string)
+			if ok && alias == name {
+				return canonStr
+			}
+		}
+	}
+	return name
+}
+
+// jestVersionFromSettings returns the Jest version from rslint settings (ESLint style settings.jest.version).
+func jestVersionFromSettings(settings map[string]interface{}) (string, bool) {
+	if settings == nil {
+		return "", false
+	}
+	raw, ok := settings["jest"]
+	if !ok {
+		return "", false
+	}
+	m, ok := raw.(map[string]interface{})
+	if !ok {
+		return "", false
+	}
+	var ver string
+	switch v := m["version"].(type) {
+	case string:
+		ver = v
+	case float64:
+		// JSON numbers decode into interface{} as float64; treat them as a major version.
+		ver = strconv.Itoa(int(v))
+	case int:
+		ver = strconv.Itoa(v)
+	case int64:
+		ver = strconv.FormatInt(v, 10)
+	default:
+		return "", false
+	}
+	ver = strings.TrimSpace(ver)
+	if ver == "" {
+		return "", false
+	}
+	return ver, true
+}
+
+// jestVersionFromPackageJSONText reads the "jest" dependency from JSON text.
+func jestVersionFromPackageJSONText(data string) string {
+	var m struct {
+		Dependencies    map[string]string `json:"dependencies"`
+		DevDependencies map[string]string `json:"devDependencies"`
+		PeerDeps        map[string]string `json:"peerDependencies"`
+		OptDependencies map[string]string `json:"optionalDependencies"`
+	}
+	if err := json.Unmarshal([]byte(data), &m); err != nil {
+		return ""
+	}
+	// Aligned with packagejson.HasDependency: dependencies, then dev, then peer, then optional
+	if m.Dependencies != nil {
+		if v, ok := m.Dependencies["jest"]; ok {
+			return v
+		}
+	}
+	if m.DevDependencies != nil {
+		if v, ok := m.DevDependencies["jest"]; ok {
+			return v
+		}
+	}
+	if m.PeerDeps != nil {
+		if v, ok := m.PeerDeps["jest"]; ok {
+			return v
+		}
+	}
+	if m.OptDependencies != nil {
+		if v, ok := m.OptDependencies["jest"]; ok {
+			return v
+		}
+	}
+	return ""
+}
+
+// readJestVersionFromPackageJson resolves the jest version from the nearest package.json (same package
+// as the current source file) using the TypeScript program's host filesystem.
+func readJestVersionFromPackageJson(program *compiler.Program, sourceFile *ast.SourceFile) string {
+	if program == nil || sourceFile == nil {
+		return ""
+	}
+	dir := tspath.GetDirectoryPath(sourceFile.FileName())
+	pkgDir := program.GetNearestAncestorDirectoryWithPackageJson(dir)
+	if pkgDir == "" {
+		return ""
+	}
+	pkgPath := tspath.CombinePaths(pkgDir, "package.json")
+	if !program.FileExists(pkgPath) {
+		return ""
+	}
+	text, ok := program.Host().FS().ReadFile(pkgPath)
+	if !ok {
+		return ""
+	}
+	return jestVersionFromPackageJSONText(text)
+}
+
+// GetJestVersion returns the effective Jest version: explicit settings, then the nearest package.json,
+// then DefaultJestVersion.
+func GetJestVersion(ctx rule.RuleContext) string {
+	if s, ok := jestVersionFromSettings(ctx.Settings); ok {
+		return s
+	}
+	if v := readJestVersionFromPackageJson(ctx.Program, ctx.SourceFile); v != "" {
+		return v
+	}
+
+	return DefaultJestVersion
+}
+
+// IsBooleanLiteral reports whether node is a `true`/`false` literal after
+// stripping parentheses and basic TS type assertions, and returns its value.
+func IsBooleanLiteral(node *ast.Node) (value bool, ok bool) {
+	node = UnwrapBasicTypeAssertions(node)
+	if node == nil {
+		return false, false
+	}
+	switch node.Kind {
+	case ast.KindTrueKeyword:
+		return true, true
+	case ast.KindFalseKeyword:
+		return false, true
+	default:
+		return false, false
+	}
+}
+
+func IsFunction(node *ast.Node) bool {
+	return ast.IsFunctionDeclaration(node) ||
+		ast.IsFunctionExpressionOrArrowFunction(node) ||
+		node.Kind == ast.KindMethodDeclaration ||
+		node.Kind == ast.KindConstructor ||
+		node.Kind == ast.KindGetAccessor ||
+		node.Kind == ast.KindSetAccessor
+}
+
+func IsMemberAccessNode(node *ast.Node) bool {
+	if node == nil {
+		return false
+	}
+
+	switch node.Kind {
+	case ast.KindPropertyAccessExpression, ast.KindElementAccessExpression:
+		return true
+	default:
+		return false
+	}
+}
+
+// IsStaticExpectMatcher reports static expect APIs such as expect.any(...) or
+// expect.not.stringContaining(...), but not assertion matchers like toBe.
+func IsStaticExpectMatcher(matcher string, headNode *ast.Node) bool {
+	if matcher == "" || headNode == nil || !IsMemberAccessNode(headNode.Parent) {
+		return false
+	}
+
+	switch matcher {
+	case "assertions", "hasAssertions":
+		return false
+	default:
+		return true
 	}
 }

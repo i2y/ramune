@@ -41,7 +41,7 @@ const dangerWithChildrenMessage = "Only set one of `children` or `props.dangerou
 
 var NoDangerWithChildrenRule = rule.Rule{
 	Name: "react/no-danger-with-children",
-	Run: func(ctx rule.RuleContext, options any) rule.RuleListeners {
+	Run: func(ctx rule.RuleContext, options []any) rule.RuleListeners {
 		// resolveObjectLiteralInit walks an Identifier back to its
 		// VariableDeclaration via the TypeChecker and returns the initializer
 		// when it is an object literal. Mirrors upstream's
@@ -49,6 +49,13 @@ var NoDangerWithChildrenRule = rule.Rule{
 		// on the initializer (tsgo preserves them; ESTree flattens them).
 		resolveObjectLiteralInit := func(ident *ast.Node) *ast.ObjectLiteralExpression {
 			if ident == nil || ident.Kind != ast.KindIdentifier {
+				return nil
+			}
+			// TypeChecker is nil for gap files (files in the program but not
+			// in typeInfoFiles). Without it we cannot resolve an identifier to
+			// its declaration — skip spread/identifier lookups and fall back to
+			// structural checks only, rather than panic in GetDeclaration.
+			if ctx.TypeChecker == nil {
 				return nil
 			}
 			decl := utils.GetDeclaration(ctx.TypeChecker, ident)

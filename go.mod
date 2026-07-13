@@ -19,9 +19,11 @@ require (
 	github.com/evanw/esbuild v0.27.4
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/go-json-experiment/json v0.0.0-20260214004413-d219187c3433
+	github.com/mackerelio/go-osstat v0.2.8
 	github.com/muesli/termenv v0.16.0
 	github.com/rivo/uniseg v0.4.7
 	github.com/robertkrimen/otto v0.5.1
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
 	github.com/tailscale/hujson v0.0.0-20260302212456-ecc657c15afd
 	github.com/tetratelabs/wazero v1.11.0
 	github.com/yuin/goldmark v1.8.2
@@ -29,7 +31,7 @@ require (
 	golang.org/x/crypto v0.50.0
 	golang.org/x/net v0.53.0
 	golang.org/x/sync v0.20.0
-	golang.org/x/sys v0.43.0
+	golang.org/x/sys v0.46.0
 	golang.org/x/term v0.42.0
 	golang.org/x/text v0.36.0
 	modernc.org/sqlite v1.47.0

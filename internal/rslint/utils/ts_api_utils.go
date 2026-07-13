@@ -54,6 +54,9 @@ func IsTypeUnknownType(t *checker.Type) bool {
 func IsObjectType(t *checker.Type) bool {
 	return IsTypeFlagSet(t, checker.TypeFlagsObject)
 }
+func IsTypeReference(t *checker.Type) bool {
+	return IsObjectType(t) && checker.Type_objectFlags(t)&checker.ObjectFlagsReference != 0
+}
 func IsTypeParameter(t *checker.Type) bool {
 	return IsTypeFlagSet(t, checker.TypeFlagsTypeParameter)
 }
@@ -175,7 +178,7 @@ func IsCallback(
 ) bool {
 	t := checker.Checker_getApparentType(typeChecker, typeChecker.GetTypeOfSymbolAtLocation(param, node))
 
-	if param.ValueDeclaration != nil && ast.IsParameter(param.ValueDeclaration) && param.ValueDeclaration.AsParameterDeclaration().DotDotDotToken != nil {
+	if param.ValueDeclaration != nil && ast.IsParameterDeclaration(param.ValueDeclaration) && param.ValueDeclaration.AsParameterDeclaration().DotDotDotToken != nil {
 		t = checker.Checker_getIndexTypeOfType(typeChecker, t, checker.Checker_numberType(typeChecker))
 		if t == nil {
 			return false
@@ -355,6 +358,16 @@ func ForEachToken(node *ast.Node, callback func(token *ast.Node), sourceFile *as
 func ForEachComment(node *ast.Node, callback func(comment *ast.CommentRange), sourceFile *ast.SourceFile) {
 	fullText := sourceFile.Text()
 	notJsx := sourceFile.LanguageVariant != core.LanguageVariantJSX
+	// One factory reused across every token of this file instead of
+	// allocating two per token. scanner.GetLeading/TrailingCommentRanges
+	// only ever calls factory.NewCommentRange, which constructs a value
+	// and never reads or mutates the factory (see ast.NodeFactory.
+	// NewCommentRange) — so reuse changes nothing about the comments
+	// produced. The factory is goroutine-local: ForEachToken walks tokens
+	// serially within this single ForEachComment call, so the parallel
+	// per-file lint workers each get their own, never sharing one.
+	commentFactory := &ast.NodeFactory{}
+	sawToken := false
 
 	ForEachToken(
 		node,
@@ -362,6 +375,7 @@ func ForEachComment(node *ast.Node, callback func(comment *ast.CommentRange), so
 			if token.Pos() == token.End() {
 				return
 			}
+			sawToken = true
 
 			if token.Kind != ast.KindJsxText {
 				pos := token.Pos()
@@ -369,13 +383,13 @@ func ForEachComment(node *ast.Node, callback func(comment *ast.CommentRange), so
 					pos = len(scanner.GetShebang(fullText))
 				}
 
-				for comment := range scanner.GetLeadingCommentRanges(&ast.NodeFactory{}, fullText, pos) {
+				for comment := range scanner.GetLeadingCommentRanges(commentFactory, fullText, pos) {
 					callback(&comment)
 				}
 			}
 
 			if notJsx || canHaveTrailingTrivia(token) {
-				for comment := range scanner.GetTrailingCommentRanges(&ast.NodeFactory{}, fullText, token.End()) {
+				for comment := range scanner.GetTrailingCommentRanges(commentFactory, fullText, token.End()) {
 					callback(&comment)
 				}
 				return
@@ -383,6 +397,17 @@ func ForEachComment(node *ast.Node, callback func(comment *ast.CommentRange), so
 		},
 		sourceFile,
 	)
+
+	// A source file containing only comments has no non-empty token to own its
+	// leading trivia. Ask the TypeScript scanner for that leading trivia once;
+	// restricting this fallback to the SourceFile keeps subtree calls scoped to
+	// their node. Files with syntax stay on the normal token-owned path above.
+	if !sawToken && node == &sourceFile.Node {
+		pos := len(scanner.GetShebang(fullText))
+		for comment := range scanner.GetLeadingCommentRanges(commentFactory, fullText, pos) {
+			callback(&comment)
+		}
+	}
 }
 
 // Port https://github.com/JoshuaKGoldberg/ts-api-utils/blob/491c0374725a5dd64632405efea101f20ed5451f/src/comments.ts#L84

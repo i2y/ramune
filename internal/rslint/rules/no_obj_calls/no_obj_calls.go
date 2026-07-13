@@ -12,16 +12,11 @@ var nonCallableGlobals = map[string]bool{
 	"Math": true, "JSON": true, "Reflect": true, "Atomics": true, "Intl": true,
 }
 
-// skipAssertionsAndParens strips parentheses and all TS assertion wrappers
-// (as, satisfies, !, <T>) from an expression using tsgo's built-in utility.
-func skipAssertionsAndParens(node *ast.Node) *ast.Node {
-	return ast.SkipOuterExpressions(node, ast.OEKParentheses|ast.OEKAssertions)
-}
-
 // https://eslint.org/docs/latest/rules/no-obj-calls
 var NoObjCallsRule = rule.Rule{
-	Name: "no-obj-calls",
-	Run: func(ctx rule.RuleContext, options any) rule.RuleListeners {
+	Name:             "no-obj-calls",
+	RequiresTypeInfo: true,
+	Run: func(ctx rule.RuleContext, options []any) rule.RuleListeners {
 		// isGlobalSymbol returns true if the symbol comes from lib.d.ts
 		// (none of its declarations are in the current source file).
 		isGlobalSymbol := func(symbol *ast.Symbol) bool {
@@ -37,7 +32,7 @@ var NoObjCallsRule = rule.Rule{
 		// - TS type assertions (as, satisfies, !, <T>) via SkipOuterExpressions
 		var resolveExprToGlobal func(node *ast.Node) (string, bool)
 		resolveExprToGlobal = func(node *ast.Node) (string, bool) {
-			node = skipAssertionsAndParens(node)
+			node = utils.SkipAssertionsAndParens(node)
 			switch node.Kind {
 			case ast.KindIdentifier, ast.KindPropertyAccessExpression:
 				symbol := ctx.TypeChecker.GetSymbolAtLocation(node)
@@ -102,7 +97,7 @@ var NoObjCallsRule = rule.Rule{
 				return
 			}
 
-			callee := skipAssertionsAndParens(calleeNode)
+			callee := utils.SkipAssertionsAndParens(calleeNode)
 			symbol := ctx.TypeChecker.GetSymbolAtLocation(callee)
 			if symbol == nil {
 				return

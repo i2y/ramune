@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"fmt"
 	"math"
 	"math/big"
 	"slices"
@@ -119,7 +120,7 @@ func GetTypeName(
 		decls := symbol.Declarations
 		if len(decls) > 0 {
 			if ast.IsTypeParameterDeclaration(decls[0]) {
-				typeParamDecl := decls[0].AsTypeParameter()
+				typeParamDecl := decls[0].AsTypeParameterDeclaration()
 				if typeParamDecl.Constraint != nil {
 					return GetTypeName(typeChecker, checker.Checker_getTypeFromTypeNode(typeChecker, typeParamDecl.Constraint))
 				}
@@ -195,10 +196,11 @@ func GetFunctionHeadLoc(sourceFile *ast.SourceFile, node *ast.Node) core.TextRan
 
 	switch node.Kind {
 	case ast.KindMethodDeclaration, ast.KindGetAccessor, ast.KindSetAccessor, ast.KindConstructor:
-		start := TrimNodeTextRange(sourceFile, node)
-		// Start scanning for the parameters `(` after the method name to avoid
-		// matching the `(` of a decorator factory call like `@dec()`.
-		searchFrom := node.Pos()
+		start := nodeStartSkippingDecorators(sourceFile, node)
+		// Start scanning for the parameters `(` after any decorator factory
+		// (e.g. `@dec()`) and after the method name. Nameless constructors
+		// fall back to the first token after the decorators.
+		searchFrom := start.Pos()
 		if name := node.Name(); name != nil {
 			searchFrom = name.End()
 		}
@@ -212,7 +214,7 @@ func GetFunctionHeadLoc(sourceFile *ast.SourceFile, node *ast.Node) core.TextRan
 
 	case ast.KindArrowFunction:
 		if parent != nil && (parent.Kind == ast.KindPropertyDeclaration || parent.Kind == ast.KindPropertyAssignment) {
-			start := TrimNodeTextRange(sourceFile, parent)
+			start := nodeStartSkippingDecorators(sourceFile, parent)
 			if parenPos := findOpenParenPos(sourceFile, node); parenPos >= 0 {
 				return start.WithEnd(parenPos)
 			}
@@ -229,7 +231,7 @@ func GetFunctionHeadLoc(sourceFile *ast.SourceFile, node *ast.Node) core.TextRan
 
 	case ast.KindFunctionExpression:
 		if parent != nil && (parent.Kind == ast.KindPropertyAssignment || parent.Kind == ast.KindPropertyDeclaration) {
-			start := TrimNodeTextRange(sourceFile, parent)
+			start := nodeStartSkippingDecorators(sourceFile, parent)
 			if parenPos := findOpenParenPos(sourceFile, node); parenPos >= 0 {
 				return start.WithEnd(parenPos)
 			}
@@ -256,9 +258,429 @@ func GetFunctionHeadLoc(sourceFile *ast.SourceFile, node *ast.Node) core.TextRan
 			return core.NewTextRange(start, node.Body().Pos())
 		}
 		return TrimNodeTextRange(sourceFile, node)
+
+	case ast.KindFunctionType:
+		// Mirror ESLint's astUtils.getFunctionHeadLoc fallback for
+		// TSFunctionType: range from the node's start to the opening '(' of
+		// its parameters. With no type parameters this collapses to a
+		// zero-width position at '('; with `<T>(...)` the range covers the
+		// type-parameter list, exactly as upstream produces.
+		trimmed := TrimNodeTextRange(sourceFile, node)
+		if parenPos := findOpenParenPos(sourceFile, node); parenPos >= 0 {
+			return trimmed.WithEnd(parenPos)
+		}
+		return trimmed
 	}
 
 	return TrimNodeTextRange(sourceFile, node)
+}
+
+// BodyLikeRange returns the [pos, end) execution span for function-like and
+// implicit scope-bearing nodes. Expressions in computed keys or decorators sit
+// outside this span, so callers can attribute await/yield-like nodes to the
+// enclosing runtime scope instead of the declaration they decorate.
+func BodyLikeRange(node *ast.Node) (int, int, bool) {
+	switch node.Kind {
+	case ast.KindFunctionDeclaration,
+		ast.KindFunctionExpression,
+		ast.KindMethodDeclaration,
+		ast.KindArrowFunction,
+		ast.KindGetAccessor,
+		ast.KindSetAccessor,
+		ast.KindConstructor:
+		body := node.Body()
+		if body == nil {
+			return 0, 0, false
+		}
+		pos := body.Pos()
+		if params := node.ParameterList(); params != nil {
+			pos = params.Loc.Pos()
+		}
+		return pos, body.End(), true
+	case ast.KindPropertyDeclaration:
+		init := node.AsPropertyDeclaration().Initializer
+		if init == nil {
+			return 0, 0, false
+		}
+		return init.Pos(), init.End(), true
+	case ast.KindClassStaticBlockDeclaration:
+		body := node.AsClassStaticBlockDeclaration().Body
+		if body == nil {
+			return 0, 0, false
+		}
+		return body.Pos(), body.End(), true
+	}
+	return 0, 0, false
+}
+
+// HasNonEmptyFunctionBody reports whether a function-like node has executable
+// body content. Expression-bodied arrows count as non-empty; empty blocks and
+// body-less declarations do not.
+func HasNonEmptyFunctionBody(node *ast.Node) bool {
+	body := node.Body()
+	if body == nil {
+		return false
+	}
+	if body.Kind != ast.KindBlock {
+		return true
+	}
+	block := body.AsBlock()
+	return block != nil && block.Statements != nil && len(block.Statements.Nodes) > 0
+}
+
+// IsStartOfExpressionStatement reports whether node starts an ancestor
+// ExpressionStatement without crossing a ParenthesizedExpression.
+func IsStartOfExpressionStatement(sourceFile *ast.SourceFile, node *ast.Node) bool {
+	nodeStart := TrimNodeTextRange(sourceFile, node).Pos()
+	for current := node.Parent; current != nil; current = current.Parent {
+		if current.Kind == ast.KindParenthesizedExpression {
+			return false
+		}
+		if current.Kind == ast.KindExpressionStatement {
+			return nodeStart == TrimNodeTextRange(sourceFile, current).Pos()
+		}
+		if !ast.IsExpression(current) {
+			return false
+		}
+	}
+	return false
+}
+
+// NeedsPrecedingSemicolon mirrors ESLint's common ASI check for fixes that
+// make an expression-starter token begin a statement on a new line.
+func NeedsPrecedingSemicolon(sourceFile *ast.SourceFile, node *ast.Node) bool {
+	nodeStart := TrimNodeTextRange(sourceFile, node).Pos()
+
+	scan := scanner.GetScannerForSourceFile(sourceFile, 0)
+	prevKind := ast.KindUnknown
+	for scan.Token() != ast.KindEndOfFile && scan.TokenStart() < nodeStart {
+		prevKind = scan.Token()
+		scan.Scan()
+	}
+	if prevKind == ast.KindUnknown || scan.TokenStart() != nodeStart || !scan.HasPrecedingLineBreak() {
+		return false
+	}
+
+	switch prevKind {
+	case ast.KindSemicolonToken, ast.KindCloseBraceToken:
+		return false
+	}
+	return true
+}
+
+// GetFunctionNameWithKind mirrors ESLint's astUtils.getFunctionNameWithKind.
+// It produces a human-readable description of the function used in diagnostic
+// messages (e.g., `"function 'foo'"`, `"static private method '#bar'"`,
+// `"arrow function"`, `"constructor"`). Modifier order matches ESLint:
+// static, private, async, generator, then the function-kind keyword.
+//
+// For nameless function-likes, walks the parent (VariableDeclaration,
+// PropertyAssignment, PropertyDeclaration, PropertySignature,
+// TypeAliasDeclaration) to recover the binding name where ESLint does the
+// same via its `getName` / `getOuterName` helpers.
+//
+// For a FunctionExpression assigned as the value of an object literal
+// property (`var obj = { foo: function () {} }`), classifies the node as a
+// "method" — ESTree models that case via `Property.value === FunctionExpression`
+// and ESLint's classifier emits "method"; tsgo only collapses method-shorthand
+// (`{ foo() {} }`) into MethodDeclaration, so we recover the same description
+// from the parent.
+//
+// Callers that need the upper-cased form (e.g., as the leading {{name}}
+// placeholder of a sentence) should apply UpperCaseFirstASCII — this helper
+// returns the lower-cased form to keep call sites simple.
+func GetFunctionNameWithKind(node *ast.Node) string {
+	if node.Kind == ast.KindConstructor {
+		return "constructor"
+	}
+
+	flags := ast.GetFunctionFlags(node)
+	isAsync := flags&ast.FunctionFlagsAsync != 0
+	isGenerator := flags&ast.FunctionFlagsGenerator != 0
+
+	parent := node.Parent
+	isStatic, isPrivate := false, false
+	// Direct class member (MethodDeclaration / GetAccessor / SetAccessor):
+	// modifiers and private-key live on the function-like node itself.
+	if parent != nil && (parent.Kind == ast.KindClassDeclaration || parent.Kind == ast.KindClassExpression) {
+		switch node.Kind {
+		case ast.KindMethodDeclaration, ast.KindGetAccessor, ast.KindSetAccessor:
+			isStatic = ast.HasSyntacticModifier(node, ast.ModifierFlagsStatic)
+			if n := node.Name(); n != nil && n.Kind == ast.KindPrivateIdentifier {
+				isPrivate = true
+			}
+		}
+	}
+	// Class field with arrow / function-expression initializer: modifiers and
+	// private-key live on the surrounding PropertyDeclaration. Mirrors ESLint
+	// v9's `parent.type === "PropertyDefinition" && parent.value === node`
+	// branch in `astUtils.getFunctionNameWithKind`.
+	if parent != nil && parent.Kind == ast.KindPropertyDeclaration {
+		if grandparent := parent.Parent; grandparent != nil &&
+			(grandparent.Kind == ast.KindClassDeclaration || grandparent.Kind == ast.KindClassExpression) {
+			switch node.Kind {
+			case ast.KindArrowFunction, ast.KindFunctionExpression:
+				if ast.HasSyntacticModifier(parent, ast.ModifierFlagsStatic) {
+					isStatic = true
+				}
+				if n := parent.Name(); n != nil && n.Kind == ast.KindPrivateIdentifier {
+					isPrivate = true
+				}
+			}
+		}
+	}
+
+	var tokens []string
+	if isStatic {
+		tokens = append(tokens, "static")
+	}
+	if isPrivate {
+		tokens = append(tokens, "private")
+	}
+	if isAsync {
+		tokens = append(tokens, "async")
+	}
+	if isGenerator {
+		tokens = append(tokens, "generator")
+	}
+
+	switch node.Kind {
+	case ast.KindGetAccessor:
+		tokens = append(tokens, "getter")
+	case ast.KindSetAccessor:
+		tokens = append(tokens, "setter")
+	case ast.KindMethodDeclaration:
+		tokens = append(tokens, "method")
+	case ast.KindArrowFunction:
+		tokens = append(tokens, "arrow", "function")
+	case ast.KindFunctionExpression:
+		if parent != nil && parent.Kind == ast.KindPropertyAssignment {
+			tokens = append(tokens, "method")
+		} else {
+			tokens = append(tokens, "function")
+		}
+	default:
+		tokens = append(tokens, "function")
+	}
+
+	if name := getFunctionDisplayName(node); name != "" {
+		tokens = append(tokens, fmt.Sprintf("'%s'", name))
+	}
+
+	return strings.Join(tokens, " ")
+}
+
+// GetFunctionNameWithKindCore mirrors ESLint core's astUtils.getFunctionNameWithKind.
+// It intentionally does not walk from a function expression or arrow function
+// to an enclosing variable declaration when resolving names. Core rules such
+// as complexity and max-params rely on that narrower behavior for message text.
+func GetFunctionNameWithKindCore(node *ast.Node) string {
+	if node.Kind == ast.KindConstructor {
+		return "constructor"
+	}
+
+	parent := node.Parent
+	if parent == nil {
+		return "function"
+	}
+
+	tokens := []string{}
+
+	isClassMember := isCoreDirectClassMember(node)
+	isClassFieldValue := isCoreClassFieldInitializer(node)
+	if isClassMember || isClassFieldValue {
+		owner := node
+		if isClassFieldValue {
+			owner = parent
+		}
+		if ast.HasSyntacticModifier(owner, ast.ModifierFlagsStatic) {
+			tokens = append(tokens, "static")
+		}
+		if name := owner.Name(); name != nil && name.Kind == ast.KindPrivateIdentifier {
+			tokens = append(tokens, "private")
+		}
+	}
+
+	flags := ast.GetFunctionFlags(node)
+	if flags&ast.FunctionFlagsAsync != 0 {
+		tokens = append(tokens, "async")
+	}
+	if flags&ast.FunctionFlagsGenerator != 0 {
+		tokens = append(tokens, "generator")
+	}
+
+	switch {
+	case node.Kind == ast.KindGetAccessor:
+		tokens = append(tokens, "getter")
+	case node.Kind == ast.KindSetAccessor:
+		tokens = append(tokens, "setter")
+	case node.Kind == ast.KindMethodDeclaration:
+		tokens = append(tokens, "method")
+	case parent.Kind == ast.KindPropertyAssignment:
+		tokens = append(tokens, "method")
+	case isClassFieldValue:
+		tokens = append(tokens, "method")
+	case node.Kind == ast.KindArrowFunction:
+		tokens = append(tokens, "arrow", "function")
+	default:
+		tokens = append(tokens, "function")
+	}
+
+	switch {
+	case parent.Kind == ast.KindPropertyAssignment:
+		appendCoreFunctionNameFromOwner(&tokens, parent, node)
+	case isClassFieldValue:
+		appendCoreFunctionNameFromOwner(&tokens, parent, node)
+	case node.Kind == ast.KindMethodDeclaration ||
+		node.Kind == ast.KindGetAccessor ||
+		node.Kind == ast.KindSetAccessor:
+		appendCoreFunctionNameFromOwner(&tokens, node, node)
+	default:
+		if id := coreFunctionNodeIdentifier(node); id != "" {
+			tokens = append(tokens, fmt.Sprintf("'%s'", id))
+		}
+	}
+
+	return strings.Join(tokens, " ")
+}
+
+func appendCoreFunctionNameFromOwner(tokens *[]string, owner *ast.Node, node *ast.Node) {
+	if name := owner.Name(); name != nil {
+		if name.Kind == ast.KindPrivateIdentifier {
+			*tokens = append(*tokens, fmt.Sprintf("'%s'", name.AsPrivateIdentifier().Text))
+			return
+		}
+		if s, ok := GetStaticPropertyName(name); ok {
+			*tokens = append(*tokens, fmt.Sprintf("'%s'", s))
+			return
+		}
+	}
+	if id := coreFunctionNodeIdentifier(node); id != "" {
+		*tokens = append(*tokens, fmt.Sprintf("'%s'", id))
+	}
+}
+
+func coreFunctionNodeIdentifier(node *ast.Node) string {
+	switch node.Kind {
+	case ast.KindFunctionDeclaration:
+		if n := node.AsFunctionDeclaration().Name(); n != nil && n.Kind == ast.KindIdentifier {
+			return n.AsIdentifier().Text
+		}
+	case ast.KindFunctionExpression:
+		if n := node.AsFunctionExpression().Name(); n != nil && n.Kind == ast.KindIdentifier {
+			return n.AsIdentifier().Text
+		}
+	}
+	return ""
+}
+
+func isCoreDirectClassMember(node *ast.Node) bool {
+	parent := node.Parent
+	if parent == nil || (parent.Kind != ast.KindClassDeclaration && parent.Kind != ast.KindClassExpression) {
+		return false
+	}
+	switch node.Kind {
+	case ast.KindMethodDeclaration, ast.KindGetAccessor, ast.KindSetAccessor:
+		return true
+	}
+	return false
+}
+
+func isCoreClassFieldInitializer(node *ast.Node) bool {
+	parent := node.Parent
+	if parent == nil || parent.Kind != ast.KindPropertyDeclaration {
+		return false
+	}
+	switch node.Kind {
+	case ast.KindArrowFunction, ast.KindFunctionExpression:
+		return parent.AsPropertyDeclaration().Initializer == node
+	}
+	return false
+}
+
+// getFunctionDisplayName resolves the user-visible name of a function-like
+// node — first by inspecting the node's own name, then by walking the parent
+// for variable / property / type binding sites that ESLint's `getName` covers.
+func getFunctionDisplayName(node *ast.Node) string {
+	if n := node.Name(); n != nil {
+		switch n.Kind {
+		case ast.KindPrivateIdentifier:
+			return n.AsPrivateIdentifier().Text
+		case ast.KindIdentifier:
+			return n.AsIdentifier().Text
+		}
+		if s, ok := GetStaticPropertyName(n); ok {
+			return s
+		}
+	}
+	parent := node.Parent
+	if parent == nil {
+		return ""
+	}
+	switch parent.Kind {
+	case ast.KindVariableDeclaration:
+		if n := parent.Name(); n != nil && n.Kind == ast.KindIdentifier {
+			return n.AsIdentifier().Text
+		}
+	case ast.KindPropertyAssignment, ast.KindPropertyDeclaration, ast.KindPropertySignature:
+		if n := parent.Name(); n != nil {
+			if n.Kind == ast.KindIdentifier {
+				return n.AsIdentifier().Text
+			}
+			if n.Kind == ast.KindPrivateIdentifier {
+				// PrivateIdentifier.Text already includes the leading '#',
+				// matching ESLint's `getName` for PropertyDefinition with a
+				// PrivateIdentifier key.
+				return n.AsPrivateIdentifier().Text
+			}
+			if s, ok := GetStaticPropertyName(n); ok {
+				return s
+			}
+		}
+	case ast.KindTypeAliasDeclaration:
+		if n := parent.Name(); n != nil && n.Kind == ast.KindIdentifier {
+			return n.AsIdentifier().Text
+		}
+	}
+	return ""
+}
+
+// UpperCaseFirstASCII returns s with its first byte mapped to upper case if
+// the byte is an ASCII lowercase letter; otherwise returns s unchanged.
+// Sufficient for ESLint's `astUtils.upperCaseFirst` since all function-kind
+// tokens are ASCII English ("function", "method", "constructor", …).
+func UpperCaseFirstASCII(s string) string {
+	if s == "" {
+		return s
+	}
+	r := s[0]
+	if r >= 'a' && r <= 'z' {
+		return string(r-('a'-'A')) + s[1:]
+	}
+	return s
+}
+
+// nodeStartSkippingDecorators returns a TextRange whose start is the first
+// non-decorator token of the node. This matches ESLint's
+// getFunctionHeadLoc, which excludes leading decorators on MethodDefinition
+// and PropertyDefinition from the reported function head range.
+func nodeStartSkippingDecorators(sourceFile *ast.SourceFile, node *ast.Node) core.TextRange {
+	fallback := TrimNodeTextRange(sourceFile, node)
+	mods := node.Modifiers()
+	if mods == nil || len(mods.Nodes) == 0 {
+		return fallback
+	}
+	var lastDecoratorEnd int
+	for _, mod := range mods.Nodes {
+		if mod.Kind == ast.KindDecorator && mod.End() > lastDecoratorEnd {
+			lastDecoratorEnd = mod.End()
+		}
+	}
+	if lastDecoratorEnd == 0 {
+		return fallback
+	}
+	tokenAfter := scanner.GetRangeOfTokenAtPosition(sourceFile, lastDecoratorEnd)
+	return core.NewTextRange(tokenAfter.Pos(), fallback.End())
 }
 
 // findOpenParenPos finds the position of the first '(' token in a function node.
@@ -318,16 +740,26 @@ func IsArrayMethodCallWithPredicate(
 }
 
 func IsRestParameterDeclaration(decl *ast.Declaration) bool {
-	return ast.IsParameter(decl) && decl.AsParameterDeclaration().DotDotDotToken != nil
+	return ast.IsParameterDeclaration(decl) && decl.AsParameterDeclaration().DotDotDotToken != nil
 }
 
-/**
- * Gets the declaration for the given variable
- */
+// GetDeclaration returns the first declaration of the symbol at `node`.
+//
+// Returns nil when `typeChecker` or `node` is nil. Rules with optional
+// type info (those that do not set `RequiresTypeInfo: true`) are scheduled
+// with a nil TypeChecker on "gap files" — files in the program but not in
+// `typeInfoFiles` (see internal/linter/linter.go). Rather than requiring
+// every caller to nil-guard manually, this helper degrades gracefully:
+// no checker → no declaration → caller falls back to structural checks.
+// The `node == nil` guard mirrors the same convention already used by
+// `GetReferenceSymbol` in shadowing.go.
 func GetDeclaration(
 	typeChecker *checker.Checker,
 	node *ast.Node,
 ) *ast.Declaration {
+	if typeChecker == nil || node == nil {
+		return nil
+	}
 	symbol := typeChecker.GetSymbolAtLocation(node)
 	if symbol == nil {
 		return nil
@@ -481,7 +913,7 @@ func GetContextualType(
 			// is the callee, so has no contextual type
 			return nil
 		}
-	} else if ast.IsVariableDeclaration(parent) || ast.IsPropertyDeclaration(parent) || ast.IsParameter(parent) {
+	} else if ast.IsVariableDeclaration(parent) || ast.IsPropertyDeclaration(parent) || ast.IsParameterDeclaration(parent) {
 		if t := parent.Type(); t != nil {
 			return checker.Checker_getTypeFromTypeNode(typeChecker, t)
 		}
@@ -658,6 +1090,96 @@ func IsHigherPrecedenceThanAwait(node *ast.Node) bool {
 	return nodePrecedence > awaitPrecedence
 }
 
+// EslintLikePrecedence returns a numeric precedence matching ESLint's
+// astUtils.getPrecedence so behavior parity holds for tsgo nodes that ESLint
+// classifies (e.g. ArrowFunction = 1, ConditionalExpression = 3). Returns -1
+// for TypeScript-only kinds (AsExpression, etc.) so the caller wraps them in
+// parentheses defensively, matching ESLint's behavior on unknown node types.
+func EslintLikePrecedence(node *ast.Node) int {
+	if node == nil {
+		return -1
+	}
+	switch node.Kind {
+	case ast.KindArrowFunction:
+		return 1
+	case ast.KindYieldExpression:
+		return 1
+	case ast.KindConditionalExpression:
+		return 3
+	case ast.KindBinaryExpression:
+		bin := node.AsBinaryExpression()
+		if bin.OperatorToken == nil {
+			return -1
+		}
+		op := bin.OperatorToken.Kind
+		if op == ast.KindCommaToken {
+			return 0
+		}
+		if ast.IsAssignmentOperator(op) {
+			return 1
+		}
+		switch op {
+		case ast.KindBarBarToken, ast.KindQuestionQuestionToken:
+			return 4
+		case ast.KindAmpersandAmpersandToken:
+			return 5
+		case ast.KindBarToken:
+			return 6
+		case ast.KindCaretToken:
+			return 7
+		case ast.KindAmpersandToken:
+			return 8
+		case ast.KindEqualsEqualsToken, ast.KindExclamationEqualsToken,
+			ast.KindEqualsEqualsEqualsToken, ast.KindExclamationEqualsEqualsToken:
+			return 9
+		case ast.KindLessThanToken, ast.KindLessThanEqualsToken,
+			ast.KindGreaterThanToken, ast.KindGreaterThanEqualsToken,
+			ast.KindInKeyword, ast.KindInstanceOfKeyword:
+			return 10
+		case ast.KindLessThanLessThanToken, ast.KindGreaterThanGreaterThanToken,
+			ast.KindGreaterThanGreaterThanGreaterThanToken:
+			return 11
+		case ast.KindPlusToken, ast.KindMinusToken:
+			return 12
+		case ast.KindAsteriskToken, ast.KindSlashToken, ast.KindPercentToken:
+			return 13
+		case ast.KindAsteriskAsteriskToken:
+			return 15
+		}
+		return 20
+	case ast.KindPrefixUnaryExpression:
+		op := node.AsPrefixUnaryExpression().Operator
+		if op == ast.KindPlusPlusToken || op == ast.KindMinusMinusToken {
+			return 17
+		}
+		return 16
+	case ast.KindPostfixUnaryExpression:
+		return 17
+	case ast.KindAwaitExpression, ast.KindDeleteExpression,
+		ast.KindVoidExpression, ast.KindTypeOfExpression:
+		return 16
+	case ast.KindCallExpression:
+		return 18
+	case ast.KindNewExpression:
+		return 19
+	case ast.KindIdentifier, ast.KindThisKeyword, ast.KindSuperKeyword,
+		ast.KindNullKeyword, ast.KindTrueKeyword, ast.KindFalseKeyword,
+		ast.KindNumericLiteral, ast.KindStringLiteral, ast.KindBigIntLiteral,
+		ast.KindRegularExpressionLiteral, ast.KindNoSubstitutionTemplateLiteral,
+		ast.KindTemplateExpression, ast.KindArrayLiteralExpression,
+		ast.KindObjectLiteralExpression, ast.KindFunctionExpression,
+		ast.KindClassExpression, ast.KindParenthesizedExpression,
+		ast.KindPropertyAccessExpression, ast.KindElementAccessExpression,
+		ast.KindTaggedTemplateExpression, ast.KindSpreadElement,
+		ast.KindMetaProperty:
+		return 20
+	}
+	// TypeScript-specific (AsExpression, SatisfiesExpression,
+	// TypeAssertionExpression, ...) and any other kind ESLint does not
+	// classify: return -1 to force wrapping for safety.
+	return -1
+}
+
 func IsStrongPrecedenceNode(innerNode *ast.Node) bool {
 	return ast.IsLiteralKind(innerNode.Kind) ||
 		ast.IsBooleanLiteral(innerNode) ||
@@ -718,6 +1240,25 @@ func GetNameFromMember(sourceFile *ast.SourceFile, member *ast.Node) (string, Me
 
 	r := TrimNodeTextRange(sourceFile, member)
 	return sourceFile.Text()[r.Pos():r.End()], MemberNameTypeExpression
+}
+
+// GetPropertyDisplayName resolves a property-name node to the diagnostic name
+// ESLint emits for statically-known member keys. Private identifiers keep their
+// leading "#"; dynamic computed keys return "".
+func GetPropertyDisplayName(name *ast.Node) string {
+	if name == nil {
+		return ""
+	}
+	if name.Kind == ast.KindIdentifier {
+		return name.AsIdentifier().Text
+	}
+	if name.Kind == ast.KindPrivateIdentifier {
+		return name.AsPrivateIdentifier().Text
+	}
+	if s, ok := GetStaticPropertyName(name); ok {
+		return s
+	}
+	return ""
 }
 
 // GetPropertyInfo extracts the property node and formatted property name from a PropertyAccessExpression
@@ -969,6 +1510,8 @@ func IsSameReference(left, right *ast.Node) bool {
 
 // AccessExpressionStaticName returns the static property name of an access expression
 // (PropertyAccessExpression or ElementAccessExpression), or ("", false) if not static.
+// Element access arguments are unwrapped through parentheses and TS assertions
+// because ESTree-based helpers treat those wrappers as transparent.
 func AccessExpressionStaticName(node *ast.Node) (string, bool) {
 	switch node.Kind {
 	case ast.KindPropertyAccessExpression:
@@ -977,7 +1520,7 @@ func AccessExpressionStaticName(node *ast.Node) (string, bool) {
 			return name.Text(), true
 		}
 	case ast.KindElementAccessExpression:
-		return GetStaticExpressionValue(node.AsElementAccessExpression().ArgumentExpression)
+		return GetStaticExpressionValue(SkipAssertionsAndParens(node.AsElementAccessExpression().ArgumentExpression))
 	}
 	return "", false
 }
@@ -1116,6 +1659,8 @@ func IsDeclarationIdentifier(node *ast.Node) bool {
 		return parent.AsImportEqualsDeclaration().Name() == node
 	case ast.KindEnumMember:
 		return parent.AsEnumMember().Name() == node
+	case ast.KindTypeParameter:
+		return parent.AsTypeParameterDeclaration().Name() == node
 	}
 	return false
 }
@@ -1154,6 +1699,8 @@ func GetDeclarationIdentifier(decl *ast.Node) *ast.Node {
 		return decl.AsParameterDeclaration().Name()
 	case ast.KindBindingElement:
 		return decl.AsBindingElement().Name()
+	case ast.KindTypeParameter:
+		return decl.AsTypeParameterDeclaration().Name()
 	}
 	return nil
 }

@@ -348,8 +348,6 @@ var restHelper = &EmitHelper{
 };`,
 }
 
-// !!! ES2017 Helpers
-
 var awaiterHelper = &EmitHelper{
 	Name:       "typescript:awaiter",
 	ImportName: "__awaiter",
@@ -436,6 +434,17 @@ var runInitializersHelper = &EmitHelper{
 }
 
 // ES2015 Helpers
+
+var makeTemplateObjectHelper = &EmitHelper{
+	Name:       "typescript:makeTemplateObject",
+	ImportName: "__makeTemplateObject",
+	Scoped:     false,
+	Priority:   &Priority{0},
+	Text: `var __makeTemplateObject = (this && this.__makeTemplateObject) || function (cooked, raw) {
+    if (Object.defineProperty) { Object.defineProperty(cooked, "raw", { value: raw }); } else { cooked.raw = raw; }
+    return cooked;
+};`,
+}
 
 var propKeyHelper = &EmitHelper{
 	Name:       "typescript:propKey",

@@ -2,6 +2,7 @@ package utils
 
 import (
 	"iter"
+	"math"
 	"slices"
 	"strings"
 	"unicode"
@@ -15,6 +16,57 @@ import (
 
 func TrimNodeTextRange(sourceFile *ast.SourceFile, node *ast.Node) core.TextRange {
 	return scanner.GetRangeOfTokenAtPosition(sourceFile, node.Pos()).WithEnd(node.End())
+}
+
+// BracedNodeInnerRange returns the span between a braced node's opening and
+// closing braces. Callers should pass Block-like nodes whose trimmed text starts
+// with "{" and ends with "}".
+func BracedNodeInnerRange(sourceFile *ast.SourceFile, node *ast.Node) core.TextRange {
+	nodeRange := TrimNodeTextRange(sourceFile, node)
+	if nodeRange.End() <= nodeRange.Pos()+1 {
+		return core.NewTextRange(nodeRange.Pos(), nodeRange.Pos())
+	}
+	return core.NewTextRange(nodeRange.Pos()+1, nodeRange.End()-1)
+}
+
+// GetVarKeywordRange returns the range of the kind keyword (`var`/`let`/`const`/
+// `using` or `await` for `await using`) inside a VariableStatement or
+// VariableDeclarationList. For VariableStatement it skips the modifier list
+// (e.g. `export`/`declare`) so the returned range starts at the actual kind
+// keyword. Used by rules that synthesize fixes around the kind keyword
+// (one-var, no-var, prefer-const, etc.).
+func GetVarKeywordRange(node *ast.Node, sourceFile *ast.SourceFile) core.TextRange {
+	pos := TrimNodeTextRange(sourceFile, node).Pos()
+	if node.Kind == ast.KindVariableStatement {
+		if mods := node.Modifiers(); mods != nil && len(mods.Nodes) > 0 {
+			pos = mods.End()
+		}
+	}
+	return scanner.GetRangeOfTokenAtPosition(sourceFile, pos)
+}
+
+// GetVarDeclListKind returns the kind keyword for a VariableDeclarationList:
+// "var", "let", "const", "using", "await using", or "" if the node is not a
+// VariableDeclarationList. Uses tsgo's IsVar* helpers (which apply
+// GetCombinedNodeFlags and correctly handle the `NodeFlagsConst|NodeFlagsUsing`
+// encoding of `await using`). Centralizes what was duplicated across no-var,
+// prefer-const, no-loop-func, and one-var.
+func GetVarDeclListKind(node *ast.Node) string {
+	if node == nil || node.Kind != ast.KindVariableDeclarationList {
+		return ""
+	}
+	switch {
+	case ast.IsVarAwaitUsing(node):
+		return "await using"
+	case ast.IsVarUsing(node):
+		return "using"
+	case ast.IsVarConst(node):
+		return "const"
+	case ast.IsVarLet(node):
+		return "let"
+	default:
+		return "var"
+	}
 }
 
 // TrimmedNodeText returns the source text for node over the same span as TrimNodeTextRange.
@@ -52,6 +104,47 @@ func HasCommentsInRange(sourceFile *ast.SourceFile, inRange core.TextRange) bool
 		return true
 	}
 	return false
+}
+
+// HasCommentInsideNode reports whether node contains a real line or block
+// comment. It walks parser-owned tokens, so comment-like text inside strings,
+// templates, or regex literals is ignored.
+func HasCommentInsideNode(sourceFile *ast.SourceFile, node *ast.Node) bool {
+	if sourceFile == nil || node == nil {
+		return false
+	}
+	nodeRange := TrimNodeTextRange(sourceFile, node)
+	hasComment := false
+	ForEachComment(node, func(comment *ast.CommentRange) {
+		if comment.Pos() >= nodeRange.Pos() && comment.End() <= nodeRange.End() {
+			hasComment = true
+		}
+	}, sourceFile)
+	return hasComment
+}
+
+// HasCommentInSpan reports whether any parsed comment overlaps the half-open
+// source span [start, end). Unlike HasCommentsInRange, this scans the whole
+// file's comment table, so callers can use it for ESLint-style
+// commentsExistBetween checks over arbitrary token gaps.
+func HasCommentInSpan(sourceFile *ast.SourceFile, start int, end int) bool {
+	if sourceFile == nil || start >= end {
+		return false
+	}
+	if start < 0 {
+		start = 0
+	}
+	if end > len(sourceFile.Text()) {
+		end = len(sourceFile.Text())
+	}
+
+	found := false
+	ForEachComment(sourceFile.AsNode(), func(comment *ast.CommentRange) {
+		if comment.Pos() < end && comment.End() > start {
+			found = true
+		}
+	}, sourceFile)
+	return found
 }
 
 func TypeRecurser(t *checker.Type, predicate func(t *checker.Type) /* should stop */ bool) bool {
@@ -214,6 +307,17 @@ func IncludesModifier(node interface{ Modifiers() *ast.ModifierList }, modifier 
 	})
 }
 
+// IsThisVoidParameter reports whether param is TypeScript's synthetic
+// `this: void` parameter. It delegates the `this` shape check to tsgo so
+// callers do not need to duplicate identifier/name assumptions.
+func IsThisVoidParameter(param *ast.Node) bool {
+	if param == nil || !ast.IsThisParameter(param) {
+		return false
+	}
+	t := param.Type()
+	return t != nil && t.Kind == ast.KindVoidKeyword
+}
+
 // Source: https://github.com/microsoft/typescript-go/blob/5652e65d5ae944375676d3955f9755e554576d41/internal/jsnum/string.go#L99
 func IsStrWhiteSpace(r rune) bool {
 	// This is different than stringutil.IsWhiteSpaceLike.
@@ -234,13 +338,52 @@ func IsStrWhiteSpace(r rune) bool {
 	return unicode.Is(unicode.Zs, r)
 }
 
+// IsECMABlankLine reports whether s contains only ECMAScript WhiteSpace /
+// LineTerminator runes — matching JavaScript's `"".trim() === ""` check used
+// by rules like max-lines / max-lines-per-function for `skipBlankLines`.
+// Go's strings.TrimSpace diverges on U+FEFF (BOM) and U+0085 (NEL), so we
+// can't use it directly.
+func IsECMABlankLine(s string) bool {
+	for _, r := range s {
+		if !IsStrWhiteSpace(r) {
+			return false
+		}
+	}
+	return true
+}
+
+// LineContentEnd returns the byte position just past the last character of the
+// line whose successor starts at nextLineStart — i.e. nextLineStart with its
+// immediately-preceding ECMA line terminator (LF, CR, CRLF, LS, PS) stripped.
+// Useful when slicing a single line out of source text without its terminator,
+// matching the behavior of ESLint's SourceCode.lines entries.
+func LineContentEnd(text string, nextLineStart int) int {
+	if nextLineStart >= 2 && text[nextLineStart-2] == '\r' && text[nextLineStart-1] == '\n' {
+		return nextLineStart - 2
+	}
+	if nextLineStart >= 1 {
+		c := text[nextLineStart-1]
+		if c == '\r' || c == '\n' {
+			return nextLineStart - 1
+		}
+		// U+2028 / U+2029 encode as 0xE2 0x80 0xA8 / 0xA9.
+		if nextLineStart >= 3 &&
+			text[nextLineStart-3] == 0xE2 &&
+			text[nextLineStart-2] == 0x80 &&
+			(text[nextLineStart-1] == 0xA8 || text[nextLineStart-1] == 0xA9) {
+			return nextLineStart - 3
+		}
+	}
+	return nextLineStart
+}
+
 // ExcludePaths contains path substrings that should be excluded from linting.
 // Used by RunLinterInProgram to skip files during program source file iteration.
 var ExcludePaths = []string{"/node_modules/", "bundled:"}
 
 // DefaultExcludeDirNames contains directory names that are always excluded
 // from file scanning. This is the single source of truth for default directory
-// exclusions, used by DiscoverGapFiles and the no-tsconfig fallback.
+// exclusions used by lint target discovery and fallback Program roots.
 // Aligned with JS-side SCAN_EXCLUDE_DIRS: new Set(['node_modules', '.git']).
 var DefaultExcludeDirNames = []string{"node_modules", ".git"}
 
@@ -289,6 +432,69 @@ func GetOptionsMap(opts any) map[string]interface{} {
 	}
 
 	return optsMap
+}
+
+// ResolveLegacyMaxOption resolves ESLint's legacy maximum/max option shape.
+// It handles number forms (`3` / `[3]`) plus object forms (`{max: 3}` /
+// `[{maximum: 3}]`). `maximum` wins only when it coerces to a non-zero number;
+// otherwise `max` is used. If either key is present but neither yields a
+// numeric threshold, ESLint ends up comparing against `undefined`, which never
+// reports; MaxInt gives the same observable behavior in Go.
+func ResolveLegacyMaxOption(options any, defaultMax int) int {
+	if options == nil {
+		return defaultMax
+	}
+	if arr, ok := options.([]interface{}); ok {
+		if len(arr) == 0 {
+			return defaultMax
+		}
+		if n, ok := CoerceInt(arr[0]); ok {
+			return n
+		}
+	} else if n, ok := CoerceInt(options); ok {
+		return n
+	}
+
+	m := GetOptionsMap(options)
+	if m == nil {
+		return defaultMax
+	}
+	_, hasMaximum := m["maximum"]
+	_, hasMax := m["max"]
+	if !hasMaximum && !hasMax {
+		return defaultMax
+	}
+	if hasMaximum {
+		if n, ok := CoerceInt(m["maximum"]); ok && n != 0 {
+			return n
+		}
+	}
+	if hasMax {
+		if n, ok := CoerceInt(m["max"]); ok {
+			return n
+		}
+	}
+	return math.MaxInt
+}
+
+// CoerceInt converts a JSON-decoded numeric value to int. JSON numbers come in
+// as float64 from `encoding/json`, but rule_tester / test fixtures may pass
+// raw int / int32 / int64 / float32, so accept all of them. Returns
+// (value, true) on success, (0, false) for non-numeric inputs (including nil).
+func CoerceInt(v any) (int, bool) {
+	switch n := v.(type) {
+	case int:
+		return n, true
+	case int32:
+		return int(n), true
+	case int64:
+		return int(n), true
+	case float64:
+		return int(n), true
+	case float32:
+		return int(n), true
+	}
+	return 0, false
 }
 
 // GetOptionsString extracts a string option from the weakly-typed options parameter.

@@ -45,7 +45,7 @@ func parseOptions(rawOpts any) options {
 }
 
 const (
-	outsideConstructor       = -1
+	outsideConstructor        = -1
 	directlyInsideConstructor = 0
 )
 
@@ -59,15 +59,15 @@ const (
 )
 
 type classScope struct {
-	checker                                  *checker.Checker
-	classType                                *checker.Type
-	onlyInlineLambdas                        bool
-	constructorScopeDepth                    int
-	memberVariableModifications              *utils.Set[string]
+	checker                                    *checker.Checker
+	classType                                  *checker.Type
+	onlyInlineLambdas                          bool
+	constructorScopeDepth                      int
+	memberVariableModifications                *utils.Set[string]
 	memberVariableWithConstructorModifications *utils.Set[string]
-	staticVariableModifications              *utils.Set[string]
-	privateModifiableMembers                 map[string]*ast.Node
-	privateModifiableStatics                 map[string]*ast.Node
+	staticVariableModifications                *utils.Set[string]
+	privateModifiableMembers                   map[string]*ast.Node
+	privateModifiableStatics                   map[string]*ast.Node
 }
 
 func newClassScope(ch *checker.Checker, classNode *ast.Node, onlyInlineLambdas bool) *classScope {
@@ -80,15 +80,15 @@ func newClassScope(ch *checker.Checker, classNode *ast.Node, onlyInlineLambdas b
 	}
 
 	cs := &classScope{
-		checker:                                  ch,
-		classType:                                classType,
-		onlyInlineLambdas:                        onlyInlineLambdas,
-		constructorScopeDepth:                    outsideConstructor,
-		memberVariableModifications:              utils.NewSetWithSizeHint[string](4),
+		checker:                     ch,
+		classType:                   classType,
+		onlyInlineLambdas:           onlyInlineLambdas,
+		constructorScopeDepth:       outsideConstructor,
+		memberVariableModifications: utils.NewSetWithSizeHint[string](4),
 		memberVariableWithConstructorModifications: utils.NewSetWithSizeHint[string](4),
-		staticVariableModifications:              utils.NewSetWithSizeHint[string](4),
-		privateModifiableMembers:                 make(map[string]*ast.Node),
-		privateModifiableStatics:                 make(map[string]*ast.Node),
+		staticVariableModifications:                utils.NewSetWithSizeHint[string](4),
+		privateModifiableMembers:                   make(map[string]*ast.Node),
+		privateModifiableStatics:                   make(map[string]*ast.Node),
 	}
 
 	// Scan class members for property declarations
@@ -315,7 +315,7 @@ func getPropertyName(node *ast.Node) *ast.Node {
 	if ast.IsPropertyDeclaration(node) {
 		return node.AsPropertyDeclaration().Name()
 	}
-	if ast.IsParameter(node) {
+	if ast.IsParameterDeclaration(node) {
 		return node.AsParameterDeclaration().Name()
 	}
 	return nil
@@ -325,7 +325,7 @@ func getInitializer(node *ast.Node) *ast.Node {
 	if ast.IsPropertyDeclaration(node) {
 		return node.AsPropertyDeclaration().Initializer
 	}
-	if ast.IsParameter(node) {
+	if ast.IsParameterDeclaration(node) {
 		return node.AsParameterDeclaration().Initializer
 	}
 	return nil
@@ -335,7 +335,7 @@ func getTypeAnnotation(node *ast.Node) *ast.Node {
 	if ast.IsPropertyDeclaration(node) {
 		return node.AsPropertyDeclaration().Type
 	}
-	if ast.IsParameter(node) {
+	if ast.IsParameterDeclaration(node) {
 		return node.AsParameterDeclaration().Type
 	}
 	return nil
@@ -402,7 +402,8 @@ func isDestructuringAssignment(node *ast.Node) bool {
 var PreferReadonlyRule = rule.CreateRule(rule.Rule{
 	Name:             "prefer-readonly",
 	RequiresTypeInfo: true,
-	Run: func(ctx rule.RuleContext, rawOpts any) rule.RuleListeners {
+	Run: func(ctx rule.RuleContext, _rawOpts []any) rule.RuleListeners {
+		rawOpts := rule.LegacyUnwrapOptions(_rawOpts)
 		if ctx.TypeChecker == nil {
 			return rule.RuleListeners{}
 		}

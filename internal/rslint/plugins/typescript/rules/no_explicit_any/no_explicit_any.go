@@ -82,7 +82,7 @@ func isAnyInRestParameter(node *ast.Node) bool {
 			break
 		}
 		if p.Kind == ast.KindTypeReference {
-			typeRef := p.AsTypeReference()
+			typeRef := p.AsTypeReferenceNode()
 			if typeRef != nil && ast.IsIdentifier(typeRef.TypeName) {
 				identifier := typeRef.TypeName.AsIdentifier()
 				if identifier != nil && (identifier.Text == "Array" || identifier.Text == "ReadonlyArray") {
@@ -117,7 +117,8 @@ func isWithinKeyofAny(node *ast.Node) bool {
 
 var NoExplicitAnyRule = rule.CreateRule(rule.Rule{
 	Name: "no-explicit-any",
-	Run: func(ctx rule.RuleContext, options any) rule.RuleListeners {
+	Run: func(ctx rule.RuleContext, _options []any) rule.RuleListeners {
+		options := rule.LegacyUnwrapOptions(_options)
 		opts := parseOptions(options)
 
 		return rule.RuleListeners{

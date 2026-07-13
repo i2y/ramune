@@ -1,0 +1,52 @@
+package no_new_native_nonconstructor
+
+import (
+	"fmt"
+
+	"github.com/i2y/ramune/internal/rslint/shim/ast"
+	"github.com/i2y/ramune/internal/rslint/rule"
+	"github.com/i2y/ramune/internal/rslint/utils"
+)
+
+var nativeNonconstructorNames = map[string]struct{}{
+	"Symbol": {},
+	"BigInt": {},
+}
+
+// https://eslint.org/docs/latest/rules/no-new-native-nonconstructor
+var NoNewNativeNonconstructorRule = rule.Rule{
+	Name: "no-new-native-nonconstructor",
+	Run: func(ctx rule.RuleContext, options []any) rule.RuleListeners {
+		return rule.RuleListeners{
+			ast.KindNewExpression: func(node *ast.Node) {
+				newExpr := node.AsNewExpression()
+				if newExpr == nil || newExpr.Expression == nil {
+					return
+				}
+
+				callee := utils.SkipAssertionsAndParens(newExpr.Expression)
+				if callee == nil || callee.Kind != ast.KindIdentifier {
+					return
+				}
+
+				name := callee.AsIdentifier().Text
+				if _, ok := nativeNonconstructorNames[name]; !ok || utils.IsShadowed(callee, name) {
+					return
+				}
+
+				// A config `/* global Symbol: off */` / `languageOptions.globals`
+				// entry un-declares the builtin, so it no longer resolves to a
+				// known global — ESLint's `globalScope.set.get(name)` would be
+				// undefined and the rule stays silent.
+				if declared, ok := ctx.Globals[name]; ok && !declared {
+					return
+				}
+
+				ctx.ReportNode(callee, rule.RuleMessage{
+					Id:          "noNewNonconstructor",
+					Description: fmt.Sprintf("`%s` cannot be called as a constructor.", name),
+				})
+			},
+		}
+	},
+}

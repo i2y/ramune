@@ -55,6 +55,8 @@ func GetScannerForSourceFile(sourceFile *ast.SourceFile, pos int) *scanner.Scann
 func GetShebang(text string) string
 //go:linkname GetSourceTextOfNodeFromSourceFile github.com/i2y/ramune/internal/rslint/tsgo_pinned/scanner.GetSourceTextOfNodeFromSourceFile
 func GetSourceTextOfNodeFromSourceFile(sourceFile *ast.SourceFile, node *ast.Node, includeTrivia bool) string
+//go:linkname GetTextOfJSDocComment github.com/i2y/ramune/internal/rslint/tsgo_pinned/scanner.GetTextOfJSDocComment
+func GetTextOfJSDocComment(comment *ast.NodeList) string
 //go:linkname GetTextOfNode github.com/i2y/ramune/internal/rslint/tsgo_pinned/scanner.GetTextOfNode
 func GetTextOfNode(node *ast.Node) string
 //go:linkname GetTextOfNodeFromSourceText github.com/i2y/ramune/internal/rslint/tsgo_pinned/scanner.GetTextOfNodeFromSourceText

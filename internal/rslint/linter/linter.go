@@ -2,40 +2,18 @@ package linter
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"strings"
-	"sync"
-	"sync/atomic"
 
 	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/utils"
 
 	"github.com/i2y/ramune/internal/rslint/shim/ast"
+	"github.com/i2y/ramune/internal/rslint/shim/checker"
 	"github.com/i2y/ramune/internal/rslint/shim/compiler"
 	"github.com/i2y/ramune/internal/rslint/shim/core"
-	"github.com/i2y/ramune/internal/rslint/shim/scanner"
 	"github.com/i2y/ramune/internal/rslint/shim/tspath"
 )
-
-type ConfiguredRule struct {
-	Name             string
-	Settings         map[string]interface{}
-	Severity         rule.DiagnosticSeverity
-	RequiresTypeInfo bool
-	Run              func(ctx rule.RuleContext) rule.RuleListeners
-}
-
-// FilterNonTypeAwareRules returns only rules that do not require type information.
-func FilterNonTypeAwareRules(rules []ConfiguredRule) []ConfiguredRule {
-	filtered := make([]ConfiguredRule, 0, len(rules))
-	for _, r := range rules {
-		if !r.RequiresTypeInfo {
-			filtered = append(filtered, r)
-		}
-	}
-	return filtered
-}
 
 // isFileAllowed checks if fileName matches any path in allowFiles.
 // It first tries fast string equality, then falls back to os.SameFile
@@ -83,56 +61,547 @@ func isDirAllowed(fileName string, allowDirs []string) bool {
 	return false
 }
 
-// flattenDiagnosticMessage builds a human-readable message from a TypeScript
-// diagnostic, including its MessageChain and RelatedInformation.
-// The format follows tsc's output style.
-func flattenDiagnosticMessage(d *ast.Diagnostic) string {
-	var b strings.Builder
-	b.WriteString(d.String())
-	for _, chain := range d.MessageChain() {
-		flattenMessageChain(&b, chain, 1)
+// runProgramOptions is the internal per-program input to runLintRulesInProgram.
+type runProgramOptions struct {
+	Program          *compiler.Program
+	Scope            FileScope
+	ExcludePaths     []string
+	FileFilter       FileFilter
+	TargetFiles      []string
+	HasTargetFiles   bool
+	SyntaxErrorFiles map[string]struct{}
+	GetRulesForFile  RuleHandler
+	// CollectExecutedRules controls whether runLintRulesInProgram builds the
+	// per-program rule-name set returned in programLintResult. LintSingleFile
+	// leaves this disabled because it does not consume that result.
+	CollectExecutedRules bool
+	// SingleThreaded, when true, lints this program's file shards
+	// sequentially on the calling goroutine instead of in parallel workers.
+	SingleThreaded bool
+	// TypeInfoFiles is the set of files with reliable project type information.
+	// Rules that require type information are filtered for every other file,
+	// and remaining rules receive a nil TypeChecker. nil = no gap distinction.
+	TypeInfoFiles map[string]struct{}
+	OnDiagnostic  DiagnosticHandler
+}
+
+type programLintResult struct {
+	lintedFileCount int32
+	executedRules   map[string]struct{}
+}
+
+// runLintRulesInProgram lints files in a single Program. Files are filtered
+// through ExcludePaths, Scope (Files+Dirs), and FileFilter before rule
+// execution. Pass FileFilter=nil to disable that layer.
+//
+// Unless SingleThreaded is set, files are linted in parallel shards — one
+// worker per pool checker, each worker owning its checker exclusively and
+// processing the files associated to it (see the sharding comment in the
+// function body for the invariants this preserves).
+//
+// This is the post-refactor internal implementation behind both RunLinter and
+// LintSingleFile. It does NOT run type-check — type-check is a program-level
+// concern handled by RunLinter directly.
+func runLintRulesInProgram(opts runProgramOptions) programLintResult {
+	if opts.OnDiagnostic == nil {
+		opts.OnDiagnostic = func(rule.RuleDiagnostic) {}
 	}
-	for _, related := range d.RelatedInformation() {
-		if related.File() != nil {
-			line, _ := scanner.GetECMALineAndUTF16CharacterOfPosition(related.File(), related.Pos())
-			fmt.Fprintf(&b, "\n  %s:%d: %s", related.File().FileName(), line+1, related.String())
+	getRulesForFile := opts.GetRulesForFile
+	if getRulesForFile == nil {
+		return programLintResult{}
+	}
+
+	// Collect files to lint (applying all filters). Shared with
+	// CollectLintTargets so the eslint-plugin dispatch path observes the
+	// exact same file set as native linting.
+	filesToLint := collectFilesToLint(opts)
+
+	result := programLintResult{lintedFileCount: int32(len(filesToLint))}
+
+	// Early-out: if every file in this program was filtered, do not pay the
+	// cost of acquiring a TypeChecker (which forces program binding and is
+	// non-trivial when the checker hasn't been created yet).
+	if result.lintedFileCount == 0 {
+		return result
+	}
+
+	// lintFile lints one file with its already-resolved rules and checker. All per-file state
+	// (listener map, comments, DisableManager, rule contexts) lives inside
+	// this function, so concurrent calls for different files are independent;
+	// the checker is the only shared resource and is owned exclusively by the
+	// calling worker (see the sharding below).
+	lintFile := func(file *ast.SourceFile, rules []ConfiguredRule, chk *checker.Checker) {
+		registeredListeners := make(map[ast.Kind][](func(node *ast.Node)), 20)
+
+		comments := make([]*ast.CommentRange, 0)
+		utils.ForEachComment(&file.Node, func(comment *ast.CommentRange) { comments = append(comments, comment) }, file)
+
+		// Create disable manager for this file
+		disableManager := rule.NewDisableManager(file, comments)
+
+		// Parse inline `/* global */` comments once per file, same as
+		// DisableManager above. Rules receive both declaration metadata and the
+		// merged result instead of parsing comments or config themselves.
+		inlineGlobals, inlineGlobalDeclarations := rule.ParseInlineGlobals(file, comments)
+		fileChecker := chk
+		if opts.TypeInfoFiles != nil {
+			if _, hasTypeInfo := opts.TypeInfoFiles[file.FileName()]; !hasTypeInfo {
+				fileChecker = nil
+			}
+		}
+
+		for _, r := range rules {
+			ctx := rule.RuleContext{
+				SourceFile:     file,
+				Program:        opts.Program,
+				Settings:       r.Settings,
+				ConfigGlobals:  r.Globals,
+				InlineGlobals:  inlineGlobalDeclarations,
+				Globals:        rule.MergeGlobals(r.Globals, inlineGlobals),
+				TypeChecker:    fileChecker,
+				DisableManager: disableManager,
+				ReportRange: func(textRange core.TextRange, msg rule.RuleMessage) {
+					if disableManager.IsRuleDisabled(r.Name, textRange.Pos()) {
+						return
+					}
+					opts.OnDiagnostic(rule.RuleDiagnostic{
+						RuleName:   r.Name,
+						Range:      textRange,
+						Message:    msg,
+						SourceFile: file,
+						FilePath:   file.FileName(),
+						Severity:   r.Severity,
+					})
+				},
+				ReportRangeWithFixes: func(textRange core.TextRange, msg rule.RuleMessage, fixes ...rule.RuleFix) {
+					if disableManager.IsRuleDisabled(r.Name, textRange.Pos()) {
+						return
+					}
+					opts.OnDiagnostic(rule.RuleDiagnostic{
+						RuleName:   r.Name,
+						Range:      textRange,
+						Message:    msg,
+						FixesPtr:   &fixes,
+						SourceFile: file,
+						FilePath:   file.FileName(),
+						Severity:   r.Severity,
+					})
+				},
+				ReportRangeWithSuggestions: func(textRange core.TextRange, msg rule.RuleMessage, suggestions ...rule.RuleSuggestion) {
+					if disableManager.IsRuleDisabled(r.Name, textRange.Pos()) {
+						return
+					}
+					opts.OnDiagnostic(rule.RuleDiagnostic{
+						RuleName:    r.Name,
+						Range:       textRange,
+						Message:     msg,
+						Suggestions: &suggestions,
+						SourceFile:  file,
+						FilePath:    file.FileName(),
+						Severity:    r.Severity,
+					})
+				},
+				ReportNode: func(node *ast.Node, msg rule.RuleMessage) {
+					trimmedRange := utils.TrimNodeTextRange(file, node)
+					if disableManager.IsRuleDisabled(r.Name, trimmedRange.Pos()) {
+						return
+					}
+					opts.OnDiagnostic(rule.RuleDiagnostic{
+						RuleName:   r.Name,
+						Range:      trimmedRange,
+						Message:    msg,
+						SourceFile: file,
+						FilePath:   file.FileName(),
+						Severity:   r.Severity,
+					})
+				},
+				ReportNodeWithFixes: func(node *ast.Node, msg rule.RuleMessage, fixes ...rule.RuleFix) {
+					trimmedRange := utils.TrimNodeTextRange(file, node)
+					if disableManager.IsRuleDisabled(r.Name, trimmedRange.Pos()) {
+						return
+					}
+					opts.OnDiagnostic(rule.RuleDiagnostic{
+						RuleName:   r.Name,
+						Range:      trimmedRange,
+						Message:    msg,
+						FixesPtr:   &fixes,
+						SourceFile: file,
+						FilePath:   file.FileName(),
+						Severity:   r.Severity,
+					})
+				},
+				ReportNodeWithSuggestions: func(node *ast.Node, msg rule.RuleMessage, suggestions ...rule.RuleSuggestion) {
+					trimmedRange := utils.TrimNodeTextRange(file, node)
+					if disableManager.IsRuleDisabled(r.Name, trimmedRange.Pos()) {
+						return
+					}
+					opts.OnDiagnostic(rule.RuleDiagnostic{
+						RuleName:    r.Name,
+						Range:       trimmedRange,
+						Message:     msg,
+						Suggestions: &suggestions,
+						SourceFile:  file,
+						FilePath:    file.FileName(),
+						Severity:    r.Severity,
+					})
+				},
+				ReportNodeWithFixesAndSuggestions: func(node *ast.Node, msg rule.RuleMessage, fixes []rule.RuleFix, suggestions []rule.RuleSuggestion) {
+					trimmedRange := utils.TrimNodeTextRange(file, node)
+					if disableManager.IsRuleDisabled(r.Name, trimmedRange.Pos()) {
+						return
+					}
+					opts.OnDiagnostic(rule.RuleDiagnostic{
+						RuleName:    r.Name,
+						Range:       trimmedRange,
+						Message:     msg,
+						FixesPtr:    &fixes,
+						Suggestions: &suggestions,
+						SourceFile:  file,
+						FilePath:    file.FileName(),
+						Severity:    r.Severity,
+					})
+				},
+				ReportRangeWithFixesAndSuggestions: func(textRange core.TextRange, msg rule.RuleMessage, fixes []rule.RuleFix, suggestions []rule.RuleSuggestion) {
+					if disableManager.IsRuleDisabled(r.Name, textRange.Pos()) {
+						return
+					}
+					opts.OnDiagnostic(rule.RuleDiagnostic{
+						RuleName:    r.Name,
+						Range:       textRange,
+						Message:     msg,
+						FixesPtr:    &fixes,
+						Suggestions: &suggestions,
+						SourceFile:  file,
+						FilePath:    file.FileName(),
+						Severity:    r.Severity,
+					})
+				},
+			}
+
+			for kind, listener := range r.Run(ctx) {
+				listeners, ok := registeredListeners[kind]
+				if !ok {
+					listeners = make([](func(node *ast.Node)), 0, len(rules))
+				}
+				registeredListeners[kind] = append(listeners, listener)
+			}
+		}
+
+		runListeners := func(kind ast.Kind, node *ast.Node) {
+			if listeners, ok := registeredListeners[kind]; ok {
+				for _, listener := range listeners {
+					listener(node)
+				}
+			}
+		}
+
+		/* convert.ts -> allowPattern:
+		catch name
+		variabledeclaration name
+		forinstatement initializer
+		forofstatement initializer
+		(propagation) allowPattern > arrayliteralexpression elements
+		(propagation) allowPattern > objectliteralexpression properties
+		(propagation) allowPattern > spreadassignment,spreadelement expression
+		(propagation) allowPattern > propertyassignment value
+		arraybindingpattern elements
+		objectbindingpattern elements
+		(init) binaryexpression(with '=' operator') left
+		*/
+
+		var childVisitor ast.Visitor
+		var patternVisitor func(node *ast.Node)
+		patternVisitor = func(node *ast.Node) {
+			runListeners(node.Kind, node)
+			kind := rule.ListenerOnAllowPattern(node.Kind)
+			runListeners(kind, node)
+
+			switch node.Kind {
+			case ast.KindArrayLiteralExpression:
+				for _, element := range node.AsArrayLiteralExpression().Elements.Nodes {
+					patternVisitor(element)
+				}
+			case ast.KindObjectLiteralExpression:
+				for _, property := range node.AsObjectLiteralExpression().Properties.Nodes {
+					patternVisitor(property)
+				}
+			case ast.KindSpreadElement, ast.KindSpreadAssignment:
+				patternVisitor(node.Expression())
+			case ast.KindPropertyAssignment:
+				patternVisitor(node.Initializer())
+			default:
+				node.ForEachChild(childVisitor)
+			}
+
+			runListeners(rule.ListenerOnExit(kind), node)
+			runListeners(rule.ListenerOnExit(node.Kind), node)
+		}
+		childVisitor = func(node *ast.Node) bool {
+			runListeners(node.Kind, node)
+
+			switch node.Kind {
+			case ast.KindArrayLiteralExpression, ast.KindObjectLiteralExpression:
+				kind := rule.ListenerOnNotAllowPattern(node.Kind)
+				runListeners(kind, node)
+				node.ForEachChild(childVisitor)
+				runListeners(rule.ListenerOnExit(kind), node)
+			default:
+				if ast.IsAssignmentExpression(node, true) {
+					expr := node.AsBinaryExpression()
+					patternVisitor(expr.Left)
+					childVisitor(expr.OperatorToken)
+					childVisitor(expr.Right)
+				} else {
+					node.ForEachChild(childVisitor)
+				}
+			}
+
+			runListeners(rule.ListenerOnExit(node.Kind), node)
+
+			return false
+		}
+		file.Node.ForEachChild(childVisitor)
+		clear(registeredListeners)
+	}
+
+	// Phase 1 parallelism is per-file within the program: files are grouped
+	// by the checker the pool associated to them (for the compiler pool this
+	// is the stable index%N mapping built in checkerpool.go), and each group
+	// is linted serially by ONE worker holding that checker exclusively.
+	// This keeps three invariants:
+	//   - a checker is never used by two goroutines at once (pool contract:
+	//     checkers must not be accessed concurrently);
+	//   - every file's diagnostics are emitted by a single worker, so the
+	//     file-internal diagnostic order stays deterministic — the fixer's
+	//     tie-breaking and reporters rely on this;
+	//   - Phase 2 type-check visits files through the same association,
+	//     reusing the type caches warmed during lint.
+	// The LSP project pool builds its file association dynamically on first
+	// GetChecker instead of precomputing index%N — with this loop's
+	// acquire/release probing, a fresh project pool associates every file
+	// to the first checker, so the grouping collapses to a single group
+	// (no intra-program parallelism on that path; today it is only reached
+	// via LintSingleFile, where one file means one group anyway).
+	// Correctness never depends on the grouping: each worker only uses the
+	// checker it acquired exclusively for its own shard.
+	ctx := context.Background()
+	rulesByFile := make(map[*ast.SourceFile][]ConfiguredRule, len(filesToLint))
+	checkerGroups := make(map[*checker.Checker][]*ast.SourceFile)
+	for _, file := range filesToLint {
+		if shouldSkipRulesForSyntax(opts, file, ctx) {
+			continue
+		}
+		rules := filterRulesForTypeInfo(
+			getRulesForFile(file),
+			file.FileName(),
+			opts.TypeInfoFiles,
+		)
+		if opts.CollectExecutedRules && len(rules) > 0 {
+			if result.executedRules == nil {
+				result.executedRules = make(map[string]struct{}, len(rules))
+			}
+			for _, configuredRule := range rules {
+				result.executedRules[configuredRule.Name] = struct{}{}
+			}
+		}
+		rules = filterNativeRules(rules)
+		if len(rules) == 0 {
+			continue
+		}
+		rulesByFile[file] = rules
+		if opts.TypeInfoFiles != nil {
+			if _, hasTypeInfo := opts.TypeInfoFiles[file.FileName()]; !hasTypeInfo {
+				checkerGroups[nil] = append(checkerGroups[nil], file)
+				continue
+			}
+		}
+		chk, release := opts.Program.GetTypeCheckerForFile(ctx, file)
+		release()
+		checkerGroups[chk] = append(checkerGroups[chk], file)
+	}
+
+	wg := core.NewWorkGroup(opts.SingleThreaded)
+	for chk, files := range checkerGroups {
+		wg.Queue(func() {
+			if chk != nil {
+				var done func()
+				chk, done = opts.Program.GetTypeCheckerForFileExclusive(ctx, files[0])
+				defer done()
+			}
+			for _, file := range files {
+				lintFile(file, rulesByFile[file], chk)
+			}
+		})
+	}
+	wg.RunAndWait()
+
+	return result
+}
+
+// filterNativeRules removes Node-dispatched ESLint plugin placeholders from
+// the native pass without mutating the resolver's shared cached slice. The
+// original list remains available to CollectLintTargets for plugin dispatch.
+func filterNativeRules(rules []ConfiguredRule) []ConfiguredRule {
+	firstPlugin := -1
+	for i, configuredRule := range rules {
+		if configuredRule.IsEslintPluginRule {
+			firstPlugin = i
+			break
 		}
 	}
-	return b.String()
+	if firstPlugin < 0 {
+		return rules
+	}
+
+	nativeRules := make([]ConfiguredRule, 0, len(rules)-1)
+	nativeRules = append(nativeRules, rules[:firstPlugin]...)
+	for _, configuredRule := range rules[firstPlugin+1:] {
+		if !configuredRule.IsEslintPluginRule {
+			nativeRules = append(nativeRules, configuredRule)
+		}
+	}
+	return nativeRules
 }
 
-func flattenMessageChain(b *strings.Builder, chain *ast.Diagnostic, level int) {
-	b.WriteByte('\n')
-	for range level {
-		b.WriteString("  ")
+func filterRulesForTypeInfo(rules []ConfiguredRule, fileName string, typeInfoFiles map[string]struct{}) []ConfiguredRule {
+	if typeInfoFiles == nil {
+		return rules
 	}
-	b.WriteString(chain.String())
-	for _, child := range chain.MessageChain() {
-		flattenMessageChain(b, child, level+1)
+	if _, hasTypeInfo := typeInfoFiles[fileName]; hasTypeInfo {
+		return rules
 	}
+	return FilterNonTypeAwareRules(rules)
 }
 
-// RunLinterInProgram lints files in a single Program. Files are filtered through
-// skipFiles, allowFiles/allowDirs, and the optional fileFilter before rule execution.
-// fileFilter is a caller-supplied predicate covering any reason to skip a file —
-// used for multi-config ownership-based deduplication and for config `ignores`
-// patterns. Files it rejects are excluded from rule diagnostics, type-check
-// diagnostics, and the returned linted-file count. Pass nil to lint all files.
-func RunLinterInProgram(program *compiler.Program, allowFiles []string, allowDirs []string, skipFiles []string, getRulesForFile RuleHandler, typeCheck bool, onDiagnostic DiagnosticHandler, typeInfoFiles map[string]struct{}, fileFilter func(string) bool) int32 {
-	// Pre-compute FileInfo for allowFiles once to avoid N×M stat calls in the loop.
+func shouldSkipRulesForSyntax(opts runProgramOptions, file *ast.SourceFile, ctx context.Context) bool {
+	if opts.SyntaxErrorFiles != nil {
+		_, invalid := opts.SyntaxErrorFiles[file.FileName()]
+		return invalid
+	}
+	return len(opts.Program.GetSyntacticDiagnostics(ctx, file)) > 0
+}
+
+// RunLinter runs all configured lint rules across the given programs in
+// parallel, then optionally collects program-level type-check diagnostics
+// aligned with `tsc --noEmit` semantics.
+//
+// Phase 1 — lint rules: each program is processed via
+// runLintRulesInProgram, with files filtered through opts.ExcludePaths,
+// opts.Scope, opts.PerProgramFilter and, in legacy scan mode, the program's
+// own owned-file set. When opts.TargetFiles is non-nil, Phase 1 uses that exact
+// per-Program target plan instead of scanning Program roots.
+// Within a program, files are linted in parallel shards (one per pool
+// checker); diagnostics therefore arrive in nondeterministic cross-file
+// order and callers that print them should impose an explicit order.
+// When opts.GetRulesForFile is nil, Phase 1 is skipped entirely — no work
+// group is created and no per-program goroutines are spawned. This is how
+// callers run a pure type-check pass (--type-check-only) without paying
+// lint-side setup cost.
+//
+// Phase 2 — type-check (skipped when opts.TypeCheck is false): each
+// non-skipped program is handed to runTypeCheckAcrossPrograms, which
+// aggregates diagnostics through collectNoEmitDiagnostics — a helper that
+// mirrors compiler.GetDiagnosticsOfAnyProgram(file=nil) but enforces
+// `tsc --noEmit` semantics regardless of whether the user's tsconfig
+// sets noEmit. Type-check is NOT constrained by Scope / PerProgramFilter
+// / ExcludePaths — it covers the full program just like tsc.
+//
+// See RunLinterOptions for each field's zero-value semantics.
+func RunLinter(opts RunLinterOptions) (*LintResult, error) {
+	if opts.ExcludePaths == nil {
+		opts.ExcludePaths = utils.ExcludePaths
+	}
+	if opts.OnDiagnostic == nil {
+		opts.OnDiagnostic = func(rule.RuleDiagnostic) {}
+	}
+
+	executedRules := make(map[string]struct{})
+	var lintedFileCount int32
+
+	// Phase 1: lint rules per program (parallel). Skipped when no rule
+	// handler was supplied — see doc above.
+	if opts.GetRulesForFile != nil {
+		programResults := make([]programLintResult, len(opts.Programs))
+		wg := core.NewWorkGroup(opts.SingleThreaded)
+		for i, program := range opts.Programs {
+			var perProgramFilter FileFilter
+			if i < len(opts.PerProgramFilter) {
+				perProgramFilter = opts.PerProgramFilter[i]
+			}
+			var targetFiles []string
+			if opts.TargetFiles != nil && i < len(opts.TargetFiles) {
+				targetFiles = opts.TargetFiles[i]
+			}
+			filter := perProgramFilter
+			if opts.TargetFiles == nil {
+				ownedFiles := buildOwnedFileSet(program)
+				filter = composeOwnedFilter(perProgramFilter, ownedFiles)
+			}
+
+			programOpts := runProgramOptions{
+				Program:              program,
+				Scope:                opts.Scope,
+				ExcludePaths:         opts.ExcludePaths,
+				FileFilter:           filter,
+				TargetFiles:          targetFiles,
+				HasTargetFiles:       opts.TargetFiles != nil,
+				GetRulesForFile:      opts.GetRulesForFile,
+				CollectExecutedRules: true,
+				SyntaxErrorFiles:     opts.SyntaxErrorFiles,
+				SingleThreaded:       opts.SingleThreaded,
+				TypeInfoFiles:        opts.TypeInfoFiles,
+				OnDiagnostic:         opts.OnDiagnostic,
+			}
+			programIndex := i
+			programOptions := programOpts
+			wg.Queue(func() {
+				programResults[programIndex] = runLintRulesInProgram(programOptions)
+			})
+		}
+		wg.RunAndWait()
+		for _, programResult := range programResults {
+			lintedFileCount += programResult.lintedFileCount
+			for name := range programResult.executedRules {
+				executedRules[name] = struct{}{}
+			}
+		}
+	}
+
+	// Phase 2: program-level type-check (tsc-aligned).
+	if opts.TypeCheck {
+		runTypeCheckAcrossPrograms(typeCheckRequest{
+			Programs:       opts.Programs,
+			Skip:           opts.SkipTypeCheckPrograms,
+			SingleThreaded: opts.SingleThreaded,
+			OnDiagnostic:   opts.OnDiagnostic,
+		})
+	}
+
+	return &LintResult{
+		LintedFileCount: lintedFileCount,
+		ExecutedRules:   executedRules,
+	}, nil
+}
+
+// collectFilesToLint applies the ExcludePaths / Scope / FileFilter layers
+// to a program's source files. Shared by runLintRulesInProgram (native
+// lint) and CollectLintTargets (eslint-plugin dispatch) so both observe an
+// identical file set.
+func collectFilesToLint(opts runProgramOptions) []*ast.SourceFile {
+	if opts.HasTargetFiles {
+		return collectExactFilesToLint(opts)
+	}
+
 	var allowFileInfos []os.FileInfo
-	if allowFiles != nil {
-		allowFileInfos = precomputeAllowFileInfos(allowFiles)
+	if opts.Scope.Files != nil {
+		allowFileInfos = precomputeAllowFileInfos(opts.Scope.Files)
 	}
-
-	// Collect files to lint (applying all filters).
 	var filesToLint []*ast.SourceFile
-	for _, file := range program.GetSourceFiles() {
+	for _, file := range opts.Program.GetSourceFiles() {
 		p := string(file.Path())
 		// skip lint node_modules and bundled files
-		// FIXME: we may have better api to tell whether a file is a bundled file or not
 		skipFile := false
-		for _, skipPattern := range skipFiles {
+		for _, skipPattern := range opts.ExcludePaths {
 			if strings.Contains(p, skipPattern) {
 				skipFile = true
 				break
@@ -141,329 +610,164 @@ func RunLinterInProgram(program *compiler.Program, allowFiles []string, allowDir
 		if skipFile {
 			continue
 		}
-		// Filter by allowFiles / allowDirs (OR logic: match either one)
-		if allowFiles != nil || allowDirs != nil {
-			fileAllowed := allowFiles != nil && isFileAllowed(file.FileName(), allowFiles, allowFileInfos)
-			dirAllowed := allowDirs != nil && isDirAllowed(file.FileName(), allowDirs)
+		// Filter by Scope.Files / Scope.Dirs (OR logic: match either one).
+		if opts.Scope.Files != nil || opts.Scope.Dirs != nil {
+			fileAllowed := opts.Scope.Files != nil && isFileAllowed(file.FileName(), opts.Scope.Files, allowFileInfos)
+			dirAllowed := opts.Scope.Dirs != nil && isDirAllowed(file.FileName(), opts.Scope.Dirs)
 			if !fileAllowed && !dirAllowed {
 				continue
 			}
 		}
-		// Ownership filter: in multi-config mode, only lint files owned by
-		// the current program's config (nearest config == program's config).
-		if fileFilter != nil && !fileFilter(file.FileName()) {
+		// Caller-supplied filter (multi-config ownership / config `ignores`).
+		if opts.FileFilter != nil && !opts.FileFilter(file.FileName()) {
 			continue
 		}
 		filesToLint = append(filesToLint, file)
 	}
+	return filesToLint
+}
 
-	lintedFileCount := int32(len(filesToLint))
+func collectExactFilesToLint(opts runProgramOptions) []*ast.SourceFile {
+	var filesToLint []*ast.SourceFile
+	seen := make(map[string]struct{}, len(opts.TargetFiles))
+	for _, target := range opts.TargetFiles {
+		file := opts.Program.GetSourceFile(target)
+		if file == nil {
+			continue
+		}
+		fileName := file.FileName()
+		if _, ok := seen[fileName]; ok {
+			continue
+		}
+		seen[fileName] = struct{}{}
+		p := string(file.Path())
+		skipFile := false
+		for _, skipPattern := range opts.ExcludePaths {
+			if strings.Contains(p, skipPattern) {
+				skipFile = true
+				break
+			}
+		}
+		if skipFile {
+			continue
+		}
+		if opts.FileFilter != nil && !opts.FileFilter(fileName) {
+			continue
+		}
+		filesToLint = append(filesToLint, file)
+	}
+	return filesToLint
+}
 
-	// Phase 1: Run lint rules. Acquires a checker from the pool for type-aware rules.
-	{
-		checker, done := program.GetTypeChecker(context.Background())
-		for _, file := range filesToLint {
-			registeredListeners := make(map[ast.Kind][](func(node *ast.Node)), 20)
+// LintTarget is one file paired with the rules configured for it, as
+// resolved by RunLinterOptions.GetRulesForFile.
+type LintTarget struct {
+	File  *ast.SourceFile
+	Rules []ConfiguredRule
+}
 
-			rules := getRulesForFile(file)
+// CollectLintTargets resolves, for every file RunLinter would lint, the
+// rules configured for it — WITHOUT running them. The CLI/LSP host uses it
+// to split out eslint-plugin rules and dispatch them to the Node worker in
+// parallel with native linting, reusing the exact same file-set filtering
+// as RunLinter (exact TargetFiles when present, otherwise Scope / legacy
+// owned-file filtering, plus ExcludePaths and per-program filters).
+func CollectLintTargets(opts RunLinterOptions) []LintTarget {
+	if opts.GetRulesForFile == nil {
+		return nil
+	}
+	excludePaths := opts.ExcludePaths
+	if excludePaths == nil {
+		excludePaths = utils.ExcludePaths
+	}
+	var targets []LintTarget
+	for i, program := range opts.Programs {
+		var perProgramFilter FileFilter
+		if i < len(opts.PerProgramFilter) {
+			perProgramFilter = opts.PerProgramFilter[i]
+		}
+		var targetFiles []string
+		if opts.TargetFiles != nil && i < len(opts.TargetFiles) {
+			targetFiles = opts.TargetFiles[i]
+		}
+		filter := perProgramFilter
+		if opts.TargetFiles == nil {
+			filter = composeOwnedFilter(perProgramFilter, buildOwnedFileSet(program))
+		}
+		files := collectFilesToLint(runProgramOptions{
+			Program:          program,
+			Scope:            opts.Scope,
+			ExcludePaths:     excludePaths,
+			FileFilter:       filter,
+			TargetFiles:      targetFiles,
+			HasTargetFiles:   opts.TargetFiles != nil,
+			SyntaxErrorFiles: opts.SyntaxErrorFiles,
+			TypeInfoFiles:    opts.TypeInfoFiles,
+		})
+		for _, file := range files {
+			if shouldSkipRulesForSyntax(runProgramOptions{
+				Program:          program,
+				SyntaxErrorFiles: opts.SyntaxErrorFiles,
+			}, file, context.Background()) {
+				continue
+			}
+			rules := filterRulesForTypeInfo(opts.GetRulesForFile(file), file.FileName(), opts.TypeInfoFiles)
 			if len(rules) == 0 {
 				continue
 			}
-
-			comments := make([]*ast.CommentRange, 0)
-			utils.ForEachComment(&file.Node, func(comment *ast.CommentRange) { comments = append(comments, comment) }, file)
-
-			// Create disable manager for this file
-			disableManager := rule.NewDisableManager(file, comments)
-
-			// For gap files (not in typeInfoFiles), pass nil TypeChecker
-			// as defense-in-depth. Type-aware rules are already filtered
-			// out by getRulesForFile, but this ensures rules with optional
-			// TypeChecker usage degrade gracefully.
-			fileChecker := checker
-			if typeInfoFiles != nil {
-				if _, hasTypeInfo := typeInfoFiles[file.FileName()]; !hasTypeInfo {
-					fileChecker = nil
-				}
-			}
-
-			for _, r := range rules {
-				ctx := rule.RuleContext{
-					SourceFile:     file,
-					Program:        program,
-					Settings:       r.Settings,
-					TypeChecker:    fileChecker,
-					DisableManager: disableManager,
-					ReportRange: func(textRange core.TextRange, msg rule.RuleMessage) {
-						// Check if rule is disabled at this position
-						if disableManager.IsRuleDisabled(r.Name, textRange.Pos()) {
-							return
-						}
-						onDiagnostic(rule.RuleDiagnostic{
-							RuleName:   r.Name,
-							Range:      textRange,
-							Message:    msg,
-							SourceFile: file,
-							Severity:   r.Severity,
-						})
-					},
-					ReportRangeWithFixes: func(textRange core.TextRange, msg rule.RuleMessage, fixes ...rule.RuleFix) {
-						// Check if rule is disabled at this position
-						if disableManager.IsRuleDisabled(r.Name, textRange.Pos()) {
-							return
-						}
-						onDiagnostic(rule.RuleDiagnostic{
-							RuleName:   r.Name,
-							Range:      textRange,
-							Message:    msg,
-							FixesPtr:   &fixes,
-							SourceFile: file,
-							Severity:   r.Severity,
-						})
-					},
-					ReportRangeWithSuggestions: func(textRange core.TextRange, msg rule.RuleMessage, suggestions ...rule.RuleSuggestion) {
-						// Check if rule is disabled at this position
-						if disableManager.IsRuleDisabled(r.Name, textRange.Pos()) {
-							return
-						}
-						onDiagnostic(rule.RuleDiagnostic{
-							RuleName:    r.Name,
-							Range:       textRange,
-							Message:     msg,
-							Suggestions: &suggestions,
-							SourceFile:  file,
-							Severity:    r.Severity,
-						})
-					},
-					ReportNode: func(node *ast.Node, msg rule.RuleMessage) {
-						// Trim leading trivia (comments/whitespace) so the line number
-						// matches the actual code, not a preceding disable comment.
-						trimmedRange := utils.TrimNodeTextRange(file, node)
-						if disableManager.IsRuleDisabled(r.Name, trimmedRange.Pos()) {
-							return
-						}
-						onDiagnostic(rule.RuleDiagnostic{
-							RuleName:   r.Name,
-							Range:      trimmedRange,
-							Message:    msg,
-							SourceFile: file,
-							Severity:   r.Severity,
-						})
-					},
-					ReportNodeWithFixes: func(node *ast.Node, msg rule.RuleMessage, fixes ...rule.RuleFix) {
-						trimmedRange := utils.TrimNodeTextRange(file, node)
-						if disableManager.IsRuleDisabled(r.Name, trimmedRange.Pos()) {
-							return
-						}
-						onDiagnostic(rule.RuleDiagnostic{
-							RuleName:   r.Name,
-							Range:      trimmedRange,
-							Message:    msg,
-							FixesPtr:   &fixes,
-							SourceFile: file,
-							Severity:   r.Severity,
-						})
-					},
-
-					ReportNodeWithSuggestions: func(node *ast.Node, msg rule.RuleMessage, suggestions ...rule.RuleSuggestion) {
-						trimmedRange := utils.TrimNodeTextRange(file, node)
-						if disableManager.IsRuleDisabled(r.Name, trimmedRange.Pos()) {
-							return
-						}
-						onDiagnostic(rule.RuleDiagnostic{
-							RuleName:    r.Name,
-							Range:       trimmedRange,
-							Message:     msg,
-							Suggestions: &suggestions,
-							SourceFile:  file,
-							Severity:    r.Severity,
-						})
-					},
-				}
-
-				for kind, listener := range r.Run(ctx) {
-					listeners, ok := registeredListeners[kind]
-					if !ok {
-						listeners = make([](func(node *ast.Node)), 0, len(rules))
-					}
-					registeredListeners[kind] = append(listeners, listener)
-				}
-			}
-
-			runListeners := func(kind ast.Kind, node *ast.Node) {
-				if listeners, ok := registeredListeners[kind]; ok {
-					for _, listener := range listeners {
-						listener(node)
-					}
-				}
-			}
-
-			/* convert.ts -> allowPattern:
-			catch name
-			variabledeclaration name
-			forinstatement initializer
-			forofstatement initializer
-			(propagation) allowPattern > arrayliteralexpression elements
-			(propagation) allowPattern > objectliteralexpression properties
-			(propagation) allowPattern > spreadassignment,spreadelement expression
-			(propagation) allowPattern > propertyassignment value
-			arraybindingpattern elements
-			objectbindingpattern elements
-			(init) binaryexpression(with '=' operator') left
-			*/
-
-			var childVisitor ast.Visitor
-			var patternVisitor func(node *ast.Node)
-			patternVisitor = func(node *ast.Node) {
-				runListeners(node.Kind, node)
-				kind := rule.ListenerOnAllowPattern(node.Kind)
-				runListeners(kind, node)
-
-				switch node.Kind {
-				case ast.KindArrayLiteralExpression:
-					for _, element := range node.AsArrayLiteralExpression().Elements.Nodes {
-						patternVisitor(element)
-					}
-				case ast.KindObjectLiteralExpression:
-					for _, property := range node.AsObjectLiteralExpression().Properties.Nodes {
-						patternVisitor(property)
-					}
-				case ast.KindSpreadElement, ast.KindSpreadAssignment:
-					patternVisitor(node.Expression())
-				case ast.KindPropertyAssignment:
-					patternVisitor(node.Initializer())
-				default:
-					node.ForEachChild(childVisitor)
-				}
-
-				runListeners(rule.ListenerOnExit(kind), node)
-				runListeners(rule.ListenerOnExit(node.Kind), node)
-			}
-			childVisitor = func(node *ast.Node) bool {
-				runListeners(node.Kind, node)
-
-				switch node.Kind {
-				case ast.KindArrayLiteralExpression, ast.KindObjectLiteralExpression:
-					kind := rule.ListenerOnNotAllowPattern(node.Kind)
-					runListeners(kind, node)
-					node.ForEachChild(childVisitor)
-					runListeners(rule.ListenerOnExit(kind), node)
-				default:
-					if ast.IsAssignmentExpression(node, true) {
-						expr := node.AsBinaryExpression()
-						patternVisitor(expr.Left)
-						childVisitor(expr.OperatorToken)
-						childVisitor(expr.Right)
-					} else {
-						node.ForEachChild(childVisitor)
-					}
-				}
-
-				runListeners(rule.ListenerOnExit(node.Kind), node)
-
-				return false
-			}
-			file.Node.ForEachChild(childVisitor)
-			clear(registeredListeners)
-		}
-		done()
-	}
-
-	// Phase 2: Collect TypeScript semantic diagnostics when type-check is enabled.
-	// This runs after releasing the checker from Phase 1, because GetSemanticDiagnostics
-	// internally acquires its own checker from the pool.
-	if typeCheck {
-		ctx := context.Background()
-		for _, file := range filesToLint {
-			// Skip semantic diagnostics for gap files (no reliable type info).
-			if typeInfoFiles != nil {
-				if _, hasTypeInfo := typeInfoFiles[file.FileName()]; !hasTypeInfo {
-					continue
-				}
-			}
-			for _, d := range program.GetSemanticDiagnostics(ctx, file) {
-				onDiagnostic(rule.RuleDiagnostic{
-					RuleName:     fmt.Sprintf("TypeScript(TS%d)", d.Code()),
-					Range:        d.Loc(),
-					Message:      rule.RuleMessage{Description: flattenDiagnosticMessage(d)},
-					SourceFile:   file,
-					Severity:     rule.SeverityError,
-					PreFormatted: true,
-				})
-			}
+			targets = append(targets, LintTarget{File: file, Rules: rules})
 		}
 	}
-
-	return lintedFileCount
+	return targets
 }
 
-type RuleHandler = func(sourceFile *ast.SourceFile) []ConfiguredRule
-type DiagnosticHandler = func(diagnostic rule.RuleDiagnostic)
-
-// LintResult holds the outcome of a RunLinter invocation.
-type LintResult struct {
-	LintedFileCount int32
-	ExecutedRules   map[string]struct{}
+// LintSingleFile runs lint rules against a single file in a single program.
+// The caller owns syntactic diagnostics; this pass does not run type-check.
+func LintSingleFile(opts LintSingleFileOptions) {
+	if opts.ExcludePaths == nil {
+		opts.ExcludePaths = utils.ExcludePaths
+	}
+	if opts.OnDiagnostic == nil {
+		opts.OnDiagnostic = func(rule.RuleDiagnostic) {}
+	}
+	getRulesForFile := opts.GetRulesForFile
+	if !opts.HasTypeInfo && getRulesForFile != nil {
+		base := getRulesForFile
+		getRulesForFile = func(file *ast.SourceFile) []ConfiguredRule {
+			return FilterNonTypeAwareRules(base(file))
+		}
+	}
+	runLintRulesInProgram(runProgramOptions{
+		Program:          opts.Program,
+		ExcludePaths:     opts.ExcludePaths,
+		TargetFiles:      []string{opts.File},
+		HasTargetFiles:   true,
+		GetRulesForFile:  getRulesForFile,
+		SyntaxErrorFiles: map[string]struct{}{},
+		// A single file is a single shard — run it on the calling goroutine
+		// instead of spawning a worker.
+		SingleThreaded: true,
+		OnDiagnostic:   opts.OnDiagnostic,
+	})
 }
 
-// RunLinter runs all configured rules across the given programs in parallel.
-//   - allowFiles: if non-nil, only lint files in this list; nil = all files
-//   - allowDirs: if non-nil, also lint files under these dirs (OR with allowFiles)
-//   - typeInfoFiles: files with type info; gap files not in this set skip type-aware rules
-//   - fileFilters: optional per-program skip predicates (parallel to programs).
-//     Each filter covers any caller-specific reason to skip a file — multi-config
-//     ownership deduplication and config `ignores` exclusion are both composed
-//     in here by the caller. nil or missing entries = no filter (process all).
-func RunLinter(programs []*compiler.Program, singleThreaded bool, allowFiles []string, allowDirs []string, excludedPaths []string, getRulesForFile RuleHandler, typeCheck bool, onDiagnostic DiagnosticHandler, typeInfoFiles map[string]struct{}, fileFilters []func(string) bool) (*LintResult, error) {
-
-	executedRules := make(map[string]struct{})
-	var rulesMu sync.Mutex
-
-	trackedGetRules := func(sourceFile *ast.SourceFile) []ConfiguredRule {
-		rules := getRulesForFile(sourceFile)
-		rulesMu.Lock()
-		for _, r := range rules {
-			executedRules[r.Name] = struct{}{}
-		}
-		rulesMu.Unlock()
-		return rules
+// composeOwnedFilter combines a caller-supplied filter with the program's
+// owned-file restriction. Either component may be nil.
+func composeOwnedFilter(extra FileFilter, owned map[string]struct{}) FileFilter {
+	if extra == nil && owned == nil {
+		return nil
 	}
-
-	wg := core.NewWorkGroup(singleThreaded)
-
-	var lintedFileCount atomic.Int32
-	for i, program := range programs {
-		var baseFilter func(string) bool
-		if i < len(fileFilters) {
-			baseFilter = fileFilters[i]
+	return func(name string) bool {
+		if extra != nil && !extra(name) {
+			return false
 		}
-
-		// Each program only lints its own root files (from tsconfig include/files
-		// patterns or gap file list). Files pulled in through import resolution or
-		// project references belong to other programs — linting them here would
-		// cause duplicate diagnostics.
-		ownedFiles := buildOwnedFileSet(program)
-		filter := func(fileName string) bool {
-			if baseFilter != nil && !baseFilter(fileName) {
+		if owned != nil {
+			if _, ok := owned[name]; !ok {
 				return false
 			}
-			if ownedFiles != nil {
-				_, isOwned := ownedFiles[fileName]
-				return isOwned
-			}
-			return true
 		}
-
-		wg.Queue(func() {
-			fileCount := RunLinterInProgram(program, allowFiles, allowDirs, excludedPaths, trackedGetRules, typeCheck, onDiagnostic, typeInfoFiles, filter)
-			lintedFileCount.Add(fileCount)
-		})
+		return true
 	}
-	wg.RunAndWait()
-	return &LintResult{
-		LintedFileCount: lintedFileCount.Load(),
-		ExecutedRules:   executedRules,
-	}, nil
 }
 
 // buildOwnedFileSet returns a set of file names that this program directly owns

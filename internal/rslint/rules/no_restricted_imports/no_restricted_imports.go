@@ -161,6 +161,145 @@ func matchIgnore(glob, path string) bool {
 	return false
 }
 
+// --- Public API for the typescript-eslint variant ---
+//
+// The exports below let the @typescript-eslint/no-restricted-imports wrapper
+// reuse the rule's restriction logic while overriding source extraction (trim)
+// and ImportEqualsDeclaration handling (synthesize a default specifier so that
+// `importNames: ['default']` and `allowImportNames` apply to `import x = require(...)`,
+// matching upstream typescript-eslint behavior).
+
+// SpecifierInfo describes a single import/export specifier — its AST location
+// and whether it is type-only. Exported for variants that need to synthesize
+// specifiers (e.g. typescript-eslint's import-equals → default-specifier).
+// Use NewSpecifierInfo to construct.
+type SpecifierInfo = specifierInfo
+
+// NewSpecifierInfo constructs a SpecifierInfo. Use this instead of struct
+// literals — the underlying fields are unexported.
+func NewSpecifierInfo(node *ast.Node, isTypeOnly bool) SpecifierInfo {
+	return specifierInfo{node: node, isTypeOnly: isTypeOnly}
+}
+
+// OrderedImportNames is the insertion-ordered map of name → specifiers used by
+// the rule's restriction checks. Use NewOrderedImportNames to construct an
+// empty instance and Add to populate it.
+type OrderedImportNames = orderedImportNames
+
+// NewOrderedImportNames returns an empty OrderedImportNames suitable for use
+// with Engine.Check.
+func NewOrderedImportNames() *OrderedImportNames { return newOrderedImportNames() }
+
+// Add appends spec under the given name, preserving insertion order on the
+// first occurrence and grouping further specifiers under the existing entry.
+func (o *OrderedImportNames) Add(name string, spec SpecifierInfo) {
+	o.add(name, spec)
+}
+
+// Engine encapsulates parsed restriction options. It is the building block
+// shared by NoRestrictedImportsRule (core) and the typescript-eslint variant.
+// Construct with NewEngine and call Check per declaration.
+type Engine struct {
+	grouped  map[string][]restrictedPathEntry
+	patterns []restrictedPatternGroup
+}
+
+// NewEngine parses options and returns an Engine.
+func NewEngine(options any) *Engine {
+	g, p := parseOptions(options)
+	return &Engine{grouped: g, patterns: p}
+}
+
+// IsActive reports whether the engine has any restrictions configured. When
+// false, the listener can return immediately.
+func (e *Engine) IsActive() bool {
+	return len(e.grouped) > 0 || len(e.patterns) > 0
+}
+
+// Check applies the rule's path and pattern restrictions to a single
+// declaration. Source must already be trimmed/normalized; importNames must
+// contain whatever specifiers the variant wants to be eligible for
+// importNames / allowImportNames / importNamePattern matching (an empty map is
+// the ESLint-base default for ImportEquals).
+func (e *Engine) Check(ctx *rule.RuleContext, node *ast.Node, source string, importNames *OrderedImportNames) {
+	checkRestrictedPathAndReport(ctx, node, source, importNames, e.grouped)
+	for i := range e.patterns {
+		if isRestrictedPattern(source, &e.patterns[i]) {
+			reportPathForPatterns(ctx, node, &e.patterns[i], importNames, source)
+		}
+	}
+}
+
+// ExtractImportNames returns the importNames map for an ImportDeclaration.
+func ExtractImportNames(decl *ast.ImportDeclaration) *OrderedImportNames {
+	return extractImportNames(decl)
+}
+
+// ExtractExportNames returns the importNames map for an ExportDeclaration.
+func ExtractExportNames(decl *ast.ExportDeclaration) *OrderedImportNames {
+	return extractExportNames(decl)
+}
+
+// IsTypeOnlyDeclaration reports whether the entire import/export declaration
+// is type-only (`import type`, `import { type ... }` for ALL specifiers,
+// `import type x = require(...)`, or the equivalent export forms).
+func IsTypeOnlyDeclaration(node *ast.Node) bool {
+	return isTypeOnlyDeclaration(node)
+}
+
+// BuildAllowTypeImportSourceFilter returns a predicate reporting whether an
+// import source matches any path entry or pattern entry that has
+// allowTypeImports=true. The predicate is nil if no such entry exists.
+//
+// This implements the typescript-eslint short-circuit: when the entire
+// declaration is type-only AND the predicate returns true for the source, the
+// whole declaration is exempted regardless of any other matching entries.
+// Without this short-circuit, conflicting duplicate entries (e.g. two `paths`
+// for the same name with allowTypeImports both true and false) would diverge
+// from upstream — upstream skips on any "true", rslint core checks per-entry.
+func BuildAllowTypeImportSourceFilter(options any) func(source string) bool {
+	grouped, patterns := parseOptions(options)
+	if len(grouped) == 0 && len(patterns) == 0 {
+		return nil
+	}
+
+	var allowedNames map[string]struct{}
+	for name, entries := range grouped {
+		for _, e := range entries {
+			if e.allowTypeImports {
+				if allowedNames == nil {
+					allowedNames = make(map[string]struct{})
+				}
+				allowedNames[name] = struct{}{}
+				break
+			}
+		}
+	}
+
+	allowedPatterns := make([]*restrictedPatternGroup, 0)
+	for i := range patterns {
+		if patterns[i].allowTypeImports {
+			allowedPatterns = append(allowedPatterns, &patterns[i])
+		}
+	}
+
+	if len(allowedNames) == 0 && len(allowedPatterns) == 0 {
+		return nil
+	}
+
+	return func(source string) bool {
+		if _, ok := allowedNames[source]; ok {
+			return true
+		}
+		for _, p := range allowedPatterns {
+			if isRestrictedPattern(source, p) {
+				return true
+			}
+		}
+		return false
+	}
+}
+
 // --- Options Parsing ---
 //
 // The rule accepts two option formats (matching ESLint):
@@ -170,14 +309,12 @@ func matchIgnore(glob, path string) bool {
 func parseOptions(options any) (groupedPaths map[string][]restrictedPathEntry, patternGroups []restrictedPatternGroup) {
 	groupedPaths = make(map[string][]restrictedPathEntry)
 
-	// Handle the case where the config parser unwraps a single-element array,
-	// delivering a map directly instead of [map]. Wrap it back into an array.
-	if obj, ok := options.(map[string]interface{}); ok {
-		options = []interface{}{obj}
-	}
-
-	arr, ok := options.([]interface{})
-	if !ok || len(arr) == 0 {
+	// config.rules unwraps a single configured option to a bare value — a map
+	// for an object option, or a string for a string option such as
+	// ["error","import1"]. NormalizeOptions re-wraps either into eslint
+	// context.options form so each arrives uniformly as arr[0].
+	arr := rule.NormalizeOptions(options)
+	if len(arr) == 0 {
 		return groupedPaths, patternGroups
 	}
 
@@ -296,7 +433,8 @@ func parseOptions(options any) (groupedPaths map[string][]restrictedPathEntry, p
 
 var NoRestrictedImportsRule = rule.Rule{
 	Name: "no-restricted-imports",
-	Run: func(ctx rule.RuleContext, options any) rule.RuleListeners {
+	Run: func(ctx rule.RuleContext, _options []any) rule.RuleListeners {
+		options := rule.LegacyUnwrapOptions(_options)
 		groupedPaths, patternGroups := parseOptions(options)
 
 		if len(groupedPaths) == 0 && len(patternGroups) == 0 {
@@ -344,8 +482,13 @@ var NoRestrictedImportsRule = rule.Rule{
 				if extRef.Expression == nil {
 					return
 				}
-				// ESLint does NOT trim require() source — match that behavior exactly
-				importSource := utils.GetStaticStringValue(extRef.Expression)
+				// Trim to match how ImportDeclaration / ExportDeclaration sources are
+				// normalized — and to match typescript-eslint's wrapper, which
+				// synthesizes an ImportDeclaration before checking and thus trims.
+				// ESLint base does NOT trim require() source, but in practice nobody
+				// writes whitespace inside require('...') so the divergence is moot
+				// and the consistency is worth more.
+				importSource := strings.TrimSpace(utils.GetStaticStringValue(extRef.Expression))
 				if importSource == "" {
 					return
 				}
@@ -587,8 +730,7 @@ func reportNameForPath(ctx *rule.RuleContext, node *ast.Node, specifiers []speci
 
 func isRestrictedPattern(importSource string, group *restrictedPatternGroup) bool {
 	if group.regexMatcher != nil {
-		matched, _ := group.regexMatcher.MatchString(importSource)
-		return matched
+		return utils.Regexp2MatchString(group.regexMatcher, importSource)
 	}
 	if group.matcher != nil {
 		return group.matcher.ignores(importSource)
@@ -630,7 +772,7 @@ func reportPathForPatterns(
 
 		// Check restricted import names (by name list or regex pattern)
 		if (len(group.importNames) > 0 && slices.Contains(group.importNames, e.name)) ||
-			(group.importNamePattern != nil && regexp2Match(group.importNamePattern, e.name)) {
+			(group.importNamePattern != nil && utils.Regexp2MatchString(group.importNamePattern, e.name)) {
 			reportSpecifiersForPattern(ctx, node, e.specifiers, group, e.name, importSource,
 				"patternAndImportName", "patternAndImportNameWithCustomMessage",
 				fmt.Sprintf("'%s' import from '%s' is restricted from being used by a pattern.", e.name, importSource))
@@ -641,7 +783,7 @@ func reportPathForPatterns(
 				"allowedImportName", "allowedImportNameWithCustomMessage",
 				fmt.Sprintf("'%s' import from '%s' is restricted because only %s %s allowed.",
 					e.name, importSource, formatEnglishList(group.allowImportNames), isOrAre(group.allowImportNames)))
-		} else if group.allowImportNamePattern != nil && !regexp2Match(group.allowImportNamePattern, e.name) {
+		} else if group.allowImportNamePattern != nil && !utils.Regexp2MatchString(group.allowImportNamePattern, e.name) {
 			reportSpecifiersForPattern(ctx, node, e.specifiers, group, e.name, importSource,
 				"allowedImportNamePattern", "allowedImportNamePatternWithCustomMessage",
 				fmt.Sprintf("'%s' import from '%s' is restricted because only imports that match the pattern '%s' are allowed from '%s'.",
@@ -815,12 +957,6 @@ func formatEnglishList(names []string) string {
 // jsRegexString formats a regex pattern in JavaScript RegExp.toString() notation: /pattern/u.
 func jsRegexString(re *regexp2.Regexp) string {
 	return "/" + re.String() + "/u"
-}
-
-// regexp2Match wraps regexp2.MatchString, discarding the error (timeout).
-func regexp2Match(re *regexp2.Regexp, s string) bool {
-	matched, _ := re.MatchString(s)
-	return matched
 }
 
 func isOrAre(names []string) string {

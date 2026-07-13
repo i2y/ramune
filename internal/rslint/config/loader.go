@@ -54,6 +54,9 @@ func (loader *ConfigLoader) LoadRslintConfig(configPath string) (RslintConfig, s
 	if err := utils.ParseJSONC([]byte(data), &config); err != nil {
 		return nil, "", fmt.Errorf("error parsing rslint config file %q: %w", configFileName, err)
 	}
+	if err := ValidateConfig(config); err != nil {
+		return nil, "", fmt.Errorf("invalid rslint config file %q: %w", configFileName, err)
+	}
 
 	// Normalize JSON config: inject core rules and plugin rules into each entry's Rules map.
 	// User-specified rules take precedence (they are applied after the defaults).
@@ -90,7 +93,11 @@ func normalizeJSONConfig(config RslintConfig) RslintConfig {
 
 		// Auto-enable plugin rules as defaults
 		for _, plugin := range entry.Plugins {
-			for _, r := range GetPluginRules(NormalizePluginName(plugin)) {
+			info, ok := pluginByDeclName[plugin]
+			if !ok {
+				continue
+			}
+			for _, r := range info.getAllRules() {
 				if _, exists := entry.Rules[r.Name]; !exists {
 					entry.Rules[r.Name] = "error"
 				}
@@ -195,8 +202,12 @@ func (loader *ConfigLoader) expandProjectGlob(configDirectory string, pattern st
 		return nil, nil
 	}
 
-	relativePattern := strings.TrimPrefix(resolvedPattern, searchRoot+"/")
-	fsys := &vfsAdapter{vfs: loader.fs, root: searchRoot}
+	relativePattern := relativeGlobPattern(searchRoot, resolvedPattern)
+	// expandProjectGlob historically follows symlinks (e.g. tsconfig
+	// referenced via packages/*/tsconfig.json where packages may be
+	// symlinks in pnpm workspaces). It runs single-threaded under
+	// doublestar.GlobWalk, so the cycle dedupe is deterministic.
+	fsys := &vfsAdapter{vfs: loader.fs, root: searchRoot, followSymlinks: true}
 
 	matches := []string{}
 	err := doublestar.GlobWalk(fsys, relativePattern, func(path string, d fs.DirEntry) error {
@@ -210,6 +221,11 @@ func (loader *ConfigLoader) expandProjectGlob(configDirectory string, pattern st
 
 	sort.Strings(matches)
 	return matches, nil
+}
+
+func relativeGlobPattern(searchRoot string, resolvedPattern string) string {
+	relativePattern := strings.TrimPrefix(resolvedPattern, searchRoot)
+	return strings.TrimPrefix(relativePattern, "/")
 }
 
 func containsGlobPattern(path string) bool {
@@ -257,18 +273,19 @@ func normalizeGlobPath(path string) string {
 	return strings.ReplaceAll(tspath.NormalizePath(path), "\\", "/")
 }
 
-// LoadConfiguration is a convenience method that loads both rslint and tsconfig configurations
-func (loader *ConfigLoader) LoadConfiguration(configPath string) (RslintConfig, []string, string, error) {
-	var rslintConfig RslintConfig
-	var configDirectory string
-	var err error
-
+// LoadRslintConfiguration loads and validates only the rslint configuration.
+// Project resolution is a separate orchestration step because plain linting
+// first needs the effective target set.
+func (loader *ConfigLoader) LoadRslintConfiguration(configPath string) (RslintConfig, string, error) {
 	if configPath != "" {
-		rslintConfig, configDirectory, err = loader.LoadRslintConfig(configPath)
-	} else {
-		rslintConfig, configDirectory, err = loader.LoadDefaultRslintConfig()
+		return loader.LoadRslintConfig(configPath)
 	}
+	return loader.LoadDefaultRslintConfig()
+}
 
+// LoadConfiguration is a convenience method that loads both rslint and tsconfig configurations.
+func (loader *ConfigLoader) LoadConfiguration(configPath string) (RslintConfig, []string, string, error) {
+	rslintConfig, configDirectory, err := loader.LoadRslintConfiguration(configPath)
 	if err != nil {
 		return nil, nil, "", err
 	}
@@ -279,18 +296,4 @@ func (loader *ConfigLoader) LoadConfiguration(configPath string) (RslintConfig, 
 	}
 
 	return rslintConfig, tsConfigs, configDirectory, nil
-}
-
-// LoadConfigurationWithFallback loads configuration and handles errors by printing to stderr and exiting
-// This is for backward compatibility with the existing cmd behavior
-func LoadConfigurationWithFallback(configPath string, currentDirectory string, fs vfs.FS) (RslintConfig, []string, string) {
-	loader := NewConfigLoader(fs, currentDirectory)
-
-	rslintConfig, tsConfigs, configDirectory, err := loader.LoadConfiguration(configPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
-	}
-
-	return rslintConfig, tsConfigs, configDirectory
 }

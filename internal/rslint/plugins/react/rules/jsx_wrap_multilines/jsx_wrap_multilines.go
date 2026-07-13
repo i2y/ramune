@@ -4,6 +4,7 @@ import (
 	"github.com/i2y/ramune/internal/rslint/shim/ast"
 	"github.com/i2y/ramune/internal/rslint/shim/core"
 	"github.com/i2y/ramune/internal/rslint/shim/scanner"
+	"github.com/i2y/ramune/internal/rslint/plugins/react/reactutil"
 	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/utils"
 )
@@ -22,7 +23,8 @@ var defaultOptions = map[string]string{
 // JsxWrapMultilinesRule enforces parentheses around multiline JSX.
 var JsxWrapMultilinesRule = rule.Rule{
 	Name: "react/jsx-wrap-multilines",
-	Run: func(ctx rule.RuleContext, options any) rule.RuleListeners {
+	Run: func(ctx rule.RuleContext, _options []any) rule.RuleListeners {
+		options := rule.LegacyUnwrapOptions(_options)
 		// Build effective options from defaults
 		opts := make(map[string]string)
 		for k, v := range defaultOptions {
@@ -56,16 +58,7 @@ var JsxWrapMultilinesRule = rule.Rule{
 			return startLine != endLine
 		}
 
-		isJSX := func(node *ast.Node) bool {
-			if node == nil {
-				return false
-			}
-			switch node.Kind {
-			case ast.KindJsxElement, ast.KindJsxSelfClosingElement, ast.KindJsxFragment:
-				return true
-			}
-			return false
-		}
+		isJSX := reactutil.IsJsxLike
 
 		// Unwrap parenthesized expression to get the inner JSX node
 		unwrapParens := func(node *ast.Node) *ast.Node {

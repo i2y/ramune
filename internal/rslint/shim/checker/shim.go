@@ -13,6 +13,8 @@ import "github.com/i2y/ramune/internal/rslint/tsgo_pinned/evaluator"
 import "github.com/i2y/ramune/internal/rslint/tsgo_pinned/jsnum"
 import "github.com/i2y/ramune/internal/rslint/tsgo_pinned/nodebuilder"
 import "github.com/i2y/ramune/internal/rslint/tsgo_pinned/printer"
+import "github.com/i2y/ramune/internal/rslint/tsgo_pinned/scanner"
+import "github.com/i2y/ramune/internal/rslint/tsgo_pinned/tracing"
 import "sync"
 import "unsafe"
 
@@ -141,6 +143,7 @@ type extra_Checker struct {
   instantiationCount uint32
   instantiationDepth uint32
   inlineLevel int
+  serializationLevel int
   currentNode *ast.Node
   varianceTypeParameter *checker.Type
   languageVersion core.ScriptTarget
@@ -160,13 +163,16 @@ type extra_Checker struct {
   exactOptionalPropertyTypes bool
   canCollectSymbolAliasAccessibilityData bool
   wasCanceled bool
+  saveDeferredDiagnostics bool
   arrayVariances []checker.VarianceFlags
   globals ast.SymbolTable
   evaluate evaluator.Evaluator
   stringLiteralTypes map[string]*checker.Type
   numberLiteralTypes map[jsnum.Number]*checker.Type
+  nanType *checker.Type
   bigintLiteralTypes map[jsnum.PseudoBigInt]*checker.Type
   enumLiteralTypes map[checker.EnumLiteralKey]*checker.Type
+  enumNaNLiteralTypes map[*ast.Symbol]*checker.Type
   indexedAccessTypes map[checker.CacheHashKey]*checker.Type
   templateLiteralTypes map[checker.CacheHashKey]*checker.Type
   stringMappingTypes map[checker.StringMappingKey]*checker.Type
@@ -194,6 +200,8 @@ type extra_Checker struct {
   errorTypes map[checker.CacheHashKey]*checker.Type
   moduleSymbols map[*ast.Node]*ast.Symbol
   globalThisSymbol *ast.Symbol
+  symbolTableAliasCache map[uint64][]*ast.Symbol
+  classExpressionNameTables map[ast.NodeId]ast.SymbolTable
   resolveName func(location *ast.Node, name string, meaning ast.SymbolFlags, nameNotFoundMessage *diagnostics.Message, isUse bool, excludeGlobals bool) *ast.Symbol
   resolveNameForSymbolSuggestion func(location *ast.Node, name string, meaning ast.SymbolFlags, nameNotFoundMessage *diagnostics.Message, isUse bool, excludeGlobals bool) *ast.Symbol
   tupleTypes map[checker.CacheHashKey]*checker.Type
@@ -203,9 +211,9 @@ type extra_Checker struct {
   propertiesTypes map[checker.PropertiesTypesKey]*checker.Type
   diagnostics ast.DiagnosticsCollection
   suggestionDiagnostics ast.DiagnosticsCollection
-  symbolPool core.Pool[ast.Symbol]
-  signaturePool core.Pool[checker.Signature]
-  indexInfoPool core.Pool[checker.IndexInfo]
+  symbolArena core.Arena[ast.Symbol]
+  signatureArena core.Arena[checker.Signature]
+  indexInfoArena core.Arena[checker.IndexInfo]
   mergedSymbols map[*ast.Symbol]*ast.Symbol
   factory ast.NodeFactory
   nodeLinks core.LinkStore[*ast.Node, checker.NodeLinks]
@@ -234,6 +242,7 @@ type extra_Checker struct {
   markedAssignmentSymbolLinks core.LinkStore[*ast.Symbol, checker.MarkedAssignmentSymbolLinks]
   symbolContainerLinks core.LinkStore[*ast.Symbol, checker.ContainingSymbolLinks]
   sourceFileLinks core.LinkStore[*ast.SourceFile, checker.SourceFileLinks]
+  regExpScanner *scanner.Scanner
   patternForType map[*checker.Type]*ast.Node
   contextFreeTypes map[*ast.Node]*checker.Type
   anyType *checker.Type
@@ -433,7 +442,10 @@ type extra_Checker struct {
   withinUnreachableCode bool
   reportedUnreachableNodes collections.Set[*ast.Node]
   nonExistentProperties collections.Set[checker.NonExistentPropertyKey]
+  deferredDiagnosticCallbacks []func()
+  typeToStringNodebuilder *checker.NodeBuilder
   mu sync.Mutex
+  tracer *checker.Tracer
 }
 func Checker_numberType(v *checker.Checker) *checker.Type {
   return ((*extra_Checker)(unsafe.Pointer(v))).numberType
@@ -461,6 +473,10 @@ const ContextFlagsNone = checker.ContextFlagsNone
 const ContextFlagsSignature = checker.ContextFlagsSignature
 const ContextFlagsSkipBindingPatterns = checker.ContextFlagsSkipBindingPatterns
 type ContextualInfo = checker.ContextualInfo
+//go:linkname CreateModeMismatchDetails github.com/i2y/ramune/internal/rslint/tsgo_pinned/checker.CreateModeMismatchDetails
+func CreateModeMismatchDetails(program checker.Program, file *ast.SourceFile) checker.DiagnosticDetails
+//go:linkname CreateModuleNotFoundChain github.com/i2y/ramune/internal/rslint/tsgo_pinned/checker.CreateModuleNotFoundChain
+func CreateModuleNotFoundChain(program checker.Program, file *ast.SourceFile, moduleReference string, mode core.ResolutionMode, packageName string) checker.DiagnosticDetails
 type DeclarationFileLinks = checker.DeclarationFileLinks
 type DeclarationLinks = checker.DeclarationLinks
 type DeclarationMeaning = checker.DeclarationMeaning
@@ -480,6 +496,7 @@ type DeclaredTypeLinks = checker.DeclaredTypeLinks
 type DeferredSymbolLinks = checker.DeferredSymbolLinks
 type DeferredTypeMapper = checker.DeferredTypeMapper
 type DiagnosticAndArguments = checker.DiagnosticAndArguments
+type DiagnosticDetails = checker.DiagnosticDetails
 type DiscriminatedContextualTypeKey = checker.DiscriminatedContextualTypeKey
 type Discriminator = checker.Discriminator
 type ElementFlags = checker.ElementFlags
@@ -513,16 +530,49 @@ const ExpandingFlagsTarget = checker.ExpandingFlagsTarget
 type ExportCollision = checker.ExportCollision
 type ExportCollisionTable = checker.ExportCollisionTable
 type ExportTypeLinks = checker.ExportTypeLinks
+type ExternalEmitHelpers = checker.ExternalEmitHelpers
+const ExternalEmitHelpersAddDisposableResourceAndDisposeResources = checker.ExternalEmitHelpersAddDisposableResourceAndDisposeResources
+const ExternalEmitHelpersAsyncDelegator = checker.ExternalEmitHelpersAsyncDelegator
+const ExternalEmitHelpersAsyncDelegatorIncludes = checker.ExternalEmitHelpersAsyncDelegatorIncludes
+const ExternalEmitHelpersAsyncGenerator = checker.ExternalEmitHelpersAsyncGenerator
+const ExternalEmitHelpersAsyncGeneratorIncludes = checker.ExternalEmitHelpersAsyncGeneratorIncludes
+const ExternalEmitHelpersAsyncValues = checker.ExternalEmitHelpersAsyncValues
+const ExternalEmitHelpersAwait = checker.ExternalEmitHelpersAwait
+const ExternalEmitHelpersAwaiter = checker.ExternalEmitHelpersAwaiter
+const ExternalEmitHelpersClassPrivateFieldGet = checker.ExternalEmitHelpersClassPrivateFieldGet
+const ExternalEmitHelpersClassPrivateFieldIn = checker.ExternalEmitHelpersClassPrivateFieldIn
+const ExternalEmitHelpersClassPrivateFieldSet = checker.ExternalEmitHelpersClassPrivateFieldSet
+const ExternalEmitHelpersDecorate = checker.ExternalEmitHelpersDecorate
+const ExternalEmitHelpersESDecorateAndRunInitializers = checker.ExternalEmitHelpersESDecorateAndRunInitializers
+const ExternalEmitHelpersExportStar = checker.ExternalEmitHelpersExportStar
+const ExternalEmitHelpersFirstEmitHelper = checker.ExternalEmitHelpersFirstEmitHelper
+const ExternalEmitHelpersForAwaitOfIncludes = checker.ExternalEmitHelpersForAwaitOfIncludes
+const ExternalEmitHelpersImportDefault = checker.ExternalEmitHelpersImportDefault
+const ExternalEmitHelpersImportStar = checker.ExternalEmitHelpersImportStar
+const ExternalEmitHelpersLastEmitHelper = checker.ExternalEmitHelpersLastEmitHelper
+const ExternalEmitHelpersMakeTemplateObject = checker.ExternalEmitHelpersMakeTemplateObject
+const ExternalEmitHelpersMetadata = checker.ExternalEmitHelpersMetadata
+const ExternalEmitHelpersParam = checker.ExternalEmitHelpersParam
+const ExternalEmitHelpersPropKey = checker.ExternalEmitHelpersPropKey
+const ExternalEmitHelpersRest = checker.ExternalEmitHelpersRest
+const ExternalEmitHelpersRewriteRelativeImportExtension = checker.ExternalEmitHelpersRewriteRelativeImportExtension
+const ExternalEmitHelpersSetFunctionName = checker.ExternalEmitHelpersSetFunctionName
 type FeatureMapEntry = checker.FeatureMapEntry
 type FlowLoopInfo = checker.FlowLoopInfo
 type FlowLoopKey = checker.FlowLoopKey
 type FlowState = checker.FlowState
 type FlowType = checker.FlowType
+//go:linkname FormatTypeFlags github.com/i2y/ramune/internal/rslint/tsgo_pinned/checker.FormatTypeFlags
+func FormatTypeFlags(flags checker.TypeFlags) []string
 type FunctionTypeMapper = checker.FunctionTypeMapper
 //go:linkname GetDeclarationModifierFlagsFromSymbol github.com/i2y/ramune/internal/rslint/tsgo_pinned/checker.GetDeclarationModifierFlagsFromSymbol
 func GetDeclarationModifierFlagsFromSymbol(s *ast.Symbol) ast.ModifierFlags
+//go:linkname GetPropertyNameFromType github.com/i2y/ramune/internal/rslint/tsgo_pinned/checker.GetPropertyNameFromType
+func GetPropertyNameFromType(t *checker.Type) string
 //go:linkname GetResolvedSignatureForSignatureHelp github.com/i2y/ramune/internal/rslint/tsgo_pinned/checker.GetResolvedSignatureForSignatureHelp
 func GetResolvedSignatureForSignatureHelp(node *ast.Node, argumentCount int, c *checker.Checker) (*checker.Signature, []*checker.Signature)
+//go:linkname GetSetAccessorValueParameter github.com/i2y/ramune/internal/rslint/tsgo_pinned/checker.GetSetAccessorValueParameter
+func GetSetAccessorValueParameter(accessor *ast.Node) *ast.Node
 //go:linkname GetSingleVariableOfVariableStatement github.com/i2y/ramune/internal/rslint/tsgo_pinned/checker.GetSingleVariableOfVariableStatement
 func GetSingleVariableOfVariableStatement(node *ast.Node) *ast.Node
 type Host = checker.Host
@@ -612,6 +662,8 @@ func IsPrivateIdentifierSymbol(symbol *ast.Symbol) bool
 func IsTupleType(t *checker.Type) bool
 //go:linkname IsTypeAny github.com/i2y/ramune/internal/rslint/tsgo_pinned/checker.IsTypeAny
 func IsTypeAny(t *checker.Type) bool
+//go:linkname IsTypeUsableAsPropertyName github.com/i2y/ramune/internal/rslint/tsgo_pinned/checker.IsTypeUsableAsPropertyName
+func IsTypeUsableAsPropertyName(t *checker.Type) bool
 type IterationTypeKind = checker.IterationTypeKind
 const IterationTypeKindNext = checker.IterationTypeKindNext
 const IterationTypeKindReturn = checker.IterationTypeKindReturn
@@ -692,7 +744,7 @@ const MinArgumentCountFlagsVoidIsNonOptional = checker.MinArgumentCountFlagsVoid
 type ModuleSymbolLinks = checker.ModuleSymbolLinks
 type NarrowedTypeKey = checker.NarrowedTypeKey
 //go:linkname NewChecker github.com/i2y/ramune/internal/rslint/tsgo_pinned/checker.NewChecker
-func NewChecker(program checker.Program) (*checker.Checker, *sync.Mutex)
+func NewChecker(program checker.Program, tracer *checker.Tracer) (*checker.Checker, *sync.Mutex)
 //go:linkname NewDiagnosticChainForNode github.com/i2y/ramune/internal/rslint/tsgo_pinned/checker.NewDiagnosticChainForNode
 func NewDiagnosticChainForNode(chain *ast.Diagnostic, node *ast.Node, message *diagnostics.Message, args ...any) *ast.Diagnostic
 //go:linkname NewDiagnosticForNode github.com/i2y/ramune/internal/rslint/tsgo_pinned/checker.NewDiagnosticForNode
@@ -703,6 +755,8 @@ func NewNodeBuilder(ch *checker.Checker, e *printer.EmitContext) *checker.NodeBu
 func NewNodeBuilderEx(ch *checker.Checker, e *printer.EmitContext, idToSymbol map[*ast.IdentifierNode]*ast.Symbol) *checker.NodeBuilder
 //go:linkname NewSymbolTrackerImpl github.com/i2y/ramune/internal/rslint/tsgo_pinned/checker.NewSymbolTrackerImpl
 func NewSymbolTrackerImpl(context *checker.NodeBuilderContext, tracker nodebuilder.SymbolTracker) *checker.SymbolTrackerImpl
+//go:linkname NewTracer github.com/i2y/ramune/internal/rslint/tsgo_pinned/checker.NewTracer
+func NewTracer(tr *tracing.Tracing, checkerIndex int) *checker.Tracer
 type NodeBuilder = checker.NodeBuilder
 type NodeBuilderContext = checker.NodeBuilderContext
 type NodeBuilderImpl = checker.NodeBuilderImpl
@@ -710,6 +764,8 @@ type NodeBuilderLinks = checker.NodeBuilderLinks
 type NodeBuilderSymbolLinks = checker.NodeBuilderSymbolLinks
 type NodeCheckFlags = checker.NodeCheckFlags
 const NodeCheckFlagsAssignmentsMarked = checker.NodeCheckFlagsAssignmentsMarked
+const NodeCheckFlagsContainsClassWithPrivateIdentifiers = checker.NodeCheckFlagsContainsClassWithPrivateIdentifiers
+const NodeCheckFlagsContainsSuperPropertyInStaticInitializer = checker.NodeCheckFlagsContainsSuperPropertyInStaticInitializer
 const NodeCheckFlagsContextChecked = checker.NodeCheckFlagsContextChecked
 const NodeCheckFlagsEnumValuesComputed = checker.NodeCheckFlagsEnumValuesComputed
 const NodeCheckFlagsInCheckIdentifier = checker.NodeCheckFlagsInCheckIdentifier
@@ -732,6 +788,7 @@ const ObjectFlagsCouldContainTypeVariables = checker.ObjectFlagsCouldContainType
 const ObjectFlagsCouldContainTypeVariablesComputed = checker.ObjectFlagsCouldContainTypeVariablesComputed
 const ObjectFlagsEvolvingArray = checker.ObjectFlagsEvolvingArray
 const ObjectFlagsFreshLiteral = checker.ObjectFlagsFreshLiteral
+const ObjectFlagsFromTypeNode = checker.ObjectFlagsFromTypeNode
 const ObjectFlagsIdenticalBaseTypeCalculated = checker.ObjectFlagsIdenticalBaseTypeCalculated
 const ObjectFlagsIdenticalBaseTypeExists = checker.ObjectFlagsIdenticalBaseTypeExists
 const ObjectFlagsInstantiated = checker.ObjectFlagsInstantiated
@@ -765,6 +822,7 @@ const ObjectFlagsRequiresWidening = checker.ObjectFlagsRequiresWidening
 const ObjectFlagsReverseMapped = checker.ObjectFlagsReverseMapped
 const ObjectFlagsSingleSignatureType = checker.ObjectFlagsSingleSignatureType
 const ObjectFlagsTuple = checker.ObjectFlagsTuple
+const ObjectFlagsUnresolvedMembers = checker.ObjectFlagsUnresolvedMembers
 type ObjectLiteralDiscriminator = checker.ObjectLiteralDiscriminator
 type ObjectType = checker.ObjectType
 type ParseFlags = checker.ParseFlags
@@ -896,6 +954,7 @@ const TernaryFalse = checker.TernaryFalse
 const TernaryMaybe = checker.TernaryMaybe
 const TernaryTrue = checker.TernaryTrue
 const TernaryUnknown = checker.TernaryUnknown
+type Tracer = checker.Tracer
 type TrackedSymbolArgs = checker.TrackedSymbolArgs
 //go:linkname TryGetModuleSpecifierFromDeclaration github.com/i2y/ramune/internal/rslint/tsgo_pinned/checker.TryGetModuleSpecifierFromDeclaration
 func TryGetModuleSpecifierFromDeclaration(node *ast.Node) *ast.Node
@@ -1110,6 +1169,7 @@ const TypeFormatFlagsOmitThisParameter = checker.TypeFormatFlagsOmitThisParamete
 const TypeFormatFlagsSuppressAnyReturnType = checker.TypeFormatFlagsSuppressAnyReturnType
 const TypeFormatFlagsUseAliasDefinedOutsideCurrentScope = checker.TypeFormatFlagsUseAliasDefinedOutsideCurrentScope
 const TypeFormatFlagsUseFullyQualifiedType = checker.TypeFormatFlagsUseFullyQualifiedType
+const TypeFormatFlagsUseInstantiationExpressions = checker.TypeFormatFlagsUseInstantiationExpressions
 const TypeFormatFlagsUseSingleQuotesForStringLiteralType = checker.TypeFormatFlagsUseSingleQuotesForStringLiteralType
 const TypeFormatFlagsUseStructuralFallback = checker.TypeFormatFlagsUseStructuralFallback
 const TypeFormatFlagsUseTypeOfFunction = checker.TypeFormatFlagsUseTypeOfFunction
@@ -1174,6 +1234,7 @@ const VarianceFlagsUnmeasurable = checker.VarianceFlagsUnmeasurable
 const VarianceFlagsUnreliable = checker.VarianceFlagsUnreliable
 const VarianceFlagsVarianceMask = checker.VarianceFlagsVarianceMask
 type VarianceLinks = checker.VarianceLinks
+type VerbosityContext = checker.VerbosityContext
 type WideningContext = checker.WideningContext
 type WideningKind = checker.WideningKind
 const WideningKindFunctionReturn = checker.WideningKindFunctionReturn

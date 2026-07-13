@@ -2,6 +2,9 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 
@@ -9,221 +12,14 @@ import (
 	"github.com/i2y/ramune/internal/rslint/shim/tspath"
 	importPlugin "github.com/i2y/ramune/internal/rslint/plugins/import"
 	jestPlugin "github.com/i2y/ramune/internal/rslint/plugins/jest"
+	jsxA11yPlugin "github.com/i2y/ramune/internal/rslint/plugins/jsx_a11y"
 	promisePlugin "github.com/i2y/ramune/internal/rslint/plugins/promise"
 	reactPlugin "github.com/i2y/ramune/internal/rslint/plugins/react"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/adjacent_overload_signatures"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/array_type"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/await_thenable"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/ban_ts_comment"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/ban_tslint_comment"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/ban_types"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/class_literal_property_style"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/consistent_generic_constructors"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/consistent_indexed_object_style"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/consistent_return"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/consistent_type_assertions"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/consistent_type_definitions"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/consistent_type_exports"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/consistent_type_imports"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/default_param_last"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/dot_notation"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/explicit_function_return_type"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/member_ordering"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/method_signature_style"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/naming_convention"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_array_constructor"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_array_delete"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_base_to_string"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_confusing_void_expression"
-	ts_no_dupe_class_members "github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_dupe_class_members"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_duplicate_enum_values"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_duplicate_type_constituents"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_dynamic_delete"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_empty_function"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_empty_interface"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_explicit_any"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_extra_non_null_assertion"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_extraneous_class"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_floating_promises"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_for_in_array"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_implied_eval"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_inferrable_types"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_invalid_void_type"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_meaningless_void_operator"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_misused_new"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_misused_promises"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_misused_spread"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_mixed_enums"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_namespace"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_non_null_asserted_nullish_coalescing"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_non_null_asserted_optional_chain"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_non_null_assertion"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_redeclare"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_redundant_type_constituents"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_require_imports"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_this_alias"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_unnecessary_boolean_literal_compare"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_unnecessary_condition"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_unnecessary_template_expression"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_unnecessary_type_arguments"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_unnecessary_type_assertion"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_unnecessary_type_constraint"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_unsafe_argument"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_unsafe_assignment"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_unsafe_call"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_unsafe_enum_comparison"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_unsafe_member_access"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_unsafe_return"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_unsafe_type_assertion"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_unsafe_unary_minus"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_unused_expressions"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_unused_vars"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_use_before_define"
-	ts_no_useless_constructor "github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_useless_constructor"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_useless_empty_export"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/no_var_requires"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/non_nullable_type_assertion_style"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/only_throw_error"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/parameter_properties"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/prefer_as_const"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/prefer_includes"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/prefer_literal_enum_member"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/prefer_namespace_keyword"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/prefer_optional_chain"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/prefer_promise_reject_errors"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/prefer_readonly"
-
-	// "github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/prefer_readonly_parameter_types" // Temporarily disabled - incomplete implementation
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/prefer_reduce_type_parameter"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/prefer_regexp_exec"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/prefer_return_this_type"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/prefer_string_starts_ends_with"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/prefer_ts_expect_error"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/promise_function_async"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/related_getter_setter_pairs"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/require_array_sort_compare"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/require_await"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/restrict_plus_operands"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/restrict_template_expressions"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/return_await"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/switch_exhaustiveness_check"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/triple_slash_reference"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/unbound_method"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/unified_signatures"
-	"github.com/i2y/ramune/internal/rslint/plugins/typescript/rules/use_unknown_in_catch_callback_variable"
+	reactHooksPlugin "github.com/i2y/ramune/internal/rslint/plugins/react_hooks"
+	typescriptPlugin "github.com/i2y/ramune/internal/rslint/plugins/typescript"
+	unicornPlugin "github.com/i2y/ramune/internal/rslint/plugins/unicorn"
 	"github.com/i2y/ramune/internal/rslint/rule"
-	"github.com/i2y/ramune/internal/rslint/rules/accessor_pairs"
-	"github.com/i2y/ramune/internal/rslint/rules/array_callback_return"
-	"github.com/i2y/ramune/internal/rslint/rules/constructor_super"
-	"github.com/i2y/ramune/internal/rslint/rules/default_case"
-	"github.com/i2y/ramune/internal/rslint/rules/default_case_last"
-	"github.com/i2y/ramune/internal/rslint/rules/eqeqeq"
-	"github.com/i2y/ramune/internal/rslint/rules/for_direction"
-	"github.com/i2y/ramune/internal/rslint/rules/getter_return"
-	"github.com/i2y/ramune/internal/rslint/rules/guard_for_in"
-	"github.com/i2y/ramune/internal/rslint/rules/max_lines"
-	"github.com/i2y/ramune/internal/rslint/rules/no_alert"
-	"github.com/i2y/ramune/internal/rslint/rules/no_async_promise_executor"
-	"github.com/i2y/ramune/internal/rslint/rules/no_await_in_loop"
-	"github.com/i2y/ramune/internal/rslint/rules/no_bitwise"
-	"github.com/i2y/ramune/internal/rslint/rules/no_caller"
-	"github.com/i2y/ramune/internal/rslint/rules/no_case_declarations"
-	"github.com/i2y/ramune/internal/rslint/rules/no_class_assign"
-	"github.com/i2y/ramune/internal/rslint/rules/no_compare_neg_zero"
-	"github.com/i2y/ramune/internal/rslint/rules/no_cond_assign"
-	"github.com/i2y/ramune/internal/rslint/rules/no_console"
-	"github.com/i2y/ramune/internal/rslint/rules/no_const_assign"
-	"github.com/i2y/ramune/internal/rslint/rules/no_constant_binary_expression"
-	"github.com/i2y/ramune/internal/rslint/rules/no_constant_condition"
-	"github.com/i2y/ramune/internal/rslint/rules/no_constructor_return"
-	"github.com/i2y/ramune/internal/rslint/rules/no_control_regex"
-	"github.com/i2y/ramune/internal/rslint/rules/no_debugger"
-	"github.com/i2y/ramune/internal/rslint/rules/no_delete_var"
-	"github.com/i2y/ramune/internal/rslint/rules/no_dupe_args"
-	"github.com/i2y/ramune/internal/rslint/rules/no_dupe_class_members"
-	"github.com/i2y/ramune/internal/rslint/rules/no_dupe_else_if"
-	"github.com/i2y/ramune/internal/rslint/rules/no_dupe_keys"
-	"github.com/i2y/ramune/internal/rslint/rules/no_duplicate_case"
-	"github.com/i2y/ramune/internal/rslint/rules/no_empty"
-	"github.com/i2y/ramune/internal/rslint/rules/no_empty_character_class"
-	"github.com/i2y/ramune/internal/rslint/rules/no_empty_pattern"
-	"github.com/i2y/ramune/internal/rslint/rules/no_eval"
-	"github.com/i2y/ramune/internal/rslint/rules/no_ex_assign"
-	"github.com/i2y/ramune/internal/rslint/rules/no_extend_native"
-	"github.com/i2y/ramune/internal/rslint/rules/no_extra_bind"
-	"github.com/i2y/ramune/internal/rslint/rules/no_extra_boolean_cast"
-	"github.com/i2y/ramune/internal/rslint/rules/no_extra_label"
-	"github.com/i2y/ramune/internal/rslint/rules/no_fallthrough"
-	"github.com/i2y/ramune/internal/rslint/rules/no_func_assign"
-	"github.com/i2y/ramune/internal/rslint/rules/no_global_assign"
-	"github.com/i2y/ramune/internal/rslint/rules/no_implicit_coercion"
-	core_no_implied_eval "github.com/i2y/ramune/internal/rslint/rules/no_implied_eval"
-	"github.com/i2y/ramune/internal/rslint/rules/no_import_assign"
-	"github.com/i2y/ramune/internal/rslint/rules/no_inner_declarations"
-	"github.com/i2y/ramune/internal/rslint/rules/no_invalid_regexp"
-	"github.com/i2y/ramune/internal/rslint/rules/no_iterator"
-	"github.com/i2y/ramune/internal/rslint/rules/no_label_var"
-	"github.com/i2y/ramune/internal/rslint/rules/no_labels"
-	"github.com/i2y/ramune/internal/rslint/rules/no_lone_blocks"
-	"github.com/i2y/ramune/internal/rslint/rules/no_loop_func"
-	"github.com/i2y/ramune/internal/rslint/rules/no_loss_of_precision"
-	"github.com/i2y/ramune/internal/rslint/rules/no_misleading_character_class"
-	"github.com/i2y/ramune/internal/rslint/rules/no_multi_str"
-	"github.com/i2y/ramune/internal/rslint/rules/no_nested_ternary"
-	"github.com/i2y/ramune/internal/rslint/rules/no_new"
-	"github.com/i2y/ramune/internal/rslint/rules/no_new_func"
-	"github.com/i2y/ramune/internal/rslint/rules/no_new_object"
-	"github.com/i2y/ramune/internal/rslint/rules/no_new_symbol"
-	"github.com/i2y/ramune/internal/rslint/rules/no_new_wrappers"
-	"github.com/i2y/ramune/internal/rslint/rules/no_obj_calls"
-	"github.com/i2y/ramune/internal/rslint/rules/no_octal"
-	"github.com/i2y/ramune/internal/rslint/rules/no_octal_escape"
-	"github.com/i2y/ramune/internal/rslint/rules/no_param_reassign"
-	"github.com/i2y/ramune/internal/rslint/rules/no_proto"
-	"github.com/i2y/ramune/internal/rslint/rules/no_prototype_builtins"
-	"github.com/i2y/ramune/internal/rslint/rules/no_regex_spaces"
-	"github.com/i2y/ramune/internal/rslint/rules/no_restricted_imports"
-	"github.com/i2y/ramune/internal/rslint/rules/no_return_assign"
-	"github.com/i2y/ramune/internal/rslint/rules/no_script_url"
-	"github.com/i2y/ramune/internal/rslint/rules/no_self_assign"
-	"github.com/i2y/ramune/internal/rslint/rules/no_self_compare"
-	"github.com/i2y/ramune/internal/rslint/rules/no_sequences"
-	"github.com/i2y/ramune/internal/rslint/rules/no_setter_return"
-	"github.com/i2y/ramune/internal/rslint/rules/no_shadow"
-	"github.com/i2y/ramune/internal/rslint/rules/no_shadow_restricted_names"
-	"github.com/i2y/ramune/internal/rslint/rules/no_sparse_arrays"
-	"github.com/i2y/ramune/internal/rslint/rules/no_template_curly_in_string"
-	"github.com/i2y/ramune/internal/rslint/rules/no_this_before_super"
-	"github.com/i2y/ramune/internal/rslint/rules/no_undef"
-	"github.com/i2y/ramune/internal/rslint/rules/no_undef_init"
-	"github.com/i2y/ramune/internal/rslint/rules/no_unmodified_loop_condition"
-	"github.com/i2y/ramune/internal/rslint/rules/no_unneeded_ternary"
-	"github.com/i2y/ramune/internal/rslint/rules/no_unreachable"
-	"github.com/i2y/ramune/internal/rslint/rules/no_unsafe_finally"
-	"github.com/i2y/ramune/internal/rslint/rules/no_unsafe_negation"
-	"github.com/i2y/ramune/internal/rslint/rules/no_throw_literal"
-	"github.com/i2y/ramune/internal/rslint/rules/no_unsafe_optional_chaining"
-	"github.com/i2y/ramune/internal/rslint/rules/no_useless_call"
-	"github.com/i2y/ramune/internal/rslint/rules/no_useless_catch"
-	"github.com/i2y/ramune/internal/rslint/rules/no_useless_computed_key"
-	"github.com/i2y/ramune/internal/rslint/rules/no_useless_constructor"
-	"github.com/i2y/ramune/internal/rslint/rules/no_useless_concat"
-	"github.com/i2y/ramune/internal/rslint/rules/no_useless_rename"
-	"github.com/i2y/ramune/internal/rslint/rules/no_var"
-	"github.com/i2y/ramune/internal/rslint/rules/no_with"
-	"github.com/i2y/ramune/internal/rslint/rules/object_shorthand"
-	"github.com/i2y/ramune/internal/rslint/rules/prefer_const"
-	core_prefer_promise_reject_errors "github.com/i2y/ramune/internal/rslint/rules/prefer_promise_reject_errors"
-	"github.com/i2y/ramune/internal/rslint/rules/prefer_rest_params"
-	"github.com/i2y/ramune/internal/rslint/rules/prefer_spread"
-	"github.com/i2y/ramune/internal/rslint/rules/prefer_template"
-	"github.com/i2y/ramune/internal/rslint/rules/radix"
-	"github.com/i2y/ramune/internal/rslint/rules/require_atomic_updates"
-	"github.com/i2y/ramune/internal/rslint/rules/require_yield"
-	"github.com/i2y/ramune/internal/rslint/rules/strict"
-	"github.com/i2y/ramune/internal/rslint/rules/symbol_description"
-	"github.com/i2y/ramune/internal/rslint/rules/use_isnan"
-	"github.com/i2y/ramune/internal/rslint/rules/valid_typeof"
+	coreRules "github.com/i2y/ramune/internal/rslint/rules"
 )
 
 // RslintConfig represents the top-level configuration array
@@ -231,20 +27,276 @@ type RslintConfig []ConfigEntry
 
 // ConfigEntry represents a single configuration entry in the config array
 type ConfigEntry struct {
-	Files           []string         `json:"files,omitempty"`
-	Ignores         []string         `json:"ignores,omitempty"`
-	LanguageOptions *LanguageOptions `json:"languageOptions,omitempty"`
-	Rules           Rules            `json:"rules"`
-	Plugins         []string         `json:"plugins,omitempty"`
-	Settings        Settings         `json:"settings,omitempty"`
+	Name string `json:"name,omitempty"`
+	// Files retains the established Go construction API for top-level OR
+	// patterns. FilePatternGroups stores nested arrays, each of which is an AND
+	// group. JSON encoding combines both fields back into one mixed `files`
+	// array.
+	Files             []string         `json:"files,omitempty"`
+	FilePatternGroups [][]string       `json:"-"`
+	Ignores           []string         `json:"ignores,omitempty"`
+	LanguageOptions   *LanguageOptions `json:"languageOptions,omitempty"`
+	Rules             Rules            `json:"rules"`
+	Plugins           []string         `json:"plugins,omitempty"`
+	Settings          Settings         `json:"settings,omitempty"`
+}
+
+func (entry ConfigEntry) MarshalJSON() ([]byte, error) {
+	type configEntryAlias ConfigEntry
+	if len(entry.FilePatternGroups) == 0 {
+		return json.Marshal(configEntryAlias(entry))
+	}
+
+	encoded, err := json.Marshal(configEntryAlias(entry))
+	if err != nil {
+		return nil, err
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &object); err != nil {
+		return nil, err
+	}
+	selectors := make([]any, 0, len(entry.Files)+len(entry.FilePatternGroups))
+	for _, pattern := range entry.Files {
+		selectors = append(selectors, pattern)
+	}
+	for _, group := range entry.FilePatternGroups {
+		selectors = append(selectors, group)
+	}
+	filesJSON, err := json.Marshal(selectors)
+	if err != nil {
+		return nil, err
+	}
+	object["files"] = filesJSON
+	return json.Marshal(object)
+}
+
+func (entry *ConfigEntry) UnmarshalJSON(data []byte) error {
+	wrapped := make([]byte, 0, len(data)+2)
+	wrapped = append(wrapped, '[')
+	wrapped = append(wrapped, data...)
+	wrapped = append(wrapped, ']')
+	var config RslintConfig
+	if err := config.UnmarshalJSON(wrapped); err != nil {
+		return err
+	}
+	if len(config) != 1 {
+		return errors.New("expected one config entry")
+	}
+	*entry = config[0]
+	return nil
 }
 
 // Settings represents shared settings accessible to rules
 type Settings map[string]interface{}
 
-// LanguageOptions contains language-specific configuration options
+// UnmarshalJSON rejects invalid explicit `files` values at the config boundary.
+// An omitted `files` field remains valid and means "use rslint's default
+// lintable extensions"; explicit null/empty arrays are invalid.
+func (config *RslintConfig) UnmarshalJSON(data []byte) error {
+	if strings.TrimSpace(string(data)) == "null" {
+		*config = nil
+		return nil
+	}
+
+	var rawEntries []json.RawMessage
+	if err := json.Unmarshal(data, &rawEntries); err != nil {
+		return err
+	}
+
+	type configEntryAlias ConfigEntry
+	entries := make(RslintConfig, 0, len(rawEntries))
+	for index, rawEntry := range rawEntries {
+		var raw map[string]json.RawMessage
+		if err := json.Unmarshal(rawEntry, &raw); err != nil {
+			return err
+		}
+
+		var decoded configEntryAlias
+		entryForDecode := rawEntry
+		if rawFiles, ok := raw["files"]; ok {
+			files, groups, err := decodeFilesSelectors(rawFiles, index)
+			if err != nil {
+				return err
+			}
+			decoded.Files = files
+			decoded.FilePatternGroups = groups
+			withoutFiles := make(map[string]json.RawMessage, len(raw)-1)
+			for key, value := range raw {
+				if key != "files" {
+					withoutFiles[key] = value
+				}
+			}
+			entryForDecode, err = json.Marshal(withoutFiles)
+			if err != nil {
+				return err
+			}
+		}
+		if err := json.Unmarshal(entryForDecode, &decoded); err != nil {
+			return err
+		}
+		if err := validateConfigRules(decoded.Rules); err != nil {
+			return fmt.Errorf("config entry at index %d: %w", index, err)
+		}
+		// Global-ignore semantics depend on object shape, not on whether a
+		// present field decodes to a non-nil Go value. Preserve the non-global
+		// shape of entries such as {ignores, rules: null} or entries carrying a
+		// currently unsupported field. An empty Settings map is behaviorally
+		// neutral but remains non-nil for isGlobalIgnoreEntry.
+		hasNonGlobalKey := false
+		for key := range raw {
+			if key != "ignores" && key != "name" {
+				hasNonGlobalKey = true
+				break
+			}
+		}
+		if hasNonGlobalKey && decoded.Files == nil && decoded.FilePatternGroups == nil && decoded.Rules == nil && decoded.Plugins == nil && decoded.Settings == nil && decoded.LanguageOptions == nil {
+			decoded.Settings = Settings{}
+		}
+		entries = append(entries, ConfigEntry(decoded))
+	}
+
+	*config = entries
+	return nil
+}
+
+func decodeFilesSelectors(raw json.RawMessage, entryIndex int) ([]string, [][]string, error) {
+	var selectors []json.RawMessage
+	if err := json.Unmarshal(raw, &selectors); err != nil || len(selectors) == 0 {
+		if err != nil {
+			return nil, nil, fmt.Errorf("config entry at index %d: key \"files\": expected value to be a non-empty array: %w", entryIndex, err)
+		}
+		return nil, nil, fmt.Errorf("config entry at index %d: key \"files\": expected value to be a non-empty array", entryIndex)
+	}
+
+	files := make([]string, 0, len(selectors))
+	var groups [][]string
+	for selectorIndex, selector := range selectors {
+		var value any
+		if err := json.Unmarshal(selector, &value); err != nil {
+			return nil, nil, err
+		}
+		switch value := value.(type) {
+		case string:
+			files = append(files, value)
+		case []any:
+			group := make([]string, 0, len(value))
+			for _, item := range value {
+				pattern, ok := item.(string)
+				if !ok {
+					return nil, nil, fmt.Errorf(
+						"config entry at index %d: key \"files\": item at index %d must be a string or an array of strings",
+						entryIndex,
+						selectorIndex,
+					)
+				}
+				group = append(group, pattern)
+			}
+			groups = append(groups, group)
+		default:
+			return nil, nil, fmt.Errorf(
+				"config entry at index %d: key \"files\": item at index %d must be a string or an array of strings",
+				entryIndex,
+				selectorIndex,
+			)
+		}
+	}
+	return files, groups, nil
+}
+
+// ValidateConfig checks config invariants for configs constructed in Go. JSON
+// config ingress rejects explicit null/empty `files` during unmarshaling.
+func ValidateConfig(config RslintConfig) error {
+	for index, entry := range config {
+		if (entry.Files != nil || entry.FilePatternGroups != nil) && len(entry.Files) == 0 && len(entry.FilePatternGroups) == 0 {
+			return fmt.Errorf("config entry at index %d: key \"files\": expected value to be a non-empty array", index)
+		}
+		if err := validateConfigGlobals(entry.LanguageOptions); err != nil {
+			return fmt.Errorf("config entry at index %d: %w", index, err)
+		}
+		if err := validateConfigRules(entry.Rules); err != nil {
+			return fmt.Errorf("config entry at index %d: %w", index, err)
+		}
+	}
+	return nil
+}
+
+func validateConfigGlobals(languageOptions *LanguageOptions) error {
+	if languageOptions == nil || languageOptions.Raw == nil {
+		return nil
+	}
+	value, present := languageOptions.Raw["globals"]
+	if !present {
+		return nil
+	}
+	globals, ok := value.(map[string]any)
+	if !ok {
+		return errors.New("key \"languageOptions.globals\": expected an object")
+	}
+	for name, access := range globals {
+		if name != strings.TrimSpace(name) {
+			return fmt.Errorf("key \"languageOptions.globals\": global %q has leading or trailing whitespace", name)
+		}
+		if !isValidGlobalAccess(access) {
+			return fmt.Errorf(
+				"key \"languageOptions.globals\": global %q has invalid access %v; expected a boolean, null, \"true\", \"false\", \"readonly\", \"readable\", \"writable\", \"writeable\", or \"off\"",
+				name,
+				access,
+			)
+		}
+	}
+	return nil
+}
+
+func isValidGlobalAccess(value any) bool {
+	switch value := value.(type) {
+	case nil, bool:
+		return true
+	case string:
+		switch value {
+		case "true", "writable", "writeable", "false", "readonly", "readable", "off":
+			return true
+		}
+	}
+	return false
+}
+
+func validateConfigRules(rules Rules) error {
+	for name, value := range rules {
+		if _, _, err := parseRuleConfigValue(value); err != nil {
+			return fmt.Errorf("key \"rules\": rule %q: %w", name, err)
+		}
+	}
+	return nil
+}
+
+// LanguageOptions contains language-specific configuration options.
 type LanguageOptions struct {
 	ParserOptions *ParserOptions `json:"parserOptions,omitempty"`
+	// Raw retains the full languageOptions object as authored (sourceType,
+	// globals, parserOptions.ecmaFeatures, …) — fields the Go core does not
+	// model but the Node eslint-plugin worker needs. Go computes the
+	// per-file merged value via GetConfigForFile and forwards it on the
+	// wire; it is not (de)serialized through this struct's own field tags.
+	Raw map[string]any `json:"-"`
+}
+
+// UnmarshalJSON captures both the typed ParserOptions and the full raw
+// object (the latter for forwarding to the eslint-plugin worker).
+func (lo *LanguageOptions) UnmarshalJSON(data []byte) error {
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	type parserShape struct {
+		ParserOptions *ParserOptions `json:"parserOptions,omitempty"`
+	}
+	var ps parserShape
+	if err := json.Unmarshal(data, &ps); err != nil {
+		return err
+	}
+	lo.ParserOptions = ps.ParserOptions
+	lo.Raw = raw
+	return nil
 }
 
 // ProjectPaths represents project paths that can be either a single string or an array of strings
@@ -286,8 +338,8 @@ type Rules map[string]interface{}
 
 // RuleConfig represents individual rule configuration
 type RuleConfig struct {
-	Level   string      `json:"level,omitempty"`   // "error", "warn", "off"
-	Options interface{} `json:"options,omitempty"` // Rule-specific options (string, map, array, etc.)
+	Level   string        `json:"level,omitempty"`   // "error", "warn", "off"
+	Options []interface{} `json:"options,omitempty"` // ESLint's context.options array (post-severity elements)
 }
 
 // IsEnabled returns true if the rule is enabled (not "off")
@@ -307,15 +359,15 @@ func (rc *RuleConfig) GetLevel() string {
 }
 
 // GetOptions returns the rule options, ensuring we return a usable value
-func (rc *RuleConfig) GetOptions() interface{} {
-	if rc == nil || rc.Options == nil {
+func (rc *RuleConfig) GetOptions() []interface{} {
+	if rc == nil {
 		return nil
 	}
 	return rc.Options
 }
 
 // SetOptions sets the rule options
-func (rc *RuleConfig) SetOptions(options interface{}) {
+func (rc *RuleConfig) SetOptions(options []interface{}) {
 	if rc != nil {
 		rc.Options = options
 	}
@@ -341,7 +393,7 @@ var KnownPlugins = []PluginInfo{
 	{
 		RulePrefix:  "@typescript-eslint",
 		DeclNames:   []string{"@typescript-eslint"},
-		getAllRules: func() []rule.Rule { return GetPluginRules("@typescript-eslint") },
+		getAllRules: func() []rule.Rule { return typescriptPlugin.GetAllRules() },
 	},
 	{
 		RulePrefix:  "import",
@@ -354,6 +406,11 @@ var KnownPlugins = []PluginInfo{
 		getAllRules: func() []rule.Rule { return jestPlugin.GetAllRules() },
 	},
 	{
+		RulePrefix:  "jsx-a11y",
+		DeclNames:   []string{"eslint-plugin-jsx-a11y", "jsx-a11y"},
+		getAllRules: func() []rule.Rule { return jsxA11yPlugin.GetAllRules() },
+	},
+	{
 		RulePrefix:  "promise",
 		DeclNames:   []string{"eslint-plugin-promise", "promise"},
 		getAllRules: func() []rule.Rule { return promisePlugin.GetAllRules() },
@@ -362,6 +419,16 @@ var KnownPlugins = []PluginInfo{
 		RulePrefix:  "react",
 		DeclNames:   []string{"react"},
 		getAllRules: func() []rule.Rule { return reactPlugin.GetAllRules() },
+	},
+	{
+		RulePrefix:  "react-hooks",
+		DeclNames:   []string{"eslint-plugin-react-hooks", "react-hooks"},
+		getAllRules: func() []rule.Rule { return reactHooksPlugin.GetAllRules() },
+	},
+	{
+		RulePrefix:  "unicorn",
+		DeclNames:   []string{"eslint-plugin-unicorn", "unicorn"},
+		getAllRules: func() []rule.Rule { return unicornPlugin.GetAllRules() },
 	},
 }
 
@@ -389,38 +456,99 @@ func NormalizePluginName(pluginName string) string {
 // parseArrayRuleConfig parses array-style rule configuration like ["error", {...options}]
 // Supports ESLint-compatible formats:
 // - ["off"] -> disabled rule
+// - [0] -> disabled rule
 // - ["error"] -> enabled rule with error severity
+// - [2] -> enabled rule with error severity
 // - ["warn"] -> enabled rule with warning severity
+// - [1] -> enabled rule with warning severity
 // - ["error", {...options}] -> enabled rule with error severity and options
 // - ["error", "both"] -> enabled rule with string option (e.g. no-inner-declarations)
 // - ["error", "both", {...options}] -> enabled rule with string + object options
 func parseArrayRuleConfig(ruleArray []interface{}) *RuleConfig {
-	if len(ruleArray) == 0 {
+	ruleConfig, _, err := parseRuleConfigValue(ruleArray)
+	if err != nil {
 		return nil
 	}
-
-	// First element should always be the severity level
-	level, ok := ruleArray[0].(string)
-	if !ok {
-		return nil
-	}
-
-	ruleConfig := &RuleConfig{Level: level}
-
-	// Remaining elements are rule options — pass them through to the rule's
-	// option parser which knows how to interpret its own format.
-	if len(ruleArray) > 1 {
-		remaining := ruleArray[1:]
-		if len(remaining) == 1 {
-			// Single option element: pass directly (string, map, etc.)
-			ruleConfig.Options = remaining[0]
-		} else {
-			// Multiple option elements: pass as array (e.g. ["both", {blockScopedFunctions: "disallow"}])
-			ruleConfig.Options = remaining
-		}
-	}
-
 	return ruleConfig
+}
+
+func parseRuleConfigValue(value any) (*RuleConfig, bool, error) {
+	if ruleArray, ok := value.([]interface{}); ok {
+		if len(ruleArray) == 0 {
+			return nil, false, errors.New("rule configuration array must contain a severity")
+		}
+		level, err := normalizeRuleSeverity(ruleArray[0])
+		if err != nil {
+			return nil, false, fmt.Errorf("invalid array severity at index 0: %w", err)
+		}
+		ruleConfig := &RuleConfig{Level: level}
+		if len(ruleArray) > 1 {
+			// Keep ESLint's context.options array form without collapsing a
+			// single positional option to a bare value.
+			ruleConfig.Options = ruleArray[1:]
+		}
+		return ruleConfig, len(ruleArray) > 1, nil
+	}
+
+	level, err := normalizeRuleSeverity(value)
+	if err != nil {
+		return nil, false, err
+	}
+	return &RuleConfig{Level: level}, false, nil
+}
+
+func normalizeRuleSeverity(value any) (string, error) {
+	if value == nil {
+		return "", invalidRuleSeverity(value)
+	}
+	if number, ok := value.(json.Number); ok {
+		numeric, err := number.Float64()
+		if err != nil {
+			return "", invalidRuleSeverity(value)
+		}
+		return normalizeNumericRuleSeverity(numeric, value)
+	}
+
+	severity := reflect.ValueOf(value)
+	switch severity.Kind() {
+	case reflect.String:
+		level := severity.String()
+		switch level {
+		case "off", "warn", "error":
+			return level, nil
+		default:
+			return "", invalidRuleSeverity(value)
+		}
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return normalizeNumericRuleSeverity(float64(severity.Int()), value)
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		return normalizeNumericRuleSeverity(float64(severity.Uint()), value)
+	case reflect.Float32, reflect.Float64:
+		return normalizeNumericRuleSeverity(severity.Float(), value)
+	}
+
+	return "", invalidRuleSeverity(value)
+}
+
+func normalizeNumericRuleSeverity(value float64, original any) (string, error) {
+	switch value {
+	case 0:
+		return "off", nil
+	case 1:
+		return "warn", nil
+	case 2:
+		return "error", nil
+	default:
+		return "", invalidRuleSeverity(original)
+	}
+}
+
+func invalidRuleSeverity(value any) error {
+	return fmt.Errorf(
+		"invalid severity %v (%T); expected \"off\", \"warn\", \"error\", 0, 1, or 2",
+		value,
+		value,
+	)
 }
 
 var registerOnce sync.Once
@@ -428,10 +556,13 @@ var registerOnce sync.Once
 func RegisterAllRules() {
 	registerOnce.Do(func() {
 		registerAllTypeScriptEslintPluginRules()
-		registerAllEslintImportPluginRules()
+		registerAllImportPluginRules()
 		registerAllReactPluginRules()
+		registerAllReactHooksPluginRules()
 		registerAllJestPluginRules()
+		registerAllJsxA11yPluginRules()
 		registerAllPromisePluginRules()
+		registerAllUnicornPluginRules()
 		registerAllCoreEslintRules()
 	})
 }
@@ -442,8 +573,20 @@ func registerAllReactPluginRules() {
 	}
 }
 
+func registerAllReactHooksPluginRules() {
+	for _, rule := range reactHooksPlugin.GetAllRules() {
+		GlobalRuleRegistry.Register(rule.Name, rule)
+	}
+}
+
 func registerAllJestPluginRules() {
 	for _, rule := range jestPlugin.GetAllRules() {
+		GlobalRuleRegistry.Register(rule.Name, rule)
+	}
+}
+
+func registerAllJsxA11yPluginRules() {
+	for _, rule := range jsxA11yPlugin.GetAllRules() {
 		GlobalRuleRegistry.Register(rule.Name, rule)
 	}
 }
@@ -454,276 +597,28 @@ func registerAllPromisePluginRules() {
 	}
 }
 
-// registerAllTypeScriptEslintPluginRules registers all available rules in the global registry
-func registerAllTypeScriptEslintPluginRules() {
-	GlobalRuleRegistry.Register("@typescript-eslint/adjacent-overload-signatures", adjacent_overload_signatures.AdjacentOverloadSignaturesRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/array-type", array_type.ArrayTypeRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/await-thenable", await_thenable.AwaitThenableRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/ban-ts-comment", ban_ts_comment.BanTsCommentRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/ban-tslint-comment", ban_tslint_comment.BanTslintCommentRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/ban-types", ban_types.BanTypesRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/class-literal-property-style", class_literal_property_style.ClassLiteralPropertyStyleRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/consistent-generic-constructors", consistent_generic_constructors.ConsistentGenericConstructorsRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/consistent-indexed-object-style", consistent_indexed_object_style.ConsistentIndexedObjectStyleRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/consistent-return", consistent_return.ConsistentReturnRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/consistent-type-assertions", consistent_type_assertions.ConsistentTypeAssertionsRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/consistent-type-definitions", consistent_type_definitions.ConsistentTypeDefinitionsRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/consistent-type-exports", consistent_type_exports.ConsistentTypeExportsRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/consistent-type-imports", consistent_type_imports.ConsistentTypeImportsRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/default-param-last", default_param_last.DefaultParamLastRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/dot-notation", dot_notation.DotNotationRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/explicit-function-return-type", explicit_function_return_type.ExplicitFunctionReturnTypeRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/member-ordering", member_ordering.MemberOrderingRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/method-signature-style", method_signature_style.MethodSignatureStyleRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/naming-convention", naming_convention.NamingConventionRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/no-array-constructor", no_array_constructor.NoArrayConstructorRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/no-array-delete", no_array_delete.NoArrayDeleteRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/no-base-to-string", no_base_to_string.NoBaseToStringRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/no-confusing-void-expression", no_confusing_void_expression.NoConfusingVoidExpressionRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/no-dupe-class-members", ts_no_dupe_class_members.NoDupeClassMembersRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/no-duplicate-enum-values", no_duplicate_enum_values.NoDuplicateEnumValuesRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/no-duplicate-type-constituents", no_duplicate_type_constituents.NoDuplicateTypeConstituentsRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/no-dynamic-delete", no_dynamic_delete.NoDynamicDeleteRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/no-explicit-any", no_explicit_any.NoExplicitAnyRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/no-empty-function", no_empty_function.NoEmptyFunctionRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/no-empty-interface", no_empty_interface.NoEmptyInterfaceRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/no-extra-non-null-assertion", no_extra_non_null_assertion.NoExtraNonNullAssertionRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/no-extraneous-class", no_extraneous_class.NoExtraneousClassRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/no-invalid-void-type", no_invalid_void_type.NoInvalidVoidTypeRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/no-floating-promises", no_floating_promises.NoFloatingPromisesRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/no-for-in-array", no_for_in_array.NoForInArrayRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/no-implied-eval", no_implied_eval.NoImpliedEvalRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/no-inferrable-types", no_inferrable_types.NoInferrableTypesRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/no-meaningless-void-operator", no_meaningless_void_operator.NoMeaninglessVoidOperatorRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/no-misused-new", no_misused_new.NoMisusedNewRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/no-misused-promises", no_misused_promises.NoMisusedPromisesRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/no-misused-spread", no_misused_spread.NoMisusedSpreadRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/no-mixed-enums", no_mixed_enums.NoMixedEnumsRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/no-namespace", no_namespace.NoNamespaceRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/no-non-null-asserted-nullish-coalescing", no_non_null_asserted_nullish_coalescing.NoNonNullAssertedNullishCoalescingRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/no-non-null-asserted-optional-chain", no_non_null_asserted_optional_chain.NoNonNullAssertedOptionalChainRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/no-non-null-assertion", no_non_null_assertion.NoNonNullAssertionRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/no-redeclare", no_redeclare.NoRedeclareRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/no-redundant-type-constituents", no_redundant_type_constituents.NoRedundantTypeConstituentsRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/no-this-alias", no_this_alias.NoThisAliasRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/no-require-imports", no_require_imports.NoRequireImportsRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/no-unnecessary-boolean-literal-compare", no_unnecessary_boolean_literal_compare.NoUnnecessaryBooleanLiteralCompareRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/no-unnecessary-condition", no_unnecessary_condition.NoUnnecessaryConditionRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/no-unnecessary-template-expression", no_unnecessary_template_expression.NoUnnecessaryTemplateExpressionRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/no-unnecessary-type-arguments", no_unnecessary_type_arguments.NoUnnecessaryTypeArgumentsRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/no-unnecessary-type-assertion", no_unnecessary_type_assertion.NoUnnecessaryTypeAssertionRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/no-unnecessary-type-constraint", no_unnecessary_type_constraint.NoUnnecessaryTypeConstraintRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/no-unsafe-argument", no_unsafe_argument.NoUnsafeArgumentRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/no-unsafe-assignment", no_unsafe_assignment.NoUnsafeAssignmentRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/no-unsafe-call", no_unsafe_call.NoUnsafeCallRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/no-unsafe-enum-comparison", no_unsafe_enum_comparison.NoUnsafeEnumComparisonRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/no-unsafe-member-access", no_unsafe_member_access.NoUnsafeMemberAccessRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/no-unsafe-return", no_unsafe_return.NoUnsafeReturnRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/no-unsafe-type-assertion", no_unsafe_type_assertion.NoUnsafeTypeAssertionRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/no-unsafe-unary-minus", no_unsafe_unary_minus.NoUnsafeUnaryMinusRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/no-unused-expressions", no_unused_expressions.NoUnusedExpressionsRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/no-unused-vars", no_unused_vars.NoUnusedVarsRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/no-use-before-define", no_use_before_define.NoUseBeforeDefineRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/no-useless-constructor", ts_no_useless_constructor.NoUselessConstructorRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/no-useless-empty-export", no_useless_empty_export.NoUselessEmptyExportRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/no-var-requires", no_var_requires.NoVarRequiresRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/non-nullable-type-assertion-style", non_nullable_type_assertion_style.NonNullableTypeAssertionStyleRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/only-throw-error", only_throw_error.OnlyThrowErrorRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/parameter-properties", parameter_properties.ParameterPropertiesRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/prefer-as-const", prefer_as_const.PreferAsConstRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/prefer-includes", prefer_includes.PreferIncludesRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/prefer-literal-enum-member", prefer_literal_enum_member.PreferLiteralEnumMemberRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/prefer-namespace-keyword", prefer_namespace_keyword.PreferNamespaceKeywordRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/prefer-optional-chain", prefer_optional_chain.PreferOptionalChainRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/prefer-promise-reject-errors", prefer_promise_reject_errors.PreferPromiseRejectErrorsRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/prefer-readonly", prefer_readonly.PreferReadonlyRule)
-	// TODO: prefer-readonly-parameter-types needs complete implementation for proper type checking
-	// Temporarily disabled until the isReadonlyType function is fully implemented with proper
-	// detection of readonly arrays, readonly objects, function types, and other edge cases
-	// GlobalRuleRegistry.Register("@typescript-eslint/prefer-readonly-parameter-types", prefer_readonly_parameter_types.PreferReadonlyParameterTypesRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/prefer-reduce-type-parameter", prefer_reduce_type_parameter.PreferReduceTypeParameterRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/prefer-regexp-exec", prefer_regexp_exec.PreferRegExpExecRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/prefer-return-this-type", prefer_return_this_type.PreferReturnThisTypeRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/prefer-string-starts-ends-with", prefer_string_starts_ends_with.PreferStringStartsEndsWithRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/prefer-ts-expect-error", prefer_ts_expect_error.PreferTsExpectErrorRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/promise-function-async", promise_function_async.PromiseFunctionAsyncRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/related-getter-setter-pairs", related_getter_setter_pairs.RelatedGetterSetterPairsRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/require-array-sort-compare", require_array_sort_compare.RequireArraySortCompareRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/require-await", require_await.RequireAwaitRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/restrict-plus-operands", restrict_plus_operands.RestrictPlusOperandsRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/restrict-template-expressions", restrict_template_expressions.RestrictTemplateExpressionsRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/return-await", return_await.ReturnAwaitRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/switch-exhaustiveness-check", switch_exhaustiveness_check.SwitchExhaustivenessCheckRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/triple-slash-reference", triple_slash_reference.TripleSlashReferenceRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/unbound-method", unbound_method.UnboundMethodRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/unified-signatures", unified_signatures.UnifiedSignaturesRule)
-	GlobalRuleRegistry.Register("@typescript-eslint/use-unknown-in-catch-callback-variable", use_unknown_in_catch_callback_variable.UseUnknownInCatchCallbackVariableRule)
+func registerAllUnicornPluginRules() {
+	for _, rule := range unicornPlugin.GetAllRules() {
+		GlobalRuleRegistry.Register(rule.Name, rule)
+	}
 }
 
-func registerAllEslintImportPluginRules() {
+func registerAllTypeScriptEslintPluginRules() {
+	for _, rule := range typescriptPlugin.GetAllRules() {
+		GlobalRuleRegistry.Register(rule.Name, rule)
+	}
+}
+
+func registerAllImportPluginRules() {
 	for _, rule := range importPlugin.GetAllRules() {
 		GlobalRuleRegistry.Register(rule.Name, rule)
 	}
 }
 
-// registerAllCoreEslintRules registers core ESLint rules
 func registerAllCoreEslintRules() {
-	GlobalRuleRegistry.Register("accessor-pairs", accessor_pairs.AccessorPairsRule)
-	GlobalRuleRegistry.Register("array-callback-return", array_callback_return.ArrayCallbackReturnRule)
-	GlobalRuleRegistry.Register("constructor-super", constructor_super.ConstructorSuperRule)
-	GlobalRuleRegistry.Register("default-case", default_case.DefaultCaseRule)
-	GlobalRuleRegistry.Register("default-case-last", default_case_last.DefaultCaseLastRule)
-	GlobalRuleRegistry.Register("for-direction", for_direction.ForDirectionRule)
-	GlobalRuleRegistry.Register("getter-return", getter_return.GetterReturnRule)
-	GlobalRuleRegistry.Register("guard-for-in", guard_for_in.GuardForInRule)
-	GlobalRuleRegistry.Register("max-lines", max_lines.MaxLinesRule)
-	GlobalRuleRegistry.Register("no-alert", no_alert.NoAlertRule)
-	GlobalRuleRegistry.Register("no-async-promise-executor", no_async_promise_executor.NoAsyncPromiseExecutorRule)
-	GlobalRuleRegistry.Register("no-await-in-loop", no_await_in_loop.NoAwaitInLoopRule)
-	GlobalRuleRegistry.Register("no-bitwise", no_bitwise.NoBitwiseRule)
-	GlobalRuleRegistry.Register("no-caller", no_caller.NoCallerRule)
-	GlobalRuleRegistry.Register("no-case-declarations", no_case_declarations.NoCaseDeclarationsRule)
-	GlobalRuleRegistry.Register("no-class-assign", no_class_assign.NoClassAssignRule)
-	GlobalRuleRegistry.Register("no-compare-neg-zero", no_compare_neg_zero.NoCompareNegZeroRule)
-	GlobalRuleRegistry.Register("no-cond-assign", no_cond_assign.NoCondAssignRule)
-	GlobalRuleRegistry.Register("no-console", no_console.NoConsoleRule)
-	GlobalRuleRegistry.Register("no-const-assign", no_const_assign.NoConstAssignRule)
-	GlobalRuleRegistry.Register("no-constant-binary-expression", no_constant_binary_expression.NoConstantBinaryExpressionRule)
-	GlobalRuleRegistry.Register("no-constant-condition", no_constant_condition.NoConstantConditionRule)
-	GlobalRuleRegistry.Register("no-constructor-return", no_constructor_return.NoConstructorReturnRule)
-	GlobalRuleRegistry.Register("no-control-regex", no_control_regex.NoControlRegexRule)
-	GlobalRuleRegistry.Register("no-debugger", no_debugger.NoDebuggerRule)
-	GlobalRuleRegistry.Register("no-delete-var", no_delete_var.NoDeleteVarRule)
-	GlobalRuleRegistry.Register("no-dupe-args", no_dupe_args.NoDupeArgsRule)
-	GlobalRuleRegistry.Register("no-dupe-class-members", no_dupe_class_members.NoDupeClassMembersRule)
-	GlobalRuleRegistry.Register("no-dupe-keys", no_dupe_keys.NoDupeKeysRule)
-	GlobalRuleRegistry.Register("no-duplicate-case", no_duplicate_case.NoDuplicateCaseRule)
-	GlobalRuleRegistry.Register("no-empty", no_empty.NoEmptyRule)
-	GlobalRuleRegistry.Register("no-empty-pattern", no_empty_pattern.NoEmptyPatternRule)
-	GlobalRuleRegistry.Register("no-eval", no_eval.NoEvalRule)
-	GlobalRuleRegistry.Register("no-ex-assign", no_ex_assign.NoExAssignRule)
-	GlobalRuleRegistry.Register("no-extend-native", no_extend_native.NoExtendNativeRule)
-	GlobalRuleRegistry.Register("no-extra-bind", no_extra_bind.NoExtraBindRule)
-	GlobalRuleRegistry.Register("no-extra-label", no_extra_label.NoExtraLabelRule)
-	GlobalRuleRegistry.Register("no-label-var", no_label_var.NoLabelVarRule)
-	GlobalRuleRegistry.Register("no-labels", no_labels.NoLabelsRule)
-	GlobalRuleRegistry.Register("no-func-assign", no_func_assign.NoFuncAssignRule)
-	GlobalRuleRegistry.Register("no-global-assign", no_global_assign.NoGlobalAssignRule)
-	GlobalRuleRegistry.Register("no-implicit-coercion", no_implicit_coercion.NoImplicitCoercionRule)
-	GlobalRuleRegistry.Register("no-implied-eval", core_no_implied_eval.NoImpliedEvalRule)
-	GlobalRuleRegistry.Register("no-import-assign", no_import_assign.NoImportAssignRule)
-	GlobalRuleRegistry.Register("no-inner-declarations", no_inner_declarations.NoInnerDeclarationsRule)
-	GlobalRuleRegistry.Register("no-lone-blocks", no_lone_blocks.NoLoneBlocksRule)
-	GlobalRuleRegistry.Register("no-loop-func", no_loop_func.NoLoopFuncRule)
-	GlobalRuleRegistry.Register("no-loss-of-precision", no_loss_of_precision.NoLossOfPrecisionRule)
-	GlobalRuleRegistry.Register("no-misleading-character-class", no_misleading_character_class.NoMisleadingCharacterClassRule)
-	GlobalRuleRegistry.Register("no-new", no_new.NoNewRule)
-	GlobalRuleRegistry.Register("no-new-func", no_new_func.NoNewFuncRule)
-	GlobalRuleRegistry.Register("no-new-wrappers", no_new_wrappers.NoNewWrappersRule)
-	GlobalRuleRegistry.Register("no-restricted-imports", no_restricted_imports.NoRestrictedImportsRule)
-	GlobalRuleRegistry.Register("no-multi-str", no_multi_str.NoMultiStrRule)
-	GlobalRuleRegistry.Register("no-nested-ternary", no_nested_ternary.NoNestedTernaryRule)
-	GlobalRuleRegistry.Register("no-octal", no_octal.NoOctalRule)
-	GlobalRuleRegistry.Register("no-octal-escape", no_octal_escape.NoOctalEscapeRule)
-	GlobalRuleRegistry.Register("no-param-reassign", no_param_reassign.NoParamReassignRule)
-	GlobalRuleRegistry.Register("no-proto", no_proto.NoProtoRule)
-	GlobalRuleRegistry.Register("radix", radix.RadixRule)
-	GlobalRuleRegistry.Register("no-regex-spaces", no_regex_spaces.NoRegexSpacesRule)
-	GlobalRuleRegistry.Register("no-return-assign", no_return_assign.NoReturnAssignRule)
-	GlobalRuleRegistry.Register("no-script-url", no_script_url.NoScriptUrlRule)
-	GlobalRuleRegistry.Register("no-self-assign", no_self_assign.NoSelfAssignRule)
-	GlobalRuleRegistry.Register("no-self-compare", no_self_compare.NoSelfCompareRule)
-	GlobalRuleRegistry.Register("no-sequences", no_sequences.NoSequencesRule)
-	GlobalRuleRegistry.Register("no-shadow", no_shadow.NoShadowRule)
-	GlobalRuleRegistry.Register("no-shadow-restricted-names", no_shadow_restricted_names.NoShadowRestrictedNamesRule)
-	GlobalRuleRegistry.Register("strict", strict.StrictRule)
-	GlobalRuleRegistry.Register("no-template-curly-in-string", no_template_curly_in_string.NoTemplateCurlyInString)
-	GlobalRuleRegistry.Register("no-useless-computed-key", no_useless_computed_key.NoUselessComputedKeyRule)
-	GlobalRuleRegistry.Register("no-useless-concat", no_useless_concat.NoUselessConcatRule)
-	GlobalRuleRegistry.Register("no-sparse-arrays", no_sparse_arrays.NoSparseArraysRule)
-	GlobalRuleRegistry.Register("no-extra-boolean-cast", no_extra_boolean_cast.NoExtraBooleanCastRule)
-	GlobalRuleRegistry.Register("no-unneeded-ternary", no_unneeded_ternary.NoUnneededTernaryRule)
-	GlobalRuleRegistry.Register("no-undef", no_undef.NoUndefRule)
-	GlobalRuleRegistry.Register("no-undef-init", no_undef_init.NoUndefInitRule)
-	GlobalRuleRegistry.Register("prefer-const", prefer_const.PreferConstRule)
-	GlobalRuleRegistry.Register("prefer-promise-reject-errors", core_prefer_promise_reject_errors.PreferPromiseRejectErrorsRule)
-	GlobalRuleRegistry.Register("prefer-template", prefer_template.PreferTemplateRule)
-	GlobalRuleRegistry.Register("no-this-before-super", no_this_before_super.NoThisBeforeSuperRule)
-	GlobalRuleRegistry.Register("no-var", no_var.NoVarRule)
-	GlobalRuleRegistry.Register("no-with", no_with.NoWithRule)
-	GlobalRuleRegistry.Register("prefer-rest-params", prefer_rest_params.PreferRestParamsRule)
-	GlobalRuleRegistry.Register("prefer-spread", prefer_spread.PreferSpreadRule)
-	GlobalRuleRegistry.Register("no-empty-character-class", no_empty_character_class.NoEmptyCharacterClassRule)
-	GlobalRuleRegistry.Register("no-invalid-regexp", no_invalid_regexp.NoInvalidRegexpRule)
-	GlobalRuleRegistry.Register("no-iterator", no_iterator.NoIteratorRule)
-	GlobalRuleRegistry.Register("no-setter-return", no_setter_return.NoSetterReturnRule)
-	GlobalRuleRegistry.Register("no-unsafe-negation", no_unsafe_negation.NoUnsafeNegationRule)
-	GlobalRuleRegistry.Register("no-obj-calls", no_obj_calls.NoObjCallsRule)
-	GlobalRuleRegistry.Register("no-new-object", no_new_object.NoNewObjectRule)
-	GlobalRuleRegistry.Register("no-new-symbol", no_new_symbol.NoNewSymbolRule)
-	GlobalRuleRegistry.Register("use-isnan", use_isnan.UseIsNaNRule)
-	GlobalRuleRegistry.Register("eqeqeq", eqeqeq.EqeqeqRule)
-	GlobalRuleRegistry.Register("no-fallthrough", no_fallthrough.NoFallthroughRule)
-	GlobalRuleRegistry.Register("valid-typeof", valid_typeof.ValidTypeofRule)
-	GlobalRuleRegistry.Register("no-unsafe-optional-chaining", no_unsafe_optional_chaining.NoUnsafeOptionalChainingRule)
-	GlobalRuleRegistry.Register("no-unsafe-finally", no_unsafe_finally.NoUnsafeFinallyRule)
-	GlobalRuleRegistry.Register("no-unmodified-loop-condition", no_unmodified_loop_condition.NoUnmodifiedLoopConditionRule)
-	GlobalRuleRegistry.Register("no-unreachable", no_unreachable.NoUnreachableRule)
-	GlobalRuleRegistry.Register("require-atomic-updates", require_atomic_updates.RequireAtomicUpdatesRule)
-	GlobalRuleRegistry.Register("object-shorthand", object_shorthand.ObjectShorthandRule)
-	GlobalRuleRegistry.Register("no-dupe-else-if", no_dupe_else_if.NoDupeElseIfRule)
-	GlobalRuleRegistry.Register("no-throw-literal", no_throw_literal.NoThrowLiteralRule)
-	GlobalRuleRegistry.Register("no-useless-call", no_useless_call.NoUselessCallRule)
-	GlobalRuleRegistry.Register("no-useless-catch", no_useless_catch.NoUselessCatchRule)
-	GlobalRuleRegistry.Register("no-useless-rename", no_useless_rename.NoUselessRenameRule)
-	GlobalRuleRegistry.Register("no-useless-constructor", no_useless_constructor.NoUselessConstructorRule)
-	GlobalRuleRegistry.Register("no-prototype-builtins", no_prototype_builtins.NoPrototypeBuiltinsRule)
-	GlobalRuleRegistry.Register("require-yield", require_yield.RequireYieldRule)
-	GlobalRuleRegistry.Register("symbol-description", symbol_description.SymbolDescriptionRule)
-}
-
-// isFileIgnored checks if a file is matched by ignore patterns, evaluated sequentially.
-// Later patterns override earlier ones; a `!` prefix negates (re-includes) a previously
-// ignored file. This aligns with ESLint v10's ignore semantics.
-//
-// For directory-level blocking (dir/** prevents traversal entirely), use isDirPathBlocked.
-func isFileIgnored(filePath string, ignorePatterns []string, cwd string) bool {
-	if cwd == "" {
-		return isFileIgnoredSimple(filePath, ignorePatterns)
+	for _, rule := range coreRules.GetAllRules() {
+		GlobalRuleRegistry.Register(rule.Name, rule)
 	}
-
-	// Normalize the file path relative to cwd
-	normalizedPath := normalizePath(filePath, cwd)
-	unixPath := strings.ReplaceAll(normalizedPath, "\\", "/")
-
-	// Evaluate patterns sequentially. Later patterns override earlier ones.
-	// A `!` prefix negates (re-includes) a previously ignored file.
-	// This aligns with ESLint v10's ignore semantics.
-	ignored := false
-	for _, pattern := range ignorePatterns {
-		negated := false
-		if strings.HasPrefix(pattern, "!") {
-			negated = true
-			pattern = pattern[1:]
-		}
-
-		normalizedPattern := normalizePattern(pattern)
-
-		// Match against the relative path only. Do NOT fall back to the
-		// absolute filePath — patterns with **/ prefix (e.g., **/tmp/**/*)
-		// would incorrectly match system directory names in the absolute path
-		// (e.g., /tmp/ on Linux/macOS).
-		matched := matchGlob(normalizedPattern, normalizedPath)
-		// Windows path separator fallback.
-		if !matched && unixPath != normalizedPath {
-			matched = matchGlob(normalizedPattern, unixPath)
-		}
-
-		if matched {
-			ignored = !negated
-		}
-	}
-	return ignored
 }
 
 // normalizePattern cleans up a glob pattern to match paths produced by normalizePath.
@@ -735,24 +630,16 @@ func matchGlob(pattern, path string) bool {
 	return err == nil && m
 }
 
-// isFileLevelPattern returns true if the pattern only matches files (not directories).
-// File-level patterns end with /**/* or /* (but not /**).
-// These do NOT block directory traversal in ESLint v10's isDirectoryIgnored.
-func isFileLevelPattern(pattern string) bool {
-	return strings.HasSuffix(pattern, "/**/*") ||
-		(strings.HasSuffix(pattern, "/*") && !strings.HasSuffix(pattern, "/**"))
-}
-
 func normalizePattern(pattern string) string {
 	return tspath.NormalizePath(pattern)
 }
 
 // isDirBlockedByIgnores checks if the file's directory is blocked by a
-// directory-level ignore pattern (e.g., `dir/**`). File-level patterns
-// (`dir/**/*`, `dir/*`) and negation patterns are skipped.
-// This aligns with ESLint v10: `dir/**` blocks directory traversal entirely,
-// and `!` negation cannot undo it.
-func isDirBlockedByIgnores(filePath string, ignorePatterns []string, cwd string) bool {
+// directory-level ignore pattern (e.g., `dir/**`). File-level patterns and
+// negation patterns are excluded (by Kind) in isDirAbsolutelyBlocked. This
+// aligns with ESLint v10: `dir/**` blocks directory traversal entirely, and
+// `!` negation cannot undo it.
+func isDirBlockedByIgnores(filePath string, patterns []IgnorePattern, cwd string) bool {
 	var dirPath string
 	if cwd != "" {
 		dirPath = normalizePath(tspath.GetDirectoryPath(filePath), cwd)
@@ -764,39 +651,7 @@ func isDirBlockedByIgnores(filePath string, ignorePatterns []string, cwd string)
 	if dirPath == "" || dirPath == "." {
 		return false
 	}
-	return isDirPathBlocked(dirPath, ignorePatterns)
-}
-
-// isDirPathBlocked checks if a directory path is blocked by any directory-level ignore
-// pattern. Shared between GetConfigForFile and DiscoverGapFiles.
-//
-// A directory is blocked if a pattern matches the path itself or any parent segment.
-// For example, pattern "dir1/**" blocks "dir1", "dir1/sub", and "dir1/sub/deep".
-// File-level patterns (ending with /**/* or /*) and negation (!) patterns are skipped —
-// directory blocking is absolute and cannot be negated.
-func isDirPathBlocked(dirPath string, ignorePatterns []string) bool {
-	for _, pattern := range ignorePatterns {
-		if pattern == "" || strings.HasPrefix(pattern, "!") {
-			continue
-		}
-		if isFileLevelPattern(pattern) {
-			continue
-		}
-
-		normalizedPattern := normalizePattern(pattern)
-
-		if matchGlob(normalizedPattern, dirPath) || matchGlob(normalizedPattern, dirPath+"/x") {
-			return true
-		}
-		segments := strings.Split(dirPath, "/")
-		for i := 1; i < len(segments); i++ {
-			partial := strings.Join(segments[:i], "/")
-			if matchGlob(normalizedPattern, partial) || matchGlob(normalizedPattern, partial+"/x") {
-				return true
-			}
-		}
-	}
-	return false
+	return isDirAbsolutelyBlocked(dirPath, patterns)
 }
 
 // normalizePath converts file path to be relative to cwd for consistent matching
@@ -807,23 +662,6 @@ func normalizePath(filePath, cwd string) string {
 	}))
 }
 
-// isFileIgnoredSimple provides fallback matching when cwd is unavailable
-func isFileIgnoredSimple(filePath string, ignorePatterns []string) bool {
-	ignored := false
-	for _, pattern := range ignorePatterns {
-		negated := false
-		if strings.HasPrefix(pattern, "!") {
-			negated = true
-			pattern = pattern[1:]
-		}
-		normalizedPattern := normalizePattern(pattern)
-		if matched, err := doublestar.Match(normalizedPattern, filePath); err == nil && matched {
-			ignored = !negated
-		}
-	}
-	return ignored
-}
-
 // MergedConfig is the final computed configuration for a single file
 type MergedConfig struct {
 	Rules           map[string]*RuleConfig
@@ -832,13 +670,24 @@ type MergedConfig struct {
 	Plugins         map[string]struct{}
 }
 
+func extractConfigIgnores(config RslintConfig) []IgnorePattern {
+	var ignores []string
+	for _, entry := range config {
+		if isGlobalIgnoreEntry(entry) {
+			ignores = append(ignores, entry.Ignores...)
+		}
+	}
+	return ParseIgnorePatterns(ignores)
+}
+
 // IsFileIgnored reports whether filePath is excluded by the config's global
 // `ignores` patterns. It is distinct from GetConfigForFile returning nil,
 // which also covers "no entry matched this file" — callers that need ESLint's
-// "ignores hides the file from the linter entirely" semantics (including
-// type-check diagnostics and file counts) should use this method.
+// "ignores removes the file from lint target discovery" semantics should use
+// this method. Program-wide type-check diagnostics are intentionally governed
+// by tsconfig membership instead.
 func (config RslintConfig) IsFileIgnored(filePath string, cwd string) bool {
-	patterns := ExtractConfigIgnores(config)
+	patterns := extractConfigIgnores(config)
 	if len(patterns) == 0 {
 		return false
 	}
@@ -846,8 +695,10 @@ func (config RslintConfig) IsFileIgnored(filePath string, cwd string) bool {
 		isFileIgnored(filePath, patterns, cwd)
 }
 
-// GetConfigForFile computes the merged configuration for a file following ESLint flat config semantics.
-// Returns nil if the file is globally ignored or no entry matches (should not be linted).
+// GetConfigForFile computes the merged configuration for a selected file
+// following ESLint flat config semantics. It returns nil when the file is
+// globally ignored, outside the config's implicit/explicit selector union, or
+// no entry contributes configuration.
 //
 // Global ignore evaluation happens in two phases:
 //  1. Directory-level (isDirBlockedByIgnores): patterns like dir/** block entire directories.
@@ -865,7 +716,7 @@ func (config RslintConfig) GetConfigForFile(filePath string, cwd string) *Merged
 	// 1. Collect all global ignore patterns and evaluate once.
 	// This allows `!` negation patterns in separate entries to work correctly,
 	// aligned with ESLint v10 which merges all global ignores before evaluating.
-	globalIgnorePatterns := ExtractConfigIgnores(config)
+	globalIgnorePatterns := extractConfigIgnores(config)
 	if len(globalIgnorePatterns) > 0 {
 		// Phase 1: directory-level check. Patterns like `dir/**` block the
 		// directory entirely — `!` negation cannot undo this. Aligned with
@@ -879,6 +730,14 @@ func (config RslintConfig) GetConfigForFile(filePath string, cwd string) *Merged
 		}
 	}
 
+	// A CLI/API explicit target can bypass config `files` for parsing, but it
+	// must not make unscoped entries apply to a path the config itself never
+	// selected. Conversely, an explicit selector makes unscoped entries apply
+	// to that file, as in ESLint flat config cascading.
+	if !isFileSelectedByConfig(config, filePath, cwd) {
+		return nil
+	}
+
 	// Track whether any non-global entry matched this file
 	entryMatched := false
 
@@ -888,36 +747,32 @@ func (config RslintConfig) GetConfigForFile(filePath string, cwd string) *Merged
 		}
 
 		// 2. files matching
-		if len(entry.Files) > 0 && !isFileMatched(filePath, entry.Files, cwd) {
+		if hasFileSelectors(entry) && !isFileMatchedByConfigEntry(filePath, entry, cwd) {
 			continue
 		}
 
-		// 3. Entry-level ignores
-		if isFileIgnored(filePath, entry.Ignores, cwd) {
+		// 3. Entry-level ignores. Parsed per entry; entry.Ignores is usually
+		// empty (ESLint configs put ignores in a dedicated global-ignore entry),
+		// so ParseIgnorePatterns returns nil and this is free in the common case.
+		if isFileIgnored(filePath, ParseIgnorePatterns(entry.Ignores), cwd) {
 			continue
 		}
 
 		entryMatched = true
 
-		// 4. Rules: shallow merge, later entries override earlier ones
+		// 4. Rules: later entries override earlier ones. When the later value
+		// changes only severity, ESLint retains the earlier rule options.
 		for ruleName, ruleValue := range entry.Rules {
-			switch v := ruleValue.(type) {
-			case string:
-				merged.Rules[ruleName] = &RuleConfig{Level: v}
-			case []interface{}:
-				if rc := parseArrayRuleConfig(v); rc != nil {
-					merged.Rules[ruleName] = rc
-				}
-			case map[string]interface{}:
-				ruleConfig := &RuleConfig{}
-				if level, ok := v["level"].(string); ok {
-					ruleConfig.Level = level
-				}
-				if options, ok := v["options"].(map[string]interface{}); ok {
-					ruleConfig.Options = options
-				}
-				merged.Rules[ruleName] = ruleConfig
+			next, hasOptions, err := parseRuleConfigValue(ruleValue)
+			if err != nil {
+				// Config ingress validates rule values before merge. Keep this
+				// guard for callers that construct a config without validating it.
+				continue
 			}
+			if previous := merged.Rules[ruleName]; !hasOptions && previous != nil {
+				next.Options = append([]interface{}(nil), previous.Options...)
+			}
+			merged.Rules[ruleName] = next
 		}
 
 		// 5. Plugins: union from all matching entries (normalized to rule prefix form)
@@ -925,14 +780,13 @@ func (config RslintConfig) GetConfigForFile(filePath string, cwd string) *Merged
 			merged.Plugins[NormalizePluginName(plugin)] = struct{}{}
 		}
 
-		// 6. Settings: shallow merge
+		// 6. Settings: recursively merge ordinary objects; arrays and scalar
+		// values are replaced by the later entry.
 		if entry.Settings != nil {
-			if merged.Settings == nil {
-				merged.Settings = make(Settings)
-			}
-			for k, v := range entry.Settings {
-				merged.Settings[k] = v
-			}
+			merged.Settings = Settings(deepMergeConfigObjects(
+				map[string]any(merged.Settings),
+				map[string]any(entry.Settings),
+			))
 		}
 
 		// 7. LanguageOptions: deep merge
@@ -947,19 +801,113 @@ func (config RslintConfig) GetConfigForFile(filePath string, cwd string) *Merged
 	return merged
 }
 
-// isGlobalIgnoreEntry returns true if the entry is a global ignore entry
-// (has only ignores, no other fields).
+// isGlobalIgnoreEntry returns true if the entry has only ignores and an
+// optional name. Empty config objects are still present and make ignores local
+// to the entry, matching ESLint flat config semantics.
 func isGlobalIgnoreEntry(entry ConfigEntry) bool {
-	return len(entry.Files) == 0 &&
-		len(entry.Rules) == 0 &&
-		len(entry.Plugins) == 0 &&
+	return entry.Files == nil &&
+		entry.FilePatternGroups == nil &&
+		entry.Rules == nil &&
+		entry.Plugins == nil &&
 		entry.Settings == nil &&
 		entry.LanguageOptions == nil &&
 		len(entry.Ignores) > 0
 }
 
+func hasFileSelectors(entry ConfigEntry) bool {
+	return len(entry.Files) > 0 || len(entry.FilePatternGroups) > 0
+}
+
+func isFileMatchedByConfigEntry(filePath string, entry ConfigEntry, cwd string) bool {
+	if isFileMatched(filePath, entry.Files, cwd) {
+		return true
+	}
+	for _, group := range entry.FilePatternGroups {
+		// ESLint treats an empty nested selector as a vacuously true AND group.
+		matched := true
+		for _, pattern := range group {
+			if !isSingleFilePatternMatched(filePath, pattern, cwd) {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
+}
+
+func deepMergeConfigObjects(base map[string]any, override map[string]any) map[string]any {
+	merged := make(map[string]any, len(base)+len(override))
+	for key, value := range base {
+		merged[key] = cloneConfigValue(value)
+	}
+	for key, value := range override {
+		baseObject, baseIsObject := configObject(base[key])
+		overrideObject, overrideIsObject := configObject(value)
+		if baseIsObject && overrideIsObject {
+			merged[key] = deepMergeConfigObjects(baseObject, overrideObject)
+			continue
+		}
+		merged[key] = cloneConfigValue(value)
+	}
+	return merged
+}
+
+func configObject(value any) (map[string]any, bool) {
+	switch object := value.(type) {
+	case map[string]any:
+		return object, true
+	case Settings:
+		return map[string]any(object), true
+	default:
+		return nil, false
+	}
+}
+
+func cloneConfigValue(value any) any {
+	if object, ok := configObject(value); ok {
+		return deepMergeConfigObjects(nil, object)
+	}
+	switch values := value.(type) {
+	case []any:
+		cloned := make([]any, len(values))
+		for index, item := range values {
+			cloned[index] = cloneConfigValue(item)
+		}
+		return cloned
+	case []string:
+		return append([]string(nil), values...)
+	default:
+		return value
+	}
+}
+
 // isFileMatched checks if a file matches any of the given glob patterns
 func isFileMatched(filePath string, patterns []string, cwd string) bool {
+	for _, pattern := range patterns {
+		if isSingleFilePatternMatched(filePath, pattern, cwd) {
+			return true
+		}
+	}
+	return false
+}
+
+func isSingleFilePatternMatched(filePath string, pattern string, cwd string) bool {
+	negated := false
+	for strings.HasPrefix(pattern, "!") {
+		negated = !negated
+		pattern = strings.TrimPrefix(pattern, "!")
+	}
+	matched := isPositiveFilePatternMatched(filePath, pattern, cwd)
+	if negated {
+		return !matched
+	}
+	return matched
+}
+
+func isPositiveFilePatternMatched(filePath string, pattern string, cwd string) bool {
 	var normalizedPath string
 	if cwd != "" {
 		normalizedPath = normalizePath(filePath, cwd)
@@ -967,22 +915,20 @@ func isFileMatched(filePath string, patterns []string, cwd string) bool {
 		normalizedPath = filePath
 	}
 
-	for _, pattern := range patterns {
-		normalizedPattern := normalizePattern(pattern)
+	normalizedPattern := normalizePattern(pattern)
 
-		if matched, err := doublestar.Match(normalizedPattern, normalizedPath); err == nil && matched {
+	if matched, err := doublestar.Match(normalizedPattern, normalizedPath); err == nil && matched {
+		return true
+	}
+	if normalizedPath != filePath {
+		if matched, err := doublestar.Match(normalizedPattern, filePath); err == nil && matched {
 			return true
 		}
-		if normalizedPath != filePath {
-			if matched, err := doublestar.Match(normalizedPattern, filePath); err == nil && matched {
-				return true
-			}
-		}
-		unixPath := strings.ReplaceAll(normalizedPath, "\\", "/")
-		if unixPath != normalizedPath {
-			if matched, err := doublestar.Match(normalizedPattern, unixPath); err == nil && matched {
-				return true
-			}
+	}
+	unixPath := strings.ReplaceAll(normalizedPath, "\\", "/")
+	if unixPath != normalizedPath {
+		if matched, err := doublestar.Match(normalizedPattern, unixPath); err == nil && matched {
+			return true
 		}
 	}
 	return false
@@ -1005,13 +951,34 @@ func mergeLanguageOptions(base, override *LanguageOptions) *LanguageOptions {
 			if override.ParserOptions.ProjectService != nil {
 				po.ProjectService = override.ParserOptions.ProjectService
 			}
-			if len(override.ParserOptions.Project) > 0 {
+			if override.ParserOptions.Project != nil {
 				po.Project = override.ParserOptions.Project
 			}
 			merged.ParserOptions = &po
 		}
 	}
+	merged.Raw = deepMergeConfigObjects(base.Raw, override.Raw)
 	return &merged
+}
+
+// ExtractGlobals reads the effective `languageOptions.globals` for a merged
+// config and normalizes it to a simple "is this name declared" set.
+//
+// Writable and readonly aliases both declare the name. As in ESLint v10, null
+// normalizes to readonly; only the string "off" disables a declaration.
+func ExtractGlobals(langOpts *LanguageOptions) map[string]bool {
+	if langOpts == nil || langOpts.Raw == nil {
+		return nil
+	}
+	raw, ok := langOpts.Raw["globals"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	globals := make(map[string]bool, len(raw))
+	for name, value := range raw {
+		globals[name] = value != "off"
+	}
+	return globals
 }
 
 // RulePluginPrefix extracts the plugin prefix from a rule name.
@@ -1026,27 +993,9 @@ func RulePluginPrefix(ruleName string) string {
 	return ruleName[:lastSlash]
 }
 
-// GetPluginRules returns only rules under the given plugin namespace (prefix match).
-func GetPluginRules(pluginName string) []rule.Rule {
-	prefix := pluginName + "/"
-	var rules []rule.Rule
-	for name, r := range GlobalRuleRegistry.GetAllRules() {
-		if strings.HasPrefix(name, prefix) {
-			rules = append(rules, r)
-		}
-	}
-	return rules
-}
-
-// GetCoreRules returns core ESLint rules (those without a "/" prefix).
+// GetCoreRules returns core ESLint rules (those without a "/" prefix in their registered name).
 func GetCoreRules() []rule.Rule {
-	var rules []rule.Rule
-	for name, r := range GlobalRuleRegistry.GetAllRules() {
-		if !strings.Contains(name, "/") {
-			rules = append(rules, r)
-		}
-	}
-	return rules
+	return coreRules.GetAllRules()
 }
 
 // InitDefaultConfig, createDefaultConfig, migrateJSONConfig and related helpers

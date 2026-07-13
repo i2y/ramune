@@ -29,7 +29,7 @@ func isInTypeContext(node *ast.Node) bool {
 var NoUnnecessaryTypeArgumentsRule = rule.CreateRule(rule.Rule{
 	Name:             "no-unnecessary-type-arguments",
 	RequiresTypeInfo: true,
-	Run: func(ctx rule.RuleContext, options any) rule.RuleListeners {
+	Run: func(ctx rule.RuleContext, options []any) rule.RuleListeners {
 		getTypeParametersFromType := func(node *ast.Node, nodeName *ast.Node) []*ast.Node {
 			symbol := ctx.TypeChecker.GetSymbolAtLocation(nodeName)
 			if symbol == nil {
@@ -101,6 +101,13 @@ var NoUnnecessaryTypeArgumentsRule = rule.CreateRule(rule.Rule{
 			return nil
 		}
 
+		getTypeForComparison := func(t *checker.Type) (*checker.Type, []*checker.Type) {
+			if utils.IsTypeReference(t) {
+				return t.Target(), checker.Checker_getTypeArguments(ctx.TypeChecker, t)
+			}
+			return t, nil
+		}
+
 		checkArgsAndParameters := func(arguments *ast.NodeList, parameters []*ast.Node) {
 			if arguments == nil || parameters == nil || len(arguments.Nodes) == 0 || len(parameters) == 0 {
 				return
@@ -108,25 +115,38 @@ var NoUnnecessaryTypeArgumentsRule = rule.CreateRule(rule.Rule{
 
 			// Just check the last one. Must specify previous type parameters if the last one is specified.
 			i := len(arguments.Nodes) - 1
+			// More type arguments than parameters is a type error in the source;
+			// upstream's `param?.default` short-circuits to undefined there, so bail
+			// out instead of indexing past the parameter list.
+			if i >= len(parameters) {
+				return
+			}
 			arg := arguments.Nodes[i]
 			param := parameters[i]
 
-			defaultType := param.AsTypeParameter().DefaultType
+			defaultType := param.AsTypeParameterDeclaration().DefaultType
 			if defaultType == nil {
 				return
 			}
 
 			paramType := ctx.TypeChecker.GetTypeAtLocation(defaultType)
-			if utils.IsIntrinsicErrorType(paramType) {
-				return
-			}
-
 			argType := ctx.TypeChecker.GetTypeAtLocation(arg)
-			if utils.IsIntrinsicErrorType(argType) {
-				return
-			}
-			if argType != paramType && (utils.IsTypeAnyType(argType) || utils.IsTypeAnyType(paramType) || (!checker.Checker_isTypeStrictSubtypeOf(ctx.TypeChecker, argType, paramType) || !checker.Checker_isTypeStrictSubtypeOf(ctx.TypeChecker, paramType, argType))) {
-				return
+
+			// Identical types are unnecessary. Otherwise compare the resolved
+			// type-reference target and its type arguments (matching upstream's
+			// getTypeForComparison): differing target, arity, or any argument
+			// means the explicit type argument is not the default.
+			if paramType != argType {
+				paramTarget, paramTypeArguments := getTypeForComparison(paramType)
+				argTarget, argTypeArguments := getTypeForComparison(argType)
+				if paramTarget != argTarget || len(paramTypeArguments) != len(argTypeArguments) {
+					return
+				}
+				for idx := range paramTypeArguments {
+					if paramTypeArguments[idx] != argTypeArguments[idx] {
+						return
+					}
+				}
 			}
 
 			var removeRange core.TextRange
@@ -145,7 +165,7 @@ var NoUnnecessaryTypeArgumentsRule = rule.CreateRule(rule.Rule{
 				checkArgsAndParameters(expr.TypeArguments, getTypeParametersFromType(node, expr.Expression))
 			},
 			ast.KindTypeReference: func(node *ast.Node) {
-				expr := node.AsTypeReference()
+				expr := node.AsTypeReferenceNode()
 				checkArgsAndParameters(expr.TypeArguments, getTypeParametersFromType(node, expr.TypeName))
 			},
 

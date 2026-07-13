@@ -437,12 +437,6 @@ func isConstant(ctx *rule.RuleContext, node *ast.Node, inBooleanPosition bool) b
 			return false
 		}
 
-	case ast.KindCommaListExpression:
-		children := node.Children()
-		if children != nil && len(children.Nodes) > 0 {
-			return isConstant(ctx, children.Nodes[len(children.Nodes)-1], inBooleanPosition)
-		}
-
 	case ast.KindSpreadElement:
 		spread := node.AsSpreadElement()
 		if spread != nil && spread.Expression != nil {
@@ -555,12 +549,6 @@ func isAlwaysNew(ctx *rule.RuleContext, node *ast.Node) bool {
 		if op == ast.KindEqualsToken {
 			return isAlwaysNew(ctx, binary.Right)
 		}
-
-	case ast.KindCommaListExpression:
-		children := node.Children()
-		if children != nil && len(children.Nodes) > 0 {
-			return isAlwaysNew(ctx, children.Nodes[len(children.Nodes)-1])
-		}
 	}
 
 	return false
@@ -657,12 +645,6 @@ func hasConstantNullishness(ctx *rule.RuleContext, node *ast.Node, nonNullish bo
 		// All remaining binary operators (comparison, arithmetic, bitwise, instanceof, in)
 		// produce non-nullish values (numbers, booleans, or strings)
 		return true
-
-	case ast.KindCommaListExpression:
-		children := node.Children()
-		if children != nil && len(children.Nodes) > 0 {
-			return hasConstantNullishness(ctx, children.Nodes[len(children.Nodes)-1], nonNullish)
-		}
 
 	case ast.KindCallExpression:
 		call := node.AsCallExpression()
@@ -776,12 +758,6 @@ func hasConstantLooseBooleanComparison(ctx *rule.RuleContext, node *ast.Node) bo
 		if op == ast.KindEqualsToken {
 			return hasConstantLooseBooleanComparison(ctx, binary.Right)
 		}
-
-	case ast.KindCommaListExpression:
-		children := node.Children()
-		if children != nil && len(children.Nodes) > 0 {
-			return hasConstantLooseBooleanComparison(ctx, children.Nodes[len(children.Nodes)-1])
-		}
 	}
 
 	return false
@@ -875,12 +851,6 @@ func hasConstantStrictBooleanComparison(ctx *rule.RuleContext, node *ast.Node) b
 			return true
 		}
 
-	case ast.KindCommaListExpression:
-		children := node.Children()
-		if children != nil && len(children.Nodes) > 0 {
-			return hasConstantStrictBooleanComparison(ctx, children.Nodes[len(children.Nodes)-1])
-		}
-
 	case ast.KindCallExpression:
 		call := node.AsCallExpression()
 		if call == nil || call.Expression == nil || call.Expression.Kind != ast.KindIdentifier {
@@ -927,7 +897,7 @@ func findBinaryExpressionConstantOperand(ctx *rule.RuleContext, a, b *ast.Node, 
 // NoConstantBinaryExpressionRule detects constant binary expressions
 var NoConstantBinaryExpressionRule = rule.Rule{
 	Name: "no-constant-binary-expression",
-	Run: func(ctx rule.RuleContext, options any) rule.RuleListeners {
+	Run: func(ctx rule.RuleContext, options []any) rule.RuleListeners {
 		return rule.RuleListeners{
 			ast.KindBinaryExpression: func(node *ast.Node) {
 				binary := node.AsBinaryExpression()

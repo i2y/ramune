@@ -8,7 +8,6 @@ import (
 
 	"github.com/i2y/ramune/internal/rslint/shim/ast"
 	"github.com/i2y/ramune/internal/rslint/shim/checker"
-	"github.com/i2y/ramune/internal/rslint/shim/core"
 	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/utils"
 )
@@ -1050,6 +1049,13 @@ func isReExportedSymbol(ctx rule.RuleContext, sym *ast.Symbol, sourceFile *ast.N
 		if exportDecl == nil || exportDecl.ExportClause == nil {
 			return false
 		}
+		// `export { ... } from 'mod'` only re-exports module bindings, never
+		// in-scope locals — skip these declarations entirely so a local that
+		// happens to share a name with a module export is not falsely treated
+		// as re-exported.
+		if exportDecl.ModuleSpecifier != nil {
+			return false
+		}
 		if !ast.IsNamedExports(exportDecl.ExportClause) {
 			return false
 		}
@@ -1300,6 +1306,95 @@ func removeSpecifierWithComma(file *ast.SourceFile, specNode *ast.Node) rule.Rul
 	return rule.RuleFixRemoveRange(specNode.Loc.WithPos(textStart).WithEnd(end))
 }
 
+// isPropertyNameLikePosition reports whether an identifier appears in a syntactic
+// position where it names a property/label/attribute rather than referring to a
+// declared value or type. Such identifiers must NOT be added to `unresolvedRefs`
+// even when the type checker fails to resolve them — otherwise the name-based
+// fallback in processVariable will mistake them for usages of an unrelated
+// same-named local variable (e.g. `obj.name` on an `any`-typed receiver
+// polluting the lookup of an unused local `const name`).
+func isPropertyNameLikePosition(node *ast.Node) bool {
+	parent := node.Parent
+	if parent == nil {
+		return false
+	}
+	switch parent.Kind {
+	case ast.KindPropertyAccessExpression:
+		// `obj.name` — node is the `.name` part on the right.
+		pae := parent.AsPropertyAccessExpression()
+		return pae != nil && pae.Name() == node
+	case ast.KindQualifiedName:
+		// `Foo.Bar` in type position — node is the `.Bar` part on the right.
+		qn := parent.AsQualifiedName()
+		return qn != nil && qn.Right == node
+	case ast.KindPropertyAssignment:
+		// `{ name: value }` in object literal — node is the property key.
+		pa := parent.AsPropertyAssignment()
+		return pa != nil && pa.Name() == node
+	case ast.KindBindingElement:
+		// `const { name: alias } = obj` — node is the source property name.
+		// The destination `alias` is a declaration name (handled separately).
+		be := parent.AsBindingElement()
+		return be != nil && be.PropertyName != nil && be.PropertyName == node
+	case ast.KindImportSpecifier:
+		// `import { name as alias } from 'mod'` — node is the source export
+		// name (PropertyName), which references the module's exported binding,
+		// not any in-scope variable. When the module is unresolvable the symbol
+		// lookup fails and would otherwise pollute unresolvedRefs[name].
+		is := parent.AsImportSpecifier()
+		return is != nil && is.PropertyName != nil && is.PropertyName == node
+	case ast.KindExportSpecifier:
+		// ExportSpecifier semantics depend on whether the enclosing
+		// ExportDeclaration is a re-export (`export { ... } from 'mod'`) or
+		// a local export (no `from`):
+		//   * Local export: both `Name` and `PropertyName` are references
+		//     to in-scope locals. We must NOT exclude them — otherwise an
+		//     unresolved local `name` reference would be missed.
+		//   * Re-export: both `Name` and `PropertyName` name module-level
+		//     bindings, never in-scope locals. They must be excluded so an
+		//     unresolved module specifier does not pollute the lookup of
+		//     a same-named local elsewhere in the file.
+		es := parent.AsExportSpecifier()
+		if es == nil {
+			return false
+		}
+		exportDecl := ast.FindAncestorKind(parent, ast.KindExportDeclaration)
+		if exportDecl == nil {
+			return false
+		}
+		if exportDecl.AsExportDeclaration().ModuleSpecifier == nil {
+			return false
+		}
+		return es.PropertyName == node || es.Name() == node
+	case ast.KindJsxAttribute:
+		// `<X name="..." />` — node is the attribute name.
+		attr := parent.AsJsxAttribute()
+		return attr != nil && attr.Name() == node
+	case ast.KindJsxNamespacedName:
+		// `<X xml:lang="en" />` — both `xml` (Namespace) and `lang` (Name)
+		// are JSX-namespace components, never in-scope value references.
+		jnn := parent.AsJsxNamespacedName()
+		return jnn != nil && (jnn.Namespace == node || jnn.Name() == node)
+	case ast.KindImportAttribute:
+		// `import 'mod' with { type: 'json' }` — the `type` here is an
+		// import-attribute key, not a value reference.
+		ia := parent.AsImportAttribute()
+		return ia != nil && ia.Name() == node
+	case ast.KindLabeledStatement:
+		// `name: while(...)` — label declaration, not a value reference.
+		ls := parent.AsLabeledStatement()
+		return ls != nil && ls.Label == node
+	case ast.KindBreakStatement, ast.KindContinueStatement:
+		// `break name` / `continue name` — label reference (separate namespace).
+		return true
+	case ast.KindMetaProperty:
+		// `new.target` / `import.meta` — node is the keyword.name.
+		mp := parent.AsMetaProperty()
+		return mp != nil && mp.Name() == node
+	}
+	return false
+}
+
 // collectSymbolUsages walks the entire source file AST and collects:
 //   - usages: maps each symbol to its usage reference nodes (read references)
 //   - writeRefs: maps each symbol to its write-only reference nodes (assignments)
@@ -1347,9 +1442,18 @@ func collectSymbolUsages(ctx rule.RuleContext, sourceFile *ast.Node, usages map[
 				if resolved != sym {
 					usages[resolved] = append(usages[resolved], node)
 				}
-			} else {
-				// Symbol not resolved (e.g., empty namespace references).
-				// Track by name for fallback matching in processVariable.
+			} else if !isPropertyNameLikePosition(node) {
+				// TypeChecker is the source of truth; this branch is only a
+				// narrow fallback for residual cases where GetSymbolAtLocation
+				// returns nil but the identifier IS a value/type reference
+				// (e.g., empty namespaces — see TestNoUnusedVarsPatterns'
+				// `namespace _Foo {} export const x = _Foo;` invalid case,
+				// which still depends on the name-based lookup).
+				//
+				// Identifiers in pure property/label/attribute positions can
+				// never refer to a top-level declared symbol, so excluding
+				// them here prevents `obj.name` (any-typed) from polluting
+				// the lookup of an unused local `name`.
 				idText := node.AsIdentifier().Text
 				unresolvedRefs[idText] = append(unresolvedRefs[idText], node)
 			}
@@ -1376,25 +1480,28 @@ func collectSymbolUsages(ctx rule.RuleContext, sourceFile *ast.Node, usages map[
 	}
 	walk(sourceFile)
 
-	// For JSX files with jsx: "preserve" or "react-native", TypeScript doesn't
-	// create references from JSX elements to the factory function (e.g., React).
-	// Detect JSX usage and mark the factory import as used.
+	// TypeScript only creates a reference from JSX to the factory function in
+	// the classic `jsx: "react"` runtime, and even then via an implicit
+	// `React.createElement` call that has no identifier node for the AST walk
+	// above to find. For every other mode (preserve, react-native, react-jsx)
+	// the factory import has no textual reference at all. Mark it as used,
+	// matching @typescript-eslint/parser's `jsxPragma` behavior (the factory
+	// is considered used whenever the file contains JSX, in any runtime).
 	markJsxFactoryUsed(ctx, sourceFile, usages)
 }
 
-// markJsxFactoryUsed checks if the source file contains JSX elements and,
-// when jsx is "preserve" or "react-native", marks the JSX factory and
-// fragment factory imports as used.
+// markJsxFactoryUsed checks if the source file contains JSX and, if so, marks
+// the JSX factory (and fragment factory) imports as used. This runs for every
+// jsx mode: TS never produces an AST identifier reference to the factory, so
+// without this an `import React` whose only "use" is JSX would be falsely
+// reported. Mirrors @typescript-eslint/parser, which treats the jsxPragma
+// (default "React") as used whenever JSX is present, regardless of runtime.
 func markJsxFactoryUsed(ctx rule.RuleContext, sourceFile *ast.Node, usages map[*ast.Symbol][]*ast.Node) {
 	if ctx.Program == nil {
 		return
 	}
 	opts := ctx.Program.Options()
 	if opts == nil {
-		return
-	}
-	// Only needed for preserve/react-native modes where TS doesn't resolve the factory
-	if opts.Jsx != core.JsxEmitPreserve && opts.Jsx != core.JsxEmitReactNative {
 		return
 	}
 	firstJsx, firstFragment := findJsxNodes(sourceFile)
@@ -1629,6 +1736,7 @@ func processVariable(ctx rule.RuleContext, nameNode *ast.Node, name string, defi
 	isTypeOrImportDeclaration := definition != nil && (definition.Kind == ast.KindInterfaceDeclaration ||
 		definition.Kind == ast.KindTypeAliasDeclaration ||
 		definition.Kind == ast.KindEnumDeclaration ||
+		definition.Kind == ast.KindTypeParameter ||
 		definition.Kind == ast.KindImportSpecifier ||
 		definition.Kind == ast.KindImportClause ||
 		definition.Kind == ast.KindNamespaceImport ||
@@ -1710,7 +1818,8 @@ func processVariable(ctx rule.RuleContext, nameNode *ast.Node, name string, defi
 var NoUnusedVarsRule = rule.CreateRule(rule.Rule{
 	Name:             "no-unused-vars",
 	RequiresTypeInfo: true,
-	Run: func(ctx rule.RuleContext, options any) rule.RuleListeners {
+	Run: func(ctx rule.RuleContext, _options []any) rule.RuleListeners {
+		options := rule.LegacyUnwrapOptions(_options)
 		opts := parseOptions(options)
 
 		ac := &analysisContext{
@@ -2054,6 +2163,36 @@ var NoUnusedVarsRule = rule.CreateRule(rule.Rule{
 					return
 				}
 				nameNode := importEquals.Name()
+				if nameNode == nil || !ast.IsIdentifier(nameNode) {
+					return
+				}
+				identifier := nameNode.AsIdentifier()
+				if identifier == nil {
+					return
+				}
+				ensureCollected(node)
+				processVariable(ctx, nameNode, identifier.Text, node, opts, ac)
+			},
+
+			ast.KindTypeParameter: func(node *ast.Node) {
+				// Generic type parameter declarations: `<T>`, `<T = unknown>`, `<T extends U>`.
+				// Skip nodes that syntactically share KindTypeParameter in tsgo but aren't
+				// parameter declarations: `infer T`, mapped-type `[P in K]`, JSDoc @template.
+				parent := node.Parent
+				if parent != nil {
+					switch parent.Kind {
+					case ast.KindInferType, ast.KindMappedType, ast.KindJSDocTemplateTag:
+						return
+					}
+				}
+				if isInsideAmbientModuleBlock(node) || isInDtsWithoutExplicitExports(node) {
+					return
+				}
+				typeParam := node.AsTypeParameterDeclaration()
+				if typeParam == nil {
+					return
+				}
+				nameNode := typeParam.Name()
 				if nameNode == nil || !ast.IsIdentifier(nameNode) {
 					return
 				}

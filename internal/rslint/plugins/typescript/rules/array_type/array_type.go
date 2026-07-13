@@ -34,7 +34,7 @@ func isSimpleType(node *ast.Node) bool {
 		ast.KindQualifiedName:
 		return true
 	case ast.KindTypeReference:
-		typeRef := node.AsTypeReference()
+		typeRef := node.AsTypeReferenceNode()
 		if typeRef == nil {
 			return false
 		}
@@ -67,7 +67,7 @@ func isSimpleType(node *ast.Node) bool {
 func typeNeedsParentheses(node *ast.Node) bool {
 	switch node.Kind {
 	case ast.KindTypeReference:
-		typeRef := node.AsTypeReference()
+		typeRef := node.AsTypeReferenceNode()
 		if typeRef == nil {
 			return false
 		}
@@ -145,7 +145,8 @@ func buildErrorStringGenericSimpleMessage(readonlyPrefix, typeStr, className str
 
 var ArrayTypeRule = rule.CreateRule(rule.Rule{
 	Name: "array-type",
-	Run: func(ctx rule.RuleContext, options any) rule.RuleListeners {
+	Run: func(ctx rule.RuleContext, _options []any) rule.RuleListeners {
+		options := rule.LegacyUnwrapOptions(_options)
 		opts := ArrayTypeOptions{
 			Default: "array",
 		}
@@ -258,7 +259,7 @@ var ArrayTypeRule = rule.CreateRule(rule.Rule{
 			},
 
 			ast.KindTypeReference: func(node *ast.Node) {
-				typeRef := node.AsTypeReference()
+				typeRef := node.AsTypeReferenceNode()
 				if typeRef == nil {
 					return
 				}

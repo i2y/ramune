@@ -4,6 +4,7 @@ import (
 	"io"
 	"io/fs"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/i2y/ramune/internal/rslint/shim/tspath"
@@ -11,20 +12,36 @@ import (
 )
 
 // vfsAdapter adapts a vfs.FS to a standard fs.FS rooted at a given directory,
-// used by fs.WalkDir in DiscoverGapFiles and doublestar.GlobWalk in
-// expandProjectGlob. It is NOT a general-purpose fs.FS implementation —
-// Open() always returns a directory handle (vfsDirFile) because both
-// callers only open directories (WalkDir by design, GlobWalk because
-// expandProjectGlob is only called when the pattern contains glob
-// meta characters).
+// used by the gap-file walker in DiscoverGapFiles and by doublestar.GlobWalk
+// in expandProjectGlob. It is NOT a general-purpose fs.FS implementation —
+// Open() always returns a directory handle (vfsDirFile) because both callers
+// only open directories.
 //
-// It tracks visited symlink targets to prevent infinite recursion caused by
-// symlink cycles, since the underlying VFS follows symlinks transparently
-// and doublestar cannot detect them through this adapter.
+// followSymlinks controls how directory symlinks are handled in ReadDir:
+//
+//   - false (default, used by DiscoverGapFiles): symlinked subdirectories are
+//     skipped entirely. This matches ESLint v10's flat-config file walker:
+//     it uses @humanfs/node, whose walk() recurses only when
+//     Dirent.isDirectory() is true — and Dirent.isDirectory() returns false
+//     for symbolic links because Node's readdir({withFileTypes: true})
+//     reports the dirent type without following links. The result for the
+//     gap-file walker is the same: symlinked directories are not entered,
+//     output is deterministic regardless of the concurrency model, and
+//     cycles cannot occur.
+//
+//   - true (used by expandProjectGlob): symlinks are followed unless their
+//     resolved target is already in the current path's ancestor chain. This
+//     prevents traversal cycles while preserving distinct aliases that point
+//     to the same directory.
+//
+// Realpath results are cached behind a mutex so the adapter remains safe if a
+// caller traverses it concurrently in the future.
 type vfsAdapter struct {
-	vfs               vfs.FS
-	root              string
-	visitedSymTargets map[string]struct{}
+	vfs            vfs.FS
+	root           string
+	followSymlinks bool
+	realpathMu     sync.Mutex
+	resolvedPaths  map[string]string
 }
 
 var _ fs.FS = (*vfsAdapter)(nil)
@@ -51,6 +68,42 @@ func (a *vfsAdapter) fullPath(name string) string {
 	return tspath.ResolvePath(a.root, name)
 }
 
+func (a *vfsAdapter) cachedRealpath(path string) string {
+	a.realpathMu.Lock()
+	defer a.realpathMu.Unlock()
+
+	if realpath, ok := a.resolvedPaths[path]; ok {
+		return realpath
+	}
+	if a.resolvedPaths == nil {
+		a.resolvedPaths = make(map[string]string)
+	}
+	realpath := a.vfs.Realpath(path)
+	a.resolvedPaths[path] = realpath
+	return realpath
+}
+
+func (a *vfsAdapter) pointsToAncestor(path string, targetRealpath string) bool {
+	compareOptions := tspath.ComparePathsOptions{
+		UseCaseSensitiveFileNames: a.vfs.UseCaseSensitiveFileNames(),
+	}
+	root := tspath.NormalizePath(a.root)
+	current := tspath.NormalizePath(path)
+	for {
+		if tspath.ComparePaths(a.cachedRealpath(current), targetRealpath, compareOptions) == 0 {
+			return true
+		}
+		if tspath.ComparePaths(current, root, compareOptions) == 0 {
+			return false
+		}
+		parent := tspath.GetDirectoryPath(current)
+		if parent == current || parent == "" {
+			return false
+		}
+		current = parent
+	}
+}
+
 // vfsDirFile implements fs.ReadDirFile for directories.
 type vfsDirFile struct {
 	adapter *vfsAdapter
@@ -75,33 +128,52 @@ func (f *vfsDirFile) Close() error { return nil }
 func (f *vfsDirFile) ReadDir(n int) ([]fs.DirEntry, error) {
 	if f.entries == nil {
 		accessible := f.adapter.vfs.GetAccessibleEntries(f.path)
-		parentRealPath := f.adapter.vfs.Realpath(f.path)
-
-		if f.adapter.visitedSymTargets == nil {
-			f.adapter.visitedSymTargets = make(map[string]struct{})
-		}
 
 		f.entries = make([]fs.DirEntry, 0, len(accessible.Directories)+len(accessible.Files))
 
+		var parentRealPath string
 		for _, dir := range accessible.Directories {
-			dirPath := tspath.ResolvePath(f.path, dir)
-			dirRealPath := f.adapter.vfs.Realpath(dirPath)
+			dirPath := tspath.CombinePaths(f.path, dir)
+			dirRealPath := ""
+			isSymlink := false
+			if accessible.Symlinks != nil {
+				_, isSymlink = accessible.Symlinks[dir]
+			} else {
+				// Older VFS implementations do not expose symlink metadata.
+				// Resolve each path at most once and compare against the path a
+				// regular child would have under its resolved parent.
+				if parentRealPath == "" {
+					parentRealPath = f.adapter.cachedRealpath(f.path)
+				}
+				dirRealPath = f.adapter.cachedRealpath(dirPath)
+				expectedRealPath := tspath.CombinePaths(parentRealPath, dir)
+				isSymlink = tspath.ComparePaths(dirRealPath, expectedRealPath, tspath.ComparePathsOptions{
+					UseCaseSensitiveFileNames: f.adapter.vfs.UseCaseSensitiveFileNames(),
+				}) != 0
+			}
 
-			// A regular subdirectory's realpath equals parentRealPath + "/" + name.
-			// If it differs, the entry is a symlink. Track symlink targets to
-			// detect cycles: if the target was already visited, skip the entry.
-			expectedRealPath := parentRealPath + "/" + dir
-			if dirRealPath != expectedRealPath {
-				if _, seen := f.adapter.visitedSymTargets[dirRealPath]; seen {
+			if isSymlink {
+				if !f.adapter.followSymlinks {
+					// Skip symlinks entirely. See the type doc on vfsAdapter
+					// for why this is the default for DiscoverGapFiles.
 					continue
 				}
-				f.adapter.visitedSymTargets[dirRealPath] = struct{}{}
+				if dirRealPath == "" {
+					dirRealPath = f.adapter.cachedRealpath(dirPath)
+				}
+				// A repeated target is valid when two different aliases point to
+				// the same directory. Skip only a target already present in this
+				// lexical path's ancestor chain, which is an actual traversal cycle.
+				if f.adapter.pointsToAncestor(f.path, dirRealPath) {
+					continue
+				}
 			}
 
 			f.entries = append(f.entries, &vfsDirEntry{name: dir, isDir: true})
 		}
 		for _, file := range accessible.Files {
-			f.entries = append(f.entries, &vfsDirEntry{name: file, isDir: false})
+			_, isSymlink := accessible.Symlinks[file]
+			f.entries = append(f.entries, &vfsDirEntry{name: file, isSymlink: isSymlink})
 		}
 		sort.Slice(f.entries, func(i, j int) bool {
 			return f.entries[i].Name() < f.entries[j].Name()
@@ -135,8 +207,9 @@ func (f *vfsDirFile) ReadDir(n int) ([]fs.DirEntry, error) {
 
 // vfsDirEntry implements fs.DirEntry.
 type vfsDirEntry struct {
-	name  string
-	isDir bool
+	name      string
+	isDir     bool
+	isSymlink bool
 }
 
 func (e *vfsDirEntry) Name() string { return e.name }
@@ -144,6 +217,9 @@ func (e *vfsDirEntry) IsDir() bool  { return e.isDir }
 func (e *vfsDirEntry) Type() fs.FileMode {
 	if e.isDir {
 		return fs.ModeDir
+	}
+	if e.isSymlink {
+		return fs.ModeSymlink
 	}
 	return 0
 }

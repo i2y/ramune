@@ -7,6 +7,17 @@ import (
 // skipTransparentKinds matches parentheses + TS type assertions.
 const skipTransparentKinds = ast.OEKParentheses | ast.OEKAssertions
 
+// SkipAssertionsAndParens strips parentheses and all TS assertion wrappers
+// (as, satisfies, !, <T>) from an expression, mirroring ESLint's
+// unwrapTSAsExpression(uncast(node)). Returns nil when node is nil so callers
+// can safely pass optional AST fields such as an absent initializer.
+func SkipAssertionsAndParens(node *ast.Node) *ast.Node {
+	if node == nil {
+		return nil
+	}
+	return ast.SkipOuterExpressions(node, skipTransparentKinds)
+}
+
 // IsCallee checks if a node is the callee of a CallExpression or NewExpression,
 // skipping parentheses and TS type assertions between the node and the call.
 func IsCallee(node *ast.Node) bool {
@@ -28,20 +39,83 @@ func IsCallee(node *ast.Node) bool {
 	return false
 }
 
+// GetStaticStringLiteralValue returns the string value and a presence flag if
+// node is a string literal or a no-substitution template literal. It does not
+// unwrap parentheses or TS assertions; callers choose which wrappers are
+// transparent for their rule.
+func GetStaticStringLiteralValue(node *ast.Node) (string, bool) {
+	if node == nil {
+		return "", false
+	}
+	switch node.Kind {
+	case ast.KindStringLiteral:
+		return node.AsStringLiteral().Text, true
+	case ast.KindNoSubstitutionTemplateLiteral:
+		return node.AsNoSubstitutionTemplateLiteral().Text, true
+	}
+	return "", false
+}
+
 // GetStaticStringValue returns the string value if the node is a string literal
 // or a no-substitution template literal. Returns "" if the value cannot be
 // statically determined.
 func GetStaticStringValue(node *ast.Node) string {
-	if node == nil {
-		return ""
+	value, _ := GetStaticStringLiteralValue(node)
+	return value
+}
+
+// IsGlobalParseIntCallee reports whether callee references the built-in
+// `parseInt` or `Number.parseInt` function. It mirrors ESLint's
+// astUtils.isSpecificId / isSpecificMemberAccess shape: outer parentheses and
+// optional chaining are transparent, TS-only assertion wrappers are not.
+//
+// globals is the config-declared `languageOptions.globals` / `/* global */`
+// set (ctx.Globals); when it explicitly turns the referenced name `off`,
+// the identifier no longer resolves to a known global and this returns
+// false. Pass nil to skip that check (e.g. for callers whose upstream ESLint
+// rule doesn't consult scope at all).
+func IsGlobalParseIntCallee(callee *ast.Node, globals map[string]bool) bool {
+	callee = ast.SkipParentheses(callee)
+	if callee == nil {
+		return false
 	}
+
+	if ast.IsIdentifier(callee) {
+		if callee.AsIdentifier().Text != "parseInt" || IsShadowed(callee, "parseInt") {
+			return false
+		}
+		return !isGlobalOff(globals, "parseInt")
+	}
+
+	if !IsSpecificMemberAccess(callee, "Number", "parseInt") {
+		return false
+	}
+
+	obj := memberAccessObject(callee)
+	obj = ast.SkipParentheses(obj)
+	if obj == nil || !ast.IsIdentifier(obj) ||
+		obj.AsIdentifier().Text != "Number" || IsShadowed(obj, "Number") {
+		return false
+	}
+	return !isGlobalOff(globals, "Number")
+}
+
+// isGlobalOff reports whether globals explicitly un-declares name via an
+// `off` setting (e.g. `/* global Foo: off */`). A name absent from globals
+// is not considered off — it just falls back to the normal shadow check.
+func isGlobalOff(globals map[string]bool, name string) bool {
+	declared, ok := globals[name]
+	return ok && !declared
+}
+
+func memberAccessObject(node *ast.Node) *ast.Node {
 	switch node.Kind {
-	case ast.KindStringLiteral:
-		return node.AsStringLiteral().Text
-	case ast.KindNoSubstitutionTemplateLiteral:
-		return node.AsNoSubstitutionTemplateLiteral().Text
+	case ast.KindPropertyAccessExpression:
+		return node.AsPropertyAccessExpression().Expression
+	case ast.KindElementAccessExpression:
+		return node.AsElementAccessExpression().Expression
 	}
-	return ""
+	return nil
 }
 
 // IsNonReferenceIdentifier checks if an identifier is NOT a value reference
@@ -68,10 +142,19 @@ func IsNonReferenceIdentifier(node *ast.Node) bool {
 		return true
 	}
 
-	// Re-export specifiers: export { x } from 'mod'
-	// All identifiers are source module names, not local references.
-	if parent.Kind == ast.KindExportSpecifier && isReExportSpecifier(parent) {
-		return true
+	// export { local as exported }: only `local` can read a runtime value.
+	if parent.Kind == ast.KindExportSpecifier {
+		if ast.IsTypeOnlyImportOrExportDeclaration(parent) || isReExportSpecifier(parent) {
+			return true
+		}
+		es := parent.AsExportSpecifier()
+		if es == nil {
+			return false
+		}
+		if es.PropertyName != nil {
+			return es.PropertyName != node
+		}
+		return es.Name() != node
 	}
 
 	// ast.IsDeclarationName covers: variable, function, class, parameter,
@@ -79,10 +162,6 @@ func IsNonReferenceIdentifier(node *ast.Node) bool {
 	if ast.IsDeclarationName(node) {
 		// ShorthandPropertyAssignment { x } — x IS a reference to the variable.
 		if parent.Kind == ast.KindShorthandPropertyAssignment {
-			return false
-		}
-		// export { x } (no rename, local) — x IS a reference to the local/global variable.
-		if parent.Kind == ast.KindExportSpecifier && parent.AsExportSpecifier().PropertyName == nil {
 			return false
 		}
 		return true
@@ -112,6 +191,13 @@ func IsNonReferenceIdentifier(node *ast.Node) bool {
 	}
 
 	return false
+}
+
+// IsInAmbientContext reports whether node was parsed inside an ambient
+// context. TypeScript-Go propagates this through declaration files and
+// `declare` contexts via NodeFlagsAmbient.
+func IsInAmbientContext(node *ast.Node) bool {
+	return node != nil && node.Flags&ast.NodeFlagsAmbient != 0
 }
 
 // CouldBeError reports whether a node could plausibly evaluate to an Error

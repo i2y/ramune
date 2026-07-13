@@ -15,7 +15,10 @@ DST="$ROOT_DIR/internal/rslint/tsgo_pinned"
 OLD_MODULE="github.com/microsoft/typescript-go/internal"
 NEW_MODULE="github.com/i2y/ramune/internal/rslint/tsgo_pinned"
 
-# Packages the rslint shim links into. Keep minimal — only what the shim needs.
+# Packages the rslint shim links into: the exact transitive closure of the
+# shim packages' tsgo imports, computed with
+#   go list -deps <shim import roots>  (run inside third_party/rslint/typescript-go)
+# Recompute after moving the rslint pin.
 PACKAGES=(
     ast
     astnav
@@ -27,12 +30,20 @@ PACKAGES=(
     core
     debug
     diagnostics
+    diagnosticwriter
     evaluator
     format
     glob
-    json
     jsnum
+    json
+    jsonrpc
     locale
+    ls
+    ls/autoimport
+    ls/change
+    ls/lsconv
+    ls/lsutil
+    lsp/lsproto
     module
     modulespecifiers
     nodebuilder
@@ -40,13 +51,18 @@ PACKAGES=(
     packagejson
     parser
     printer
+    project
+    project/ata
+    project/background
+    project/dirty
+    project/logging
     pseudochecker
-    repo
     scanner
     semver
     sourcemap
     stringutil
     symlinks
+    tracing
     transformers
     transformers/declarations
     transformers/estransforms
@@ -60,6 +76,8 @@ PACKAGES=(
     vfs/cachedvfs
     vfs/internal
     vfs/osvfs
+    vfs/vfsmatch
+    vfs/wrapvfs
 )
 
 if [ ! -d "$SRC" ]; then
@@ -96,32 +114,11 @@ for dir in diagnostics/loc bundled/libs; do
     fi
 done
 
-# Copy ls/lsutil subset needed by rslint (FormatCodeSettings, GetFirstToken,
-# PositionIsASICandidate, etc).
-LSUTIL_FILES=(
-    asi.go
-    children.go
-    formatcodeoptions.go
-)
-mkdir -p "$DST/ls/lsutil"
-for f in "${LSUTIL_FILES[@]}"; do
-    src_file="$SRC/ls/lsutil/$f"
-    if [ -f "$src_file" ]; then
-        cp "$src_file" "$DST/ls/lsutil/"
-    else
-        echo "WARNING: $src_file not found"
-    fi
-done
-
 # Rewrite imports: microsoft/typescript-go/internal/ -> i2y/ramune/internal/rslint/tsgo_pinned/
+# No formatcodeoptions patch here: unlike the primary tree, this one vendors
+# the full ls/lsutil and lsp/lsproto packages (the shim's project stack needs
+# them), so the upstream file compiles as-is.
 find "$DST" -name '*.go' -exec sed -i '' "s|\"$OLD_MODULE/|\"$NEW_MODULE/|g" {} +
-
-# Patch formatcodeoptions.go to drop printer/tsoptions/lsproto deps,
-# matching what sync-tsgo.sh does for the primary tsgo tree.
-FMTOPTS="$DST/ls/lsutil/formatcodeoptions.go"
-if [ -f "$FMTOPTS" ]; then
-    python3 "$SCRIPT_DIR/patch_formatcodeoptions.py" "$FMTOPTS"
-fi
 
 cp "$ROOT_DIR/third_party/rslint/typescript-go/LICENSE" "$DST/LICENSE"
 

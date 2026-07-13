@@ -16,6 +16,7 @@ type CheckerPool = compiler.CheckerPool
 //go:linkname CombineEmitResults github.com/i2y/ramune/internal/rslint/tsgo_pinned/compiler.CombineEmitResults
 func CombineEmitResults(results []*compiler.EmitResult) *compiler.EmitResult
 type CompilerHost = compiler.CompilerHost
+type DuplicateSourceFile = compiler.DuplicateSourceFile
 const EmitAll = compiler.EmitAll
 type EmitHost = compiler.EmitHost
 type EmitOnly = compiler.EmitOnly

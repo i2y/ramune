@@ -33,7 +33,8 @@ func parseOptions(raw any) options {
 
 var JsxKeyRule = rule.Rule{
 	Name: "react/jsx-key",
-	Run: func(ctx rule.RuleContext, rawOptions any) rule.RuleListeners {
+	Run: func(ctx rule.RuleContext, _rawOptions []any) rule.RuleListeners {
+		rawOptions := rule.LegacyUnwrapOptions(_rawOptions)
 		opts := parseOptions(rawOptions)
 		reactPragma := reactutil.GetReactPragma(ctx.Settings)
 		fragmentPragma := reactutil.GetReactFragmentPragma(ctx.Settings)
@@ -318,18 +319,12 @@ var JsxKeyRule = rule.Rule{
 	},
 }
 
-// isJsxElementLike returns true for JsxElement (`<Foo>...</Foo>`) or
-// JsxSelfClosingElement (`<Foo />`). ESTree collapses both into
-// `JSXElement`; tsgo distinguishes them.
-func isJsxElementLike(node *ast.Node) bool {
-	return ast.IsJsxElement(node) || ast.IsJsxSelfClosingElement(node)
-}
-
-// isJsxNode mirrors eslint-plugin-react's `isJSX` — true for a JSX element
-// (either tag form) or a JSX fragment.
-func isJsxNode(node *ast.Node) bool {
-	return isJsxElementLike(node) || ast.IsJsxFragment(node)
-}
+// isJsxElementLike / isJsxNode shadow reactutil.IsJsxElementLike /
+// reactutil.IsJsxLike — kept as local aliases so call sites read tightly.
+var (
+	isJsxElementLike = reactutil.IsJsxElementLike
+	isJsxNode        = reactutil.IsJsxLike
+)
 
 // getJsxAttributeProps returns the JsxAttributes.Properties list for a
 // JsxElement or JsxSelfClosingElement, or nil otherwise.

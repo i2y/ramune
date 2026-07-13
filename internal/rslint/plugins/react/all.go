@@ -1,13 +1,29 @@
 package react_plugin
 
 import (
+	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/boolean_prop_naming"
 	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/button_has_type"
+	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/checked_requires_onchange_or_readonly"
+	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/destructuring_assignment"
+	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/display_name"
+	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/forbid_component_props"
+	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/forbid_dom_props"
+	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/forbid_elements"
+	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/forbid_foreign_prop_types"
+	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/forbid_prop_types"
+	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/forward_ref_uses_ref"
 	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/jsx_boolean_value"
+	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/jsx_closing_bracket_location"
 	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/jsx_closing_tag_location"
 	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/jsx_equals_spacing"
 	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/jsx_filename_extension"
 	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/jsx_first_prop_new_line"
+	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/jsx_fragments"
+	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/jsx_handler_names"
+	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/jsx_indent"
+	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/jsx_indent_props"
 	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/jsx_key"
+	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/jsx_max_depth"
 	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/jsx_max_props_per_line"
 	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/jsx_no_bind"
 	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/jsx_no_duplicate_props"
@@ -15,44 +31,79 @@ import (
 	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/jsx_no_undef"
 	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/jsx_pascal_case"
 	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/jsx_props_no_multi_spaces"
+	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/jsx_props_no_spread_multi"
 	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/jsx_uses_react"
 	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/jsx_uses_vars"
 	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/jsx_wrap_multilines"
 	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/no_access_state_in_setstate"
+	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/no_array_index_key"
 	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/no_children_prop"
 	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/no_danger"
 	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/no_danger_with_children"
 	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/no_deprecated"
+	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/no_did_mount_set_state"
 	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/no_did_update_set_state"
 	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/no_direct_mutation_state"
 	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/no_find_dom_node"
 	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/no_is_mounted"
+	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/no_multi_comp"
+	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/no_redundant_should_component_update"
 	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/no_render_return_value"
+	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/no_set_state"
 	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/no_string_refs"
+	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/no_this_in_sfc"
 	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/no_typos"
 	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/no_unescaped_entities"
 	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/no_unknown_property"
+	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/no_unsafe"
+	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/no_unstable_nested_components"
+	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/no_unused_class_component_methods"
+	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/no_unused_state"
 	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/no_will_update_set_state"
 	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/prefer_es6_class"
+	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/prefer_stateless_function"
 	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/react_in_jsx_scope"
+	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/require_optimization"
 	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/require_render_return"
 	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/self_closing_comp"
 	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/style_prop_object"
 	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/void_dom_elements_no_children"
 	"github.com/i2y/ramune/internal/rslint/rule"
 
+	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/jsx_child_element_spacing"
+	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/jsx_curly_brace_presence"
+	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/jsx_curly_spacing"
 	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/jsx_no_comment_textnodes"
+	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/jsx_no_leaked_render"
+	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/jsx_no_literals"
+	"github.com/i2y/ramune/internal/rslint/plugins/react/rules/jsx_no_script_url"
 )
 
 func GetAllRules() []rule.Rule {
 	return []rule.Rule{
+		boolean_prop_naming.BooleanPropNamingRule,
 		button_has_type.ButtonHasTypeRule,
+		checked_requires_onchange_or_readonly.CheckedRequiresOnchangeOrReadonlyRule,
+		destructuring_assignment.DestructuringAssignmentRule,
+		display_name.DisplayNameRule,
+		forbid_component_props.ForbidComponentPropsRule,
+		forbid_dom_props.ForbidDomPropsRule,
+		forbid_elements.ForbidElementsRule,
+		forbid_foreign_prop_types.ForbidForeignPropTypesRule,
+		forbid_prop_types.ForbidPropTypesRule,
+		forward_ref_uses_ref.ForwardRefUsesRefRule,
 		jsx_boolean_value.JsxBooleanValueRule,
+		jsx_closing_bracket_location.JsxClosingBracketLocationRule,
 		jsx_closing_tag_location.JsxClosingTagLocationRule,
 		jsx_equals_spacing.JsxEqualsSpacingRule,
 		jsx_filename_extension.JsxFilenameExtensionRule,
 		jsx_first_prop_new_line.JsxFirstPropNewLineRule,
+		jsx_fragments.JsxFragmentsRule,
+		jsx_handler_names.JsxHandlerNamesRule,
+		jsx_indent.JsxIndentRule,
+		jsx_indent_props.JsxIndentPropsRule,
 		jsx_key.JsxKeyRule,
+		jsx_max_depth.JsxMaxDepthRule,
 		jsx_max_props_per_line.JsxMaxPropsPerLineRule,
 		jsx_no_bind.JsxNoBindRule,
 		jsx_no_duplicate_props.JsxNoDuplicatePropsRule,
@@ -60,30 +111,49 @@ func GetAllRules() []rule.Rule {
 		jsx_no_undef.JsxNoUndefRule,
 		jsx_pascal_case.JsxPascalCaseRule,
 		jsx_props_no_multi_spaces.JsxPropsNoMultiSpacesRule,
+		jsx_props_no_spread_multi.JsxPropsNoSpreadMultiRule,
 		jsx_uses_react.JsxUsesReactRule,
 		jsx_uses_vars.JsxUsesVarsRule,
 		jsx_wrap_multilines.JsxWrapMultilinesRule,
 		no_access_state_in_setstate.NoAccessStateInSetstateRule,
+		no_array_index_key.NoArrayIndexKeyRule,
 		no_children_prop.NoChildrenPropRule,
 		no_danger.NoDangerRule,
 		no_danger_with_children.NoDangerWithChildrenRule,
 		no_deprecated.NoDeprecatedRule,
+		no_did_mount_set_state.NoDidMountSetStateRule,
 		no_did_update_set_state.NoDidUpdateSetStateRule,
 		no_direct_mutation_state.NoDirectMutationStateRule,
 		no_find_dom_node.NoFindDomNodeRule,
 		no_is_mounted.NoIsMountedRule,
+		no_multi_comp.NoMultiCompRule,
+		no_unstable_nested_components.NoUnstableNestedComponentsRule,
+		no_unused_class_component_methods.NoUnusedClassComponentMethodsRule,
+		no_unused_state.NoUnusedStateRule,
+		no_redundant_should_component_update.NoRedundantShouldComponentUpdateRule,
 		no_render_return_value.NoRenderReturnValueRule,
+		no_set_state.NoSetStateRule,
 		no_string_refs.NoStringRefsRule,
+		no_this_in_sfc.NoThisInSfcRule,
 		no_typos.NoTyposRule,
 		no_unescaped_entities.NoUnescapedEntitiesRule,
 		no_unknown_property.NoUnknownPropertyRule,
+		no_unsafe.NoUnsafeRule,
 		no_will_update_set_state.NoWillUpdateSetStateRule,
 		prefer_es6_class.PreferEs6ClassRule,
+		prefer_stateless_function.PreferStatelessFunctionRule,
 		react_in_jsx_scope.ReactInJsxScopeRule,
+		require_optimization.RequireOptimizationRule,
 		require_render_return.RequireRenderReturnRule,
 		self_closing_comp.SelfClosingCompRule,
 		style_prop_object.StylePropObjectRule,
 		void_dom_elements_no_children.VoidDomElementsNoChildrenRule,
+		jsx_child_element_spacing.JsxChildElementSpacingRule,
+		jsx_curly_brace_presence.JsxCurlyBracePresenceRule,
+		jsx_curly_spacing.JsxCurlySpacingRule,
 		jsx_no_comment_textnodes.JsxNoCommentTextnodesRule,
+		jsx_no_leaked_render.JsxNoLeakedRenderRule,
+		jsx_no_literals.JsxNoLiteralsRule,
+		jsx_no_script_url.JsxNoScriptUrlRule,
 	}
 }

@@ -301,12 +301,17 @@ func findEnclosingClassMethod(node *ast.Node) *ast.Node {
 
 var NoAccessStateInSetstateRule = rule.Rule{
 	Name: "react/no-access-state-in-setstate",
-	Run: func(ctx rule.RuleContext, options any) rule.RuleListeners {
+	Run: func(ctx rule.RuleContext, options []any) rule.RuleListeners {
 		pragma := reactutil.GetReactPragma(ctx.Settings)
 		createClass := reactutil.GetReactCreateClass(ctx.Settings)
 
+		// Upstream `no-access-state-in-setstate` calls
+		// `componentUtil.getParentES6Component || getParentES5Component`
+		// directly — NOT `Components.detect`. Use the scope-based helper
+		// to mirror that detection semantic (ES6 stops at first class
+		// scope; ES5 walks each FunctionLike scope).
 		isClassComponent := func(node *ast.Node) bool {
-			return reactutil.GetEnclosingReactComponent(node, pragma, createClass) != nil
+			return reactutil.GetParentReactComponentScopeBased(node, pragma, createClass) != nil
 		}
 
 		report := func(node *ast.Node) {

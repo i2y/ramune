@@ -57,9 +57,10 @@ for pkg in config linter rule rules utils; do
     copy_pkg_recursive "$RSLINT_SRC/internal" "$DST" "$pkg"
 done
 
-# rslint plugins
-for pkg in plugins/import plugins/jest plugins/promise plugins/react plugins/typescript; do
-    copy_pkg_recursive "$RSLINT_SRC/internal" "$DST" "$pkg"
+# rslint plugins (enumerate upstream so newly added plugins ride along)
+for entry in "$RSLINT_SRC/internal/plugins"/*/; do
+    [ -d "$entry" ] || continue
+    copy_pkg_recursive "$RSLINT_SRC/internal" "$DST" "plugins/$(basename "$entry")"
 done
 
 # --- Copy shim packages used by linter ---
@@ -69,11 +70,16 @@ SHIM_PKGS=(
     checker
     compiler
     core
+    diagnostics
     evaluator
+    parser
+    project
     scanner
+    transformers/jsxtransforms
     tsoptions
     tspath
     vfs
+    vfs/cachedvfs
     vfs/osvfs
 )
 

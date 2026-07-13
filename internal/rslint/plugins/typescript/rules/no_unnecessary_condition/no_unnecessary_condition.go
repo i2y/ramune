@@ -10,6 +10,7 @@ import (
 	"github.com/i2y/ramune/internal/rslint/shim/core"
 	"github.com/i2y/ramune/internal/rslint/shim/scanner"
 
+	"github.com/i2y/ramune/internal/rslint/plugins/typescript/typescriptutil"
 	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/utils"
 )
@@ -323,7 +324,8 @@ func buildTypeGuardAlreadyIsTypeMessage(typeGuardOrAssertionFunction string) rul
 var NoUnnecessaryConditionRule = rule.CreateRule(rule.Rule{
 	Name:             "no-unnecessary-condition",
 	RequiresTypeInfo: true,
-	Run: func(ctx rule.RuleContext, options any) rule.RuleListeners {
+	Run: func(ctx rule.RuleContext, _options []any) rule.RuleListeners {
+		options := rule.LegacyUnwrapOptions(_options)
 		opts := parseOptions(options)
 		tc := ctx.TypeChecker
 
@@ -460,6 +462,11 @@ var NoUnnecessaryConditionRule = rule.CreateRule(rule.Rule{
 		}
 
 		checkNodeForNullish := func(node *ast.Node) {
+			// Match upstream: the rule operates on the ESTree node, which has no
+			// parenthesized-expression wrapper, so `(x) ?? y` reports on `x`.
+			// tsgo's AST keeps ParenthesizedExpression nodes, so skip them to
+			// align the reported range with typescript-eslint (mirrors checkNode).
+			node = ast.SkipParentheses(node)
 			t := utils.GetConstrainedTypeAtLocation(tc, node)
 
 			// Conditional is always necessary if it involves any, unknown, or type parameter
@@ -713,7 +720,7 @@ var NoUnnecessaryConditionRule = rule.CreateRule(rule.Rule{
 
 			if opts.checkTypePredicates {
 				// Check for truthiness assertion functions
-				truthinessArg := findTruthinessAssertedArgument(tc, callExpr)
+				truthinessArg := typescriptutil.FindTruthinessAssertedArgument(tc, callExpr)
 				if truthinessArg != nil {
 					checkNode(truthinessArg, false, nil)
 				}
@@ -945,51 +952,10 @@ type typeGuardResult struct {
 	asserts       bool
 }
 
-// firstSpreadIndex returns the index of the first spread element argument,
-// or -1 if none. Arguments before the first spread can still be reliably
-// mapped to parameters by index.
-func firstSpreadIndex(callExpr *ast.CallExpression) int {
-	for i, arg := range callExpr.Arguments.Nodes {
-		if ast.IsSpreadElement(arg) {
-			return i
-		}
-	}
-	return -1
-}
-
-func findTruthinessAssertedArgument(tc *checker.Checker, callExpr *ast.CallExpression) *ast.Node {
-	// Get the resolved signature
-	sig := checker.Checker_getResolvedSignature(tc, callExpr.AsNode(), nil, checker.CheckModeNormal)
-	if sig == nil {
-		return nil
-	}
-
-	predicate := tc.GetTypePredicateOfSignature(sig)
-	if predicate == nil {
-		return nil
-	}
-
-	// Truthiness assertions: asserts param (no type) or param is truthy (no type)
-	if predicate.Type() != nil {
-		return nil
-	}
-
-	// Must be an asserts predicate
-	if predicate.Kind() != checker.TypePredicateKindAssertsIdentifier {
-		return nil
-	}
-
-	paramIndex := predicate.ParameterIndex()
-	// Skip if parameter index is at or past a spread element (unreliable mapping)
-	spreadIdx := firstSpreadIndex(callExpr)
-	if spreadIdx >= 0 && int(paramIndex) >= spreadIdx {
-		return nil
-	}
-	if int(paramIndex) >= len(callExpr.Arguments.Nodes) {
-		return nil
-	}
-	return callExpr.Arguments.Nodes[paramIndex]
-}
+// firstSpreadIndex / findTruthinessAssertedArgument were moved to
+// typescriptutil because strict_boolean_expressions needs the same predicate
+// mapping. Callers should use typescriptutil.FirstSpreadIndex /
+// typescriptutil.FindTruthinessAssertedArgument directly.
 
 func findTypeGuardAssertedArgument(tc *checker.Checker, callExpr *ast.CallExpression) *typeGuardResult {
 	sig := checker.Checker_getResolvedSignature(tc, callExpr.AsNode(), nil, checker.CheckModeNormal)
@@ -1013,7 +979,7 @@ func findTypeGuardAssertedArgument(tc *checker.Checker, callExpr *ast.CallExpres
 
 	paramIndex := predicate.ParameterIndex()
 	// Skip if parameter index is at or past a spread element (unreliable mapping)
-	spreadIdx := firstSpreadIndex(callExpr)
+	spreadIdx := typescriptutil.FirstSpreadIndex(callExpr)
 	if spreadIdx >= 0 && int(paramIndex) >= spreadIdx {
 		return nil
 	}

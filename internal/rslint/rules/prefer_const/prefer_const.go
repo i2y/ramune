@@ -2,8 +2,6 @@ package prefer_const
 
 import (
 	"github.com/i2y/ramune/internal/rslint/shim/ast"
-	"github.com/i2y/ramune/internal/rslint/shim/core"
-	"github.com/i2y/ramune/internal/rslint/shim/scanner"
 	"github.com/i2y/ramune/internal/rslint/rule"
 	"github.com/i2y/ramune/internal/rslint/utils"
 )
@@ -41,8 +39,13 @@ type candidateInfo struct {
 
 // https://eslint.org/docs/latest/rules/prefer-const
 var PreferConstRule = rule.Rule{
-	Name: "prefer-const",
-	Run: func(ctx rule.RuleContext, options any) rule.RuleListeners {
+	Name:             "prefer-const",
+	RequiresTypeInfo: true,
+	Run: func(ctx rule.RuleContext, _options []any) rule.RuleListeners {
+		options := rule.LegacyUnwrapOptions(_options)
+		// Defense-in-depth: RequiresTypeInfo: true filters this rule out for
+		// gap files / inferred-project files, but if a future caller bypasses
+		// the filter we still want to no-op rather than nil-deref.
 		if ctx.TypeChecker == nil {
 			return rule.RuleListeners{}
 		}
@@ -160,7 +163,7 @@ var PreferConstRule = rule.Rule{
 						Description: "'" + name + "' is never reassigned. Use 'const' instead.",
 					}
 					if canFix {
-						letRange := getLetKeywordRange(node, ctx.SourceFile)
+						letRange := utils.GetVarKeywordRange(node, ctx.SourceFile)
 						ctx.ReportNodeWithFixes(reportOn, msg,
 							rule.RuleFixReplaceRange(letRange, "const"))
 					} else {
@@ -226,12 +229,6 @@ func collectBindingNames(nameNode *ast.Node, hasInitializer bool) []candidateInf
 		})
 	})
 	return result
-}
-
-// getLetKeywordRange returns the text range of the `let` keyword in a VariableDeclarationList.
-func getLetKeywordRange(node *ast.Node, sourceFile *ast.SourceFile) core.TextRange {
-	s := scanner.GetScannerForSourceFile(sourceFile, node.Pos())
-	return core.NewTextRange(s.TokenStart(), s.TokenEnd())
 }
 
 // isInForStatement checks if a VariableDeclarationList is the initializer of a regular for statement.
@@ -834,7 +831,6 @@ func hasTargetNotInSet(node *ast.Node, names map[string]bool) bool {
 	return found
 }
 
-
 // isStandaloneAssignment checks if a write reference identifier is part of an
 // assignment expression that is directly inside an ExpressionStatement.
 // Uses ast.GetAssignmentTarget from the TypeScript shim for robust pattern walking
@@ -857,7 +853,7 @@ func isStandaloneAssignment(identNode *ast.Node) bool {
 
 	// GetAssignmentTarget may return a default value's BinaryExpression
 	// (e.g. [x = 5] returns x=5, not [x=5]=[1]). If so, find the outer destructuring.
-	if target.Kind == ast.KindBinaryExpression && isDefaultValueInDestructuring(target) {
+	if utils.IsDefaultValueInDestructuringAssignment(target) {
 		target = ast.FindAncestor(target.Parent, func(n *ast.Node) bool {
 			return ast.IsDestructuringAssignment(n)
 		})
@@ -872,29 +868,4 @@ func isStandaloneAssignment(identNode *ast.Node) bool {
 		parent = parent.Parent
 	}
 	return parent != nil && parent.Kind == ast.KindExpressionStatement
-}
-
-// isDefaultValueInDestructuring checks if a BinaryExpression(=) node is a default
-// value inside a destructuring assignment target (e.g., x = 5 in [x = 5] = [1]
-// or val: x = 5 in ({val: x = 5} = {val: 1})).
-func isDefaultValueInDestructuring(node *ast.Node) bool {
-	parent := node.Parent
-	if parent == nil {
-		return false
-	}
-	switch parent.Kind {
-	case ast.KindArrayLiteralExpression:
-		// [x = 5] — default in array destructuring target
-		return utils.IsInDestructuringAssignment(parent)
-	case ast.KindPropertyAssignment:
-		// {val: x = 5} — default in object destructuring rename
-		pa := parent.AsPropertyAssignment()
-		if pa != nil && pa.Initializer == node {
-			return utils.IsInDestructuringAssignment(parent)
-		}
-	case ast.KindSpreadElement:
-		// [...x = 5] — unlikely but handle for completeness
-		return utils.IsInDestructuringAssignment(parent)
-	}
-	return false
 }

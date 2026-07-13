@@ -15,7 +15,8 @@ var ConsistentGenericConstructorsRule = rule.CreateRule(rule.Rule{
 	Run:  run,
 })
 
-func run(ctx rule.RuleContext, options any) rule.RuleListeners {
+func run(ctx rule.RuleContext, _options []any) rule.RuleListeners {
+	options := rule.LegacyUnwrapOptions(_options)
 	opts := ConsistentGenericConstructorsOptions{
 		Style: "constructor", // default
 	}
@@ -84,7 +85,7 @@ func run(ctx rule.RuleContext, options any) rule.RuleListeners {
 			return
 		}
 
-		typeRef := typeAnnotation.AsTypeReference()
+		typeRef := typeAnnotation.AsTypeReferenceNode()
 		if typeRef == nil {
 			return
 		}

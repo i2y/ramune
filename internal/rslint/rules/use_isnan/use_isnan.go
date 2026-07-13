@@ -11,19 +11,14 @@ import (
 // unwrapToValue strips parentheses (any depth), resolves at most one level
 // of comma expression (taking the last element), then strips parentheses again.
 // This matches ESLint's isNaNIdentifier which does:
-//   node.type === "SequenceExpression" ? node.expressions.at(-1) : node
+//
+//	node.type === "SequenceExpression" ? node.expressions.at(-1) : node
+//
 // In ESTree parentheses are not AST nodes, but in tsgo they are, so we must
 // strip them before and after the comma resolution.
 func unwrapToValue(node *ast.Node) *ast.Node {
 	stripped := ast.SkipParentheses(node)
 
-	// Resolve one level of comma expression
-	if stripped.Kind == ast.KindCommaListExpression {
-		children := stripped.Children()
-		if children != nil && len(children.Nodes) > 0 {
-			return ast.SkipParentheses(children.Nodes[len(children.Nodes)-1])
-		}
-	}
 	if stripped.Kind == ast.KindBinaryExpression {
 		binary := stripped.AsBinaryExpression()
 		if binary != nil && binary.OperatorToken != nil && binary.OperatorToken.Kind == ast.KindCommaToken {
@@ -93,7 +88,8 @@ func parseOptions(opts any) useIsNaNOptions {
 // UseIsNaNRule requires calls to isNaN() when checking for NaN
 var UseIsNaNRule = rule.Rule{
 	Name: "use-isnan",
-	Run: func(ctx rule.RuleContext, options any) rule.RuleListeners {
+	Run: func(ctx rule.RuleContext, _options []any) rule.RuleListeners {
+		options := rule.LegacyUnwrapOptions(_options)
 		opts := parseOptions(options)
 
 		// Comparison operators to check

@@ -10,12 +10,19 @@ import _ "unsafe"
 
 //go:linkname ApplyBulkEdits github.com/i2y/ramune/internal/rslint/tsgo_pinned/core.ApplyBulkEdits
 func ApplyBulkEdits(text string, edits []core.TextChange) string
+//go:linkname ApplyDebugStackLimit github.com/i2y/ramune/internal/rslint/tsgo_pinned/core.ApplyDebugStackLimit
+func ApplyDebugStackLimit()
+type Arena[T any] = core.Arena[T]
 //go:linkname BoolToTristate github.com/i2y/ramune/internal/rslint/tsgo_pinned/core.BoolToTristate
 func BoolToTristate(b bool) core.Tristate
 type BreadthFirstSearchLevel[K comparable, N any] = core.BreadthFirstSearchLevel[K,N]
 type BreadthFirstSearchOptions[K comparable, N any] = core.BreadthFirstSearchOptions[K,N]
 type BreadthFirstSearchResult[N any] = core.BreadthFirstSearchResult[N]
 type BuildOptions = core.BuildOptions
+type CheckerLifetime = core.CheckerLifetime
+const CheckerLifetimeAPI = core.CheckerLifetimeAPI
+const CheckerLifetimeDiagnostics = core.CheckerLifetimeDiagnostics
+const CheckerLifetimeTemporary = core.CheckerLifetimeTemporary
 //go:linkname CompareBooleans github.com/i2y/ramune/internal/rslint/tsgo_pinned/core.CompareBooleans
 func CompareBooleans(a bool, b bool) int
 //go:linkname CompareTextRanges github.com/i2y/ramune/internal/rslint/tsgo_pinned/core.CompareTextRanges
@@ -28,12 +35,16 @@ func ComputeECMALineStartsSeq(text string) iter.Seq[core.TextPos]
 type ECMALineStarts = core.ECMALineStarts
 var EmptyCompilerOptions = core.EmptyCompilerOptions
 var ExclusivelyPrefixedNodeCoreModules = core.ExclusivelyPrefixedNodeCoreModules
+//go:linkname GetCheckerLifetime github.com/i2y/ramune/internal/rslint/tsgo_pinned/core.GetCheckerLifetime
+func GetCheckerLifetime(ctx context.Context) core.CheckerLifetime
 //go:linkname GetNewLineKind github.com/i2y/ramune/internal/rslint/tsgo_pinned/core.GetNewLineKind
 func GetNewLineKind(s string) core.NewLineKind
 //go:linkname GetRequestID github.com/i2y/ramune/internal/rslint/tsgo_pinned/core.GetRequestID
 func GetRequestID(ctx context.Context) string
 //go:linkname GetScriptKindFromFileName github.com/i2y/ramune/internal/rslint/tsgo_pinned/core.GetScriptKindFromFileName
 func GetScriptKindFromFileName(fileName string) core.ScriptKind
+//go:linkname GetSpellingSuggestionForStrings github.com/i2y/ramune/internal/rslint/tsgo_pinned/core.GetSpellingSuggestionForStrings
+func GetSpellingSuggestionForStrings(name string, candidates iter.Seq[string]) string
 //go:linkname IndexAfter github.com/i2y/ramune/internal/rslint/tsgo_pinned/core.IndexAfter
 func IndexAfter(s string, pattern string, startIndex int) int
 type JsxEmit = core.JsxEmit
@@ -46,6 +57,7 @@ const JsxEmitReactNative = core.JsxEmitReactNative
 type LanguageVariant = core.LanguageVariant
 const LanguageVariantJSX = core.LanguageVariantJSX
 const LanguageVariantStandard = core.LanguageVariantStandard
+type LimitedSemaphore = core.LimitedSemaphore
 type LinkStore[K comparable, V any] = core.LinkStore[K,V]
 type ModuleDetectionKind = core.ModuleDetectionKind
 const ModuleDetectionKindAuto = core.ModuleDetectionKindAuto
@@ -75,6 +87,8 @@ const ModuleResolutionKindNode10 = core.ModuleResolutionKindNode10
 const ModuleResolutionKindNode16 = core.ModuleResolutionKindNode16
 const ModuleResolutionKindNodeNext = core.ModuleResolutionKindNodeNext
 const ModuleResolutionKindUnknown = core.ModuleResolutionKindUnknown
+//go:linkname NewLimitedSemaphore github.com/i2y/ramune/internal/rslint/tsgo_pinned/core.NewLimitedSemaphore
+func NewLimitedSemaphore(maxConcurrency int) *core.LimitedSemaphore
 type NewLineKind = core.NewLineKind
 const NewLineKindCRLF = core.NewLineKindCRLF
 const NewLineKindLF = core.NewLineKindLF
@@ -96,7 +110,6 @@ const PollingKindFixedChunkSize = core.PollingKindFixedChunkSize
 const PollingKindFixedInterval = core.PollingKindFixedInterval
 const PollingKindNone = core.PollingKindNone
 const PollingKindPriorityInterval = core.PollingKindPriorityInterval
-type Pool[T any] = core.Pool[T]
 //go:linkname PositionToLineAndByteOffset github.com/i2y/ramune/internal/rslint/tsgo_pinned/core.PositionToLineAndByteOffset
 func PositionToLineAndByteOffset(position int, lineStarts []core.TextPos) (line int, byteOffset int)
 type ProjectReference = core.ProjectReference
@@ -135,6 +148,7 @@ const ScriptTargetJSON = core.ScriptTargetJSON
 const ScriptTargetLatest = core.ScriptTargetLatest
 const ScriptTargetLatestStandard = core.ScriptTargetLatestStandard
 const ScriptTargetNone = core.ScriptTargetNone
+type Semaphore = core.Semaphore
 //go:linkname ShouldRewriteModuleSpecifier github.com/i2y/ramune/internal/rslint/tsgo_pinned/core.ShouldRewriteModuleSpecifier
 func ShouldRewriteModuleSpecifier(specifier string, compilerOptions *core.CompilerOptions) bool
 type Stack[T any] = core.Stack[T]
@@ -156,6 +170,7 @@ func UTF16Len(s string) core.UTF16Offset
 type UTF16Offset = core.UTF16Offset
 //go:linkname UndefinedTextRange github.com/i2y/ramune/internal/rslint/tsgo_pinned/core.UndefinedTextRange
 func UndefinedTextRange() core.TextRange
+type UnlimitedSemaphore = core.UnlimitedSemaphore
 var UnprefixedNodeCoreModules = core.UnprefixedNodeCoreModules
 //go:linkname Version github.com/i2y/ramune/internal/rslint/tsgo_pinned/core.Version
 func Version() string
@@ -176,6 +191,8 @@ const WatchFileKindPriorityPollingInterval = core.WatchFileKindPriorityPollingIn
 const WatchFileKindUseFsEvents = core.WatchFileKindUseFsEvents
 const WatchFileKindUseFsEventsOnParentDirectory = core.WatchFileKindUseFsEventsOnParentDirectory
 type WatchOptions = core.WatchOptions
+//go:linkname WithCheckerLifetime github.com/i2y/ramune/internal/rslint/tsgo_pinned/core.WithCheckerLifetime
+func WithCheckerLifetime(ctx context.Context, lifetime core.CheckerLifetime) context.Context
 //go:linkname WithRequestID github.com/i2y/ramune/internal/rslint/tsgo_pinned/core.WithRequestID
 func WithRequestID(ctx context.Context, id string) context.Context
 type WorkGroup = core.WorkGroup

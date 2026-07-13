@@ -201,7 +201,7 @@ func matchesTypeAnnotation(typeNode *ast.Node, expectedType string) bool {
 		return typeNode.Kind == ast.KindSymbolKeyword
 	case "RegExp":
 		if typeNode.Kind == ast.KindTypeReference {
-			typeRef := typeNode.AsTypeReference()
+			typeRef := typeNode.AsTypeReferenceNode()
 			if typeRef != nil && typeRef.TypeName != nil && typeRef.TypeName.Kind == ast.KindIdentifier {
 				return typeRef.TypeName.AsIdentifier().Text == "RegExp"
 			}
@@ -212,7 +212,8 @@ func matchesTypeAnnotation(typeNode *ast.Node, expectedType string) bool {
 
 var NoInferrableTypesRule = rule.CreateRule(rule.Rule{
 	Name: "no-inferrable-types",
-	Run: func(ctx rule.RuleContext, options any) rule.RuleListeners {
+	Run: func(ctx rule.RuleContext, _options []any) rule.RuleListeners {
+		options := rule.LegacyUnwrapOptions(_options)
 		opts := parseOptions(options)
 
 		checkDeclaration := func(reportNode *ast.Node, typeAnnotation *ast.Node, initializer *ast.Node, hasQuestionToken bool, hasExclamationToken bool) {

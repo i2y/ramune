@@ -3,9 +3,7 @@
 
 package vfs
 
-import "github.com/dlclark/regexp2"
 import "github.com/i2y/ramune/internal/rslint/tsgo_pinned/vfs"
-import _ "unsafe"
 
 type DirEntry = vfs.DirEntry
 type Entries = vfs.Entries
@@ -16,20 +14,6 @@ var ErrNotExist = vfs.ErrNotExist
 var ErrPermission = vfs.ErrPermission
 type FS = vfs.FS
 type FileInfo = vfs.FileInfo
-type FileMatcherPatterns = vfs.FileMatcherPatterns
-//go:linkname GetRegexFromPattern github.com/i2y/ramune/internal/rslint/tsgo_pinned/vfs.GetRegexFromPattern
-func GetRegexFromPattern(pattern string, useCaseSensitiveFileNames bool) *regexp2.Regexp
-//go:linkname GetSubPatternFromSpec github.com/i2y/ramune/internal/rslint/tsgo_pinned/vfs.GetSubPatternFromSpec
-func GetSubPatternFromSpec(spec string, basePath string, usage vfs.Usage, matcher vfs.WildcardMatcher) string
-//go:linkname IsImplicitGlob github.com/i2y/ramune/internal/rslint/tsgo_pinned/vfs.IsImplicitGlob
-func IsImplicitGlob(lastPathComponent string) bool
-//go:linkname ReadDirectory github.com/i2y/ramune/internal/rslint/tsgo_pinned/vfs.ReadDirectory
-func ReadDirectory(host vfs.FS, currentDir string, path string, extensions []string, excludes []string, includes []string, depth *int) []string
 var SkipAll = vfs.SkipAll
 var SkipDir = vfs.SkipDir
-type Usage = vfs.Usage
-const UsageDirectories = vfs.UsageDirectories
-const UsageExclude = vfs.UsageExclude
-const UsageFiles = vfs.UsageFiles
 type WalkDirFunc = vfs.WalkDirFunc
-type WildcardMatcher = vfs.WildcardMatcher

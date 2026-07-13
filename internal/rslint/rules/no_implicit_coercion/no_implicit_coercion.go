@@ -48,7 +48,8 @@ func parseOptions(raw any) options {
 // https://eslint.org/docs/latest/rules/no-implicit-coercion
 var NoImplicitCoercionRule = rule.Rule{
 	Name: "no-implicit-coercion",
-	Run: func(ctx rule.RuleContext, rawOptions any) rule.RuleListeners {
+	Run: func(ctx rule.RuleContext, _rawOptions []any) rule.RuleListeners {
+		rawOptions := rule.LegacyUnwrapOptions(_rawOptions)
 		opts := parseOptions(rawOptions)
 
 		// report emits the diagnostic for `node` (replaced with `recommendation`).
@@ -92,7 +93,9 @@ var NoImplicitCoercionRule = rule.Rule{
 				return
 			}
 
-			// !!foo → Boolean(foo) — autofix unless `Boolean` is locally shadowed.
+			// !!foo → Boolean(foo) — autofix unless `Boolean` is locally shadowed
+			// or configured `off` (ESLint's `booleanExists` check downgrades the
+			// fix to a suggestion; the report itself is unaffected).
 			// Parens between the two `!`s (e.g. `!(!foo)`) are transparent in
 			// ESLint's AST, so we peel them off to match that behavior.
 			if opts.boolean && !opts.allow.Has("!!") && isDoubleLogicalNegating(pue) {
@@ -100,6 +103,9 @@ var NoImplicitCoercionRule = rule.Rule{
 				target := ast.SkipParentheses(innerPue.Operand)
 				recommendation := "Boolean(" + utils.TrimmedNodeText(ctx.SourceFile, target) + ")"
 				shouldFix := !utils.IsShadowed(node, "Boolean")
+				if declared, ok := ctx.Globals["Boolean"]; ok && !declared {
+					shouldFix = false
+				}
 				report(node, recommendation, true, shouldFix)
 			}
 

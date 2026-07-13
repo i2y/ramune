@@ -354,13 +354,11 @@ func lintCmd(args []string) {
 	useAllRules := configErr != nil
 	hasErrors := false
 
-	_, err = linter.RunLinter(
-		[]*rcompiler.Program{program},
-		true,
-		files,
-		nil,
-		nil,
-		func(sourceFile *rast.SourceFile) []linter.ConfiguredRule {
+	_, err = linter.RunLinter(linter.RunLinterOptions{
+		Programs:       []*rcompiler.Program{program},
+		SingleThreaded: true,
+		Scope:          linter.FileScope{Files: files},
+		GetRulesForFile: func(sourceFile *rast.SourceFile) []linter.ConfiguredRule {
 			if useAllRules {
 				var rules []linter.ConfiguredRule
 				for name, r := range config.GlobalRuleRegistry.GetAllRules() {
@@ -378,8 +376,7 @@ func lintCmd(args []string) {
 			rules, _ := config.GlobalRuleRegistry.GetEnabledRules(rslintConfig, sourceFile.FileName(), cwd, false)
 			return rules
 		},
-		false,
-		func(d rule.RuleDiagnostic) {
+		OnDiagnostic: func(d rule.RuleDiagnostic) {
 			hasErrors = true
 			severity := "warning"
 			if d.Severity == rule.SeverityError {
@@ -388,7 +385,7 @@ func lintCmd(args []string) {
 			if d.SourceFile != nil {
 				line, col := rscanner.GetECMALineAndUTF16CharacterOfPosition(d.SourceFile, d.Range.Pos())
 				fmt.Fprintf(os.Stderr, "%s(%d,%d): %s [%s] %s\n",
-					d.SourceFile.FileName(), line+1, col+1, d.Message.Description, d.RuleName, severity)
+					d.FilePath, line+1, col+1, d.Message.Description, d.RuleName, severity)
 			} else {
 				fmt.Fprintf(os.Stderr, "%s [%s] %s\n", d.Message.Description, d.RuleName, severity)
 			}
@@ -402,13 +399,11 @@ func lintCmd(args []string) {
 						changes[i] = rcore.TextChange{TextRange: f.Range, NewText: f.Text}
 					}
 					result := rcore.ApplyBulkEdits(source, changes)
-					os.WriteFile(d.SourceFile.FileName(), []byte(result), 0644)
+					os.WriteFile(d.FilePath, []byte(result), 0644)
 				}
 			}
 		},
-		nil,
-		nil,
-	)
+	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)

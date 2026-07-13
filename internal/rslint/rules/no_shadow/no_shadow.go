@@ -10,90 +10,17 @@ import (
 	"github.com/i2y/ramune/internal/rslint/utils"
 )
 
-// ecmaScriptGlobals lists ECMAScript built-in globals referenced by the
-// `builtinGlobals` option. We pair this with a TypeChecker-based default-
-// library scan so that environment-specific globals (DOM, Node, …) are also
-// picked up when type information is available. The hard-coded list is
-// necessary because once a user writes `var Object = 0` at module scope, the
-// TypeChecker resolves `Object` to the local binding and the default-library
-// match is lost.
-var ecmaScriptGlobals = map[string]bool{
-	"AggregateError":       true,
-	"Array":                true,
-	"ArrayBuffer":          true,
-	"AsyncDisposableStack": true,
-	"AsyncIterator":        true,
-	"Atomics":              true,
-	"BigInt":               true,
-	"BigInt64Array":        true,
-	"BigUint64Array":       true,
-	"Boolean":              true,
-	"DataView":             true,
-	"Date":                 true,
-	"decodeURI":            true,
-	"decodeURIComponent":   true,
-	"DisposableStack":      true,
-	"encodeURI":            true,
-	"encodeURIComponent":   true,
-	"Error":                true,
-	"escape":               true,
-	"EvalError":            true,
-	"FinalizationRegistry": true,
-	"Float32Array":         true,
-	"Float64Array":         true,
-	"Function":             true,
-	"globalThis":           true,
-	"Infinity":             true,
-	"Int8Array":            true,
-	"Int16Array":           true,
-	"Int32Array":           true,
-	"Intl":                 true,
-	"isFinite":             true,
-	"isNaN":                true,
-	"Iterator":             true,
-	"JSON":                 true,
-	"Map":                  true,
-	"Math":                 true,
-	"NaN":                  true,
-	"Number":               true,
-	"Object":               true,
-	"parseFloat":           true,
-	"parseInt":             true,
-	"Promise":              true,
-	"Proxy":                true,
-	"RangeError":           true,
-	"ReferenceError":       true,
-	"Reflect":              true,
-	"RegExp":               true,
-	"Set":                  true,
-	"SharedArrayBuffer":    true,
-	"String":               true,
-	"SuppressedError":      true,
-	"Symbol":               true,
-	"SyntaxError":          true,
-	"TypeError":            true,
-	"Uint8Array":           true,
-	"Uint8ClampedArray":    true,
-	"Uint16Array":          true,
-	"Uint32Array":          true,
-	"unescape":             true,
-	"URIError":             true,
-	"undefined":            true,
-	"WeakMap":              true,
-	"WeakRef":              true,
-	"WeakSet":              true,
-}
-
 // https://eslint.org/docs/latest/rules/no-shadow
 //
 // Scope semantics are reconstructed by walking the AST and tracking scopes
 // directly (rslint has no eslint-scope-equivalent). This covers the common
-// cases exercised by the ESLint test suite. Framework-level concepts that
-// rslint deliberately does not expose (for example `/*global*/` directive
-// comments, `env`/`globals` in languageOptions, `parserOptions.globalReturn`)
-// are intentionally not modeled — the rule reports shadowing against
-// declarations visible within the file plus, when a type checker is
-// available, symbols from the default TypeScript libraries.
+// cases exercised by the ESLint test suite. The rule reports shadowing against
+// declarations visible within the file plus, when `builtinGlobals` is on, the
+// global scope: ECMAScript builtins, default-library symbols (when a type
+// checker is available), and globals declared via config
+// `languageOptions.globals` or `/* global */` comments (`ctx.Globals`), where
+// an explicit `off` setting un-declares the name. Concepts rslint does not
+// expose (for example `parserOptions.globalReturn`) remain unmodeled.
 
 type hoistMode int
 
@@ -125,8 +52,24 @@ func defaultOptions() options {
 	}
 }
 
-func parseOptions(raw any) options {
-	opts := defaultOptions()
+// defaultOptionsTSESLint returns the typescript-eslint defaults: identical to
+// the ESLint core defaults except `hoist` is `functions-and-types`.
+func defaultOptionsTSESLint() options {
+	o := defaultOptions()
+	o.hoist = hoistFunctionsAndTypes
+	return o
+}
+
+func parseOptionsWith(raw any, opts options) options {
+	// Always copy the allow map: the caller's `opts` may be a long-lived
+	// defaults instance shared across rule invocations (e.g. the closure
+	// captured by `runWithDefaults`). Mutating in-place would leak state
+	// from one source file's lint run to the next.
+	src := opts.allow
+	opts.allow = make(map[string]bool, len(src)+4)
+	for k, v := range src {
+		opts.allow[k] = v
+	}
 	optsMap := utils.GetOptionsMap(raw)
 	if optsMap == nil {
 		return opts
@@ -764,7 +707,7 @@ func collectInferTypes(node *ast.Node, s *scope) {
 	case ast.KindInferType:
 		it := node.AsInferTypeNode()
 		if it != nil && it.TypeParameter != nil {
-			tp := it.TypeParameter.AsTypeParameter()
+			tp := it.TypeParameter.AsTypeParameterDeclaration()
 			if tp != nil && tp.Name() != nil && tp.Name().Kind == ast.KindIdentifier {
 				s.add(&variable{
 					name:           tp.Name().Text(),
@@ -803,7 +746,7 @@ func (b *builder) addTypeParameters(node *ast.Node, s *scope) {
 		if tp == nil {
 			continue
 		}
-		tpDecl := tp.AsTypeParameter()
+		tpDecl := tp.AsTypeParameterDeclaration()
 		if tpDecl == nil || tpDecl.Name() == nil || tpDecl.Name().Kind != ast.KindIdentifier {
 			continue
 		}
@@ -1294,8 +1237,23 @@ func (b *builder) visitSwitchCases(sw *ast.SwitchStatement, outer *scope) {
 
 var NoShadowRule = rule.Rule{
 	Name: "no-shadow",
-	Run: func(ctx rule.RuleContext, rawOptions any) rule.RuleListeners {
-		opts := parseOptions(rawOptions)
+	Run:  runWithDefaults(defaultOptions()),
+}
+
+// RunTSESLint exposes the rule body with typescript-eslint's defaults so the
+// `@typescript-eslint/no-shadow` wrapper can reuse the implementation. The
+// underlying closure is built once at package init — `parseOptionsWith`
+// copies the captured `allow` map per invocation, so this is safe.
+var runTSESLint = runWithDefaults(defaultOptionsTSESLint())
+
+func RunTSESLint(ctx rule.RuleContext, options []any) rule.RuleListeners {
+	return runTSESLint(ctx, options)
+}
+
+func runWithDefaults(defaults options) func(rule.RuleContext, []any) rule.RuleListeners {
+	return func(ctx rule.RuleContext, _rawOptions []any) rule.RuleListeners {
+		rawOptions := rule.LegacyUnwrapOptions(_rawOptions)
+		opts := parseOptionsWith(rawOptions, defaults)
 		if ctx.SourceFile == nil {
 			return rule.RuleListeners{}
 		}
@@ -1318,17 +1276,18 @@ var NoShadowRule = rule.Rule{
 		// binding), then union in whatever the default library exposes.
 		builtinGlobals := map[string]bool{}
 		if opts.builtinGlobals {
-			for name := range ecmaScriptGlobals {
-				builtinGlobals[name] = true
-			}
-			if ctx.TypeChecker != nil && ctx.Program != nil {
-				for _, sym := range ctx.TypeChecker.GetSymbolsInScope(ctx.SourceFile.AsNode(), ast.SymbolFlagsValue) {
-					if sym == nil || sym.Name == "" {
-						continue
-					}
-					if utils.IsSymbolFromDefaultLibrary(ctx.Program, sym) {
-						builtinGlobals[sym.Name] = true
-					}
+			utils.AddECMAScriptGlobals(builtinGlobals)
+			utils.AddDefaultLibraryGlobals(builtinGlobals, ctx.Program, ctx.TypeChecker)
+			// Config `languageOptions.globals` and `/* global */` comments
+			// declare additional globals beyond the ECMAScript/lib set. An
+			// explicit `off` setting un-declares the builtin from the global
+			// scope (ESLint removes the variable entirely), so shadowing it
+			// no longer reports.
+			for name, declared := range ctx.Globals {
+				if declared {
+					builtinGlobals[name] = true
+				} else {
+					delete(builtinGlobals, name)
 				}
 			}
 		}
@@ -1361,7 +1320,7 @@ var NoShadowRule = rule.Rule{
 		}
 
 		return rule.RuleListeners{}
-	},
+	}
 }
 
 // isDuplicatedClassNameInClassScope suppresses the inner class-name binding
@@ -1626,6 +1585,15 @@ func isInTdz(inner *variable, outer *variable, mode hoistMode) bool {
 
 // isFunctionNameInitializerException implements the `var a = function a() {}`
 // / `var A = class A {}` / default-destructuring variants that ESLint ignores.
+//
+// Mirrors ESLint's `isOnInitializer`: requires (a) the inner is a Function-
+// Expression name or ClassExpression inner-name, (b) the inner identifier
+// sits inside the outer binding's declarator/parameter range, and (c) the
+// inner's enclosing scope IS the scope owning the outer binding. Together,
+// (b)+(c) handle arbitrary call/decorator wrappers (`wrap(function x() {})`)
+// without an AST-walk whitelist, while still rejecting unrelated siblings
+// (`const a = 1; const b = function a() {}` — different declarator ranges,
+// so (b) fails and we report).
 func isFunctionNameInitializerException(inner *variable, outer *variable) bool {
 	if outer.defNode == nil || inner.defNode == nil {
 		return false
@@ -1633,60 +1601,39 @@ func isFunctionNameInitializerException(inner *variable, outer *variable) bool {
 	if inner.kind != defFnExprName && (inner.kind != defClassInnerName || inner.defNode.Kind != ast.KindClassExpression) {
 		return false
 	}
-	expr := inner.defNode // FunctionExpression / ClassExpression
-	// Outer must be a VariableDeclaration or BindingElement with an initializer.
-	var initializer *ast.Node
-	switch outer.defNode.Kind {
-	case ast.KindVariableDeclaration:
-		vd := outer.defNode.AsVariableDeclaration()
-		if vd != nil {
-			initializer = vd.Initializer
-		}
-	case ast.KindBindingElement, ast.KindParameter:
-		initializer = outer.defNode.Initializer()
-	}
-	if initializer == nil {
+	if inner.scope == nil || inner.scope.parent == nil || outer.scope == nil {
 		return false
 	}
-	if initializer.Pos() > expr.Pos() || expr.End() > initializer.End() {
+	startPos, endPos, ok := outerInitializerLexicalRange(outer.defNode)
+	if !ok {
 		return false
 	}
-	// Walk up from `expr` through logical / ternary / paren wrappers only;
-	// success iff we land exactly on `initializer`.
-	current := expr
-	for {
-		if current == initializer {
-			return true
-		}
-		parent := current.Parent
-		if parent == nil {
-			return false
-		}
-		switch parent.Kind {
-		case ast.KindParenthesizedExpression:
-			current = parent
-			continue
-		case ast.KindBinaryExpression:
-			be := parent.AsBinaryExpression()
-			if be != nil && be.OperatorToken != nil {
-				op := be.OperatorToken.Kind
-				if op == ast.KindBarBarToken || op == ast.KindAmpersandAmpersandToken || op == ast.KindQuestionQuestionToken {
-					current = parent
-					continue
+	expr := inner.defNode
+	if startPos > expr.Pos() || expr.End() > endPos {
+		return false
+	}
+	return inner.scope.parent == outer.scope
+}
+
+// outerInitializerLexicalRange returns the range ESLint's scope manager would
+// expose as the binding's `Definition.parent.range`: the enclosing
+// VariableDeclaration for var/let/const + destructuring elements, and the
+// enclosing function-like node for parameters.
+func outerInitializerLexicalRange(defNode *ast.Node) (int, int, bool) {
+	for cur := defNode; cur != nil; cur = cur.Parent {
+		switch cur.Kind {
+		case ast.KindVariableDeclaration:
+			return cur.Pos(), cur.End(), true
+		case ast.KindParameter:
+			for p := cur.Parent; p != nil; p = p.Parent {
+				if ast.IsFunctionLike(p) {
+					return p.Pos(), p.End(), true
 				}
 			}
-			return false
-		case ast.KindConditionalExpression:
-			ce := parent.AsConditionalExpression()
-			if ce != nil && ce.Condition != current {
-				current = parent
-				continue
-			}
-			return false
-		default:
-			return false
+			return cur.Pos(), cur.End(), true
 		}
 	}
+	return 0, 0, false
 }
 
 // isInInitPatternCall handles the `ignoreOnInitialization` option.
