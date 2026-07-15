@@ -358,6 +358,10 @@ func lintCmd(args []string) {
 		Programs:       []*rcompiler.Program{program},
 		SingleThreaded: true,
 		Scope:          linter.FileScope{Files: files},
+		// Explicitly-named CLI targets must never be silently dropped: nil
+		// falls back to the linter's default excludes (node_modules etc.),
+		// which collectFiles already applies during directory walks.
+		ExcludePaths: []string{},
 		GetRulesForFile: func(sourceFile *rast.SourceFile) []linter.ConfiguredRule {
 			if useAllRules {
 				var rules []linter.ConfiguredRule
