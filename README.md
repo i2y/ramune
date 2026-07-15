@@ -62,7 +62,7 @@ Five use cases, five audiences. Jump to the section that matches your motivation
 - **Single-binary deploy.** `ramune compile worker.ts -o myworker` bundles handler + runtime into one Go executable. No Kubernetes, no Wrangler, no Dockerfile required — `scp ./myworker prod:` and run. qjswasm path is fully self-contained; JSC path still resolves the system JSC at run time (see next bullet).
 - **No Cgo at build; honest about runtime.** `go build` cross-compiles to any `GOOS`/`GOARCH` without a C toolchain. JSC backend loads JavaScriptCore dynamically via [`purego`](https://github.com/ebitengine/purego) — zero install on macOS, `libjavascriptcoregtk-4.1` on Linux. qjswasm is pure Go with zero runtime dependencies (QuickJS-NG compiled to WebAssembly, embedded into the Go binary, driven by wazero) and runs on `FROM scratch` Docker.
 
-Tri-backend: **JavaScriptCore** (JIT, macOS/Linux) via [purego](https://github.com/ebitengine/purego), **qjswasm** (pure Go, cross-platform incl. Windows — QuickJS-NG compiled to WebAssembly and driven by wazero) via [fastschema/qjs](https://github.com/fastschema/qjs), and **goja** (pure Go, reflect-based, ~94% ECMAScript) via [github.com/dop251/goja](https://github.com/dop251/goja) — no Cgo required for any of them. Type checker, formatter, and TypeScript→JavaScript transpiler ([typescript-go](https://github.com/microsoft/typescript-go), the upcoming TypeScript 7), linter ([rslint](https://github.com/web-infra-dev/rslint)), bundler ([esbuild](https://github.com/evanw/esbuild)), and all Node.js polyfills are built in with zero external tool dependencies.
+Tri-backend: **JavaScriptCore** (JIT, macOS/Linux) via [purego](https://github.com/ebitengine/purego), **qjswasm** (pure Go, cross-platform incl. Windows — QuickJS-NG compiled to WebAssembly and driven by wazero) via [fastschema/qjs](https://github.com/fastschema/qjs), and **goja** (pure Go, reflect-based, ~94% ECMAScript) via [github.com/dop251/goja](https://github.com/dop251/goja) — no Cgo required for any of them. Type checker, formatter, and TypeScript→JavaScript transpiler ([typescript-go](https://github.com/microsoft/typescript-go), TypeScript 7.0), linter ([rslint](https://github.com/web-infra-dev/rslint)), bundler ([esbuild](https://github.com/evanw/esbuild)), and all Node.js polyfills are built in with zero external tool dependencies.
 
 ```bash
 ramune serve worker.ts        # Serve Workers-style module
@@ -370,7 +370,7 @@ ramune check src/                # check directory
 ramune run --check app.ts        # check then run
 ```
 
-Uses [typescript-go](https://github.com/microsoft/typescript-go) — the Go-native compiler behind [TypeScript 7.0 Beta](https://devblogs.microsoft.com/typescript/announcing-typescript-7-0-beta/) (`@typescript/native-preview` / `tsgo`), backward-compatible with TS 5.x — built into Ramune. No external tools required.
+Uses [typescript-go](https://github.com/microsoft/typescript-go) — the Go-native compiler that ships as [TypeScript 7.0](https://devblogs.microsoft.com/typescript/announcing-typescript-7-0/) (`tsgo`), backward-compatible with TS 5.x — built into Ramune, pinned at `typescript/v7.0.2`. No external tools required.
 
 ### Format & Lint
 
@@ -385,7 +385,7 @@ The formatter uses typescript-go's built-in formatter. The linter uses [rslint](
 
 If `rslint.json` or `rslint.jsonc` exists, `ramune lint` uses that configuration. Otherwise, all recommended rules are enabled by default.
 
-> **Note:** TypeScript transpilation (`ramune run app.ts`) uses [typescript-go](https://github.com/microsoft/typescript-go), the upcoming TypeScript 7 — the same compiler that backs `ramune check` and `ramune fmt`. Bundling (`ramune build`, `Ramune.build`) uses [esbuild](https://esbuild.github.io/). Both are built into Ramune.
+> **Note:** TypeScript transpilation (`ramune run app.ts`) uses [typescript-go](https://github.com/microsoft/typescript-go), TypeScript 7.0 — the same compiler that backs `ramune check` and `ramune fmt`. Bundling (`ramune build`, `Ramune.build`) uses [esbuild](https://esbuild.github.io/). Both are built into Ramune.
 
 ### Package Manager
 
@@ -1295,7 +1295,7 @@ Ramune includes code from the following projects:
 
 | Project | License | Usage | Inclusion |
 |---------|---------|-------|-----------|
-| [microsoft/typescript-go](https://github.com/microsoft/typescript-go) | Apache-2.0 | Type checker, formatter, and TypeScript→JavaScript transpiler (TS 7.0-dev) | Source copy (`internal/tsgo/`) |
+| [microsoft/typescript-go](https://github.com/microsoft/typescript-go) | Apache-2.0 | Type checker, formatter, and TypeScript→JavaScript transpiler (TypeScript 7.0, `typescript/v7.0.2`) | Source copy (`internal/tsgo/`) |
 | [web-infra-dev/rslint](https://github.com/web-infra-dev/rslint) | MIT | Linter | Source copy (`internal/rslint/`) |
 | [dop251/goja](https://github.com/dop251/goja) | MIT | goja backend (`-tags goja`) | Go module dependency |
 | [fastschema/qjs](https://github.com/fastschema/qjs) | MIT | qjswasm backend (`-tags qjswasm`) — QuickJS-NG on wazero, fork adds a `DisableFS` option for sandboxed use | Inline vendored (`third_party/qjs/`) |
