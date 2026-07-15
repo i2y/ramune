@@ -24,6 +24,15 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # The vendored tsgo/rslint trees make a full multi-backend build produce
+      # a ~20GB go-build cache; stock Linux runners run out of disk once the
+      # restored cache and a rebuild coexist. Drop unused preinstalled SDKs.
+      - name: Free runner disk space (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/hostedtoolcache/CodeQL /usr/share/swift /opt/az
+          df -h /
+
       - uses: actions/setup-go@v6
         with:
           go-version-file: 'go.mod'
