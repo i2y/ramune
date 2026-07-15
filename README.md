@@ -370,7 +370,7 @@ ramune check src/                # check directory
 ramune run --check app.ts        # check then run
 ```
 
-Uses [typescript-go](https://github.com/microsoft/typescript-go) — the Go-native compiler that ships as [TypeScript 7.0](https://devblogs.microsoft.com/typescript/announcing-typescript-7-0/) (`tsgo`), backward-compatible with TS 5.x — built into Ramune, pinned at `typescript/v7.0.2`. No external tools required.
+Uses [typescript-go](https://github.com/microsoft/typescript-go) — the Go-native compiler that ships as [TypeScript 7.0](https://devblogs.microsoft.com/typescript/announcing-typescript-7-0/) (`tsgo`) — built into Ramune, pinned at `typescript/v7.0.2`. No external tools required.
 
 ### Format & Lint
 
