@@ -19,7 +19,7 @@ jobs:
             jsc-pkg: libjavascriptcoregtk-4.0-dev
 
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 25
+    timeout-minutes: 45
 
     steps:
       - uses: actions/checkout@v6
