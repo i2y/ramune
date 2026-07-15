@@ -43,7 +43,7 @@ jobs:
   build-macos:
     needs: setup
     runs-on: macos-15
-    timeout-minutes: 25
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
         with:
@@ -106,15 +106,24 @@ jobs:
             ext: .exe
             artifact: win32-arm64
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
         with:
           ref: ${{ needs.setup.outputs.tag }}
 
+      # Cross-target objects share nothing with the host-keyed go-build cache,
+      # so restoring it only wastes disk; a cold cross build of the vendored
+      # tsgo/rslint trees needs the disk and more than the old 20m budget.
+      - name: Free runner disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/hostedtoolcache/CodeQL /usr/share/swift /opt/az
+          df -h /
+
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+          cache: false
 
       - name: Build ramune + ramune-toolchain (qjswasm, static)
         env:
